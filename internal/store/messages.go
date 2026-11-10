@@ -98,6 +98,12 @@ type InsertMessage struct {
 	BodySealed    []byte
 	RawSealed     []byte
 	PayloadSealed []byte
+	// ArchiveKey is the archive public key ContentKeyID was sealed to.
+	// Ingest sets it. Insert then stores the row only while that content
+	// key is stored under that key, and refuses it with
+	// ErrArchiveKeyChanged after a reset (contentKeyIsTx, DS49). nil
+	// checks nothing.
+	ArchiveKey []byte
 
 	Media *InsertMedia
 }
@@ -186,6 +192,11 @@ func (m *Messages) Insert(ctx context.Context, in InsertMessage) (InsertResult, 
 			return err
 		}
 		res.Seq = seq
+		// After nextSeq, which holds the workspace's row: a reset is
+		// wholly before this or wholly after the commit.
+		if err := contentKeyIsTx(ctx, tx, in.DeviceID, in.ContentKeyID, in.ArchiveKey); err != nil {
+			return err
+		}
 
 		if err := insertMessageRow(ctx, tx, in, seq, rel, targetUID, &res); err != nil {
 			return err
@@ -394,7 +405,7 @@ func fillStub(ctx context.Context, tx pgx.Tx, in InsertMessage, uid uuid.UUID) e
 		return nil
 	}
 
-	_, err := tx.Exec(ctx, `
+	tag, err := tx.Exec(ctx, `
 		UPDATE messages SET
 			kind = $2, type = $3, unsupported_field = NULL,
 			content_key_id = $4, body_sealed = $5, raw_sealed = $6, payload_sealed = $7,
@@ -415,7 +426,12 @@ func fillStub(ctx context.Context, tx pgx.Tx, in InsertMessage, uid uuid.UUID) e
 	if err != nil {
 		return fmt.Errorf("store: fill placeholder: %w", err)
 	}
-	return nil
+	if tag.RowsAffected() == 0 {
+		return nil
+	}
+	// The update's trigger took the workspace's row; the transaction
+	// rolls back unless the content key is still there.
+	return contentKeyIsTx(ctx, tx, in.DeviceID, in.ContentKeyID, in.ArchiveKey)
 }
 
 // expiresAt computes when the sender intended the message to vanish.

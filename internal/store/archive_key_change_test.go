@@ -3,6 +3,7 @@ package store_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -13,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"whatserver2/internal/crypto/seal"
+	"whatserver2/internal/domain"
 	"whatserver2/internal/migrate"
 	"whatserver2/internal/pg"
 	"whatserver2/internal/pgtest"
@@ -220,6 +222,93 @@ func TestCreateContentKeyForTwoNumbers(t *testing.T) {
 		if err := <-made; err != nil {
 			t.Fatalf("two numbers' content keys at once: %v", err)
 		}
+	}
+}
+
+// TestSealedWritesNameTheirKey: every write of what ingest sealed names
+// the archive key its content key was sealed to, and the store takes it
+// only while that content key is stored under that key (DS49): a message,
+// a placeholder it fills, a reprojection, a chat's name, a contact's name
+// and a picture. After a reset the content key is gone, and after
+// device-key the same id may be another key's. A write that names no key
+// (a tool, a test) is not checked.
+func TestSealedWritesNameTheirKey(t *testing.T) {
+	w := newKeyWorld(t)
+	ctx := context.Background()
+	if err := w.contentKey(ctx, w.pub); err != nil {
+		t.Fatal(err)
+	}
+	other, _, err := seal.GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	messages := store.NewMessages(w.pool)
+	contacts := store.NewContacts(w.pool)
+	const chat = "5511999990000@s.whatsapp.net"
+	n := 0
+	next := func() string { n++; return fmt.Sprintf("W%d", n) }
+	row := func(waID string, typ domain.Type, id uint32, key []byte) (uuid.UUID, error) {
+		in := store.InsertMessage{UID: uuid.New(), TenantID: w.tenant, DeviceID: w.device,
+			WAID: waID, ChatKey: chat, ChatPN: chat, TS: time.Now(), Kind: domain.KindMessage, Type: typ,
+			Source: domain.SourceLive, ContentKeyID: id, ArchiveKey: key}
+		if typ == domain.TypeUnsupported {
+			in.Unsupported = "senderKeyDistributionMessage"
+		} else {
+			in.BodySealed = []byte("sealed")
+		}
+		res, err := messages.Insert(ctx, in)
+		return res.UID, err
+	}
+	for _, c := range []struct {
+		name  string
+		write func(id uint32, key []byte) error
+	}{
+		{"message", func(id uint32, key []byte) error {
+			_, err := row(next(), domain.TypeText, id, key)
+			return err
+		}},
+		{"placeholder filled", func(id uint32, key []byte) error {
+			waID := next()
+			if _, err := row(waID, domain.TypeUnsupported, 0, nil); err != nil {
+				return err
+			}
+			_, err := row(waID, domain.TypeText, id, key)
+			return err
+		}},
+		{"reprojection", func(id uint32, key []byte) error {
+			uid, err := row(next(), domain.TypeUnsupported, 0, nil)
+			if err != nil {
+				return err
+			}
+			return messages.Reproject(ctx, w.tenant, w.device, uid, domain.TypeText, id, key,
+				[]byte("sealed"), nil, []byte("sealed raw"), nil)
+		}},
+		{"chat name", func(id uint32, key []byte) error {
+			return messages.UpsertChatMeta(ctx, store.ChatMeta{TenantID: w.tenant, DeviceID: w.device,
+				ChatKey: next() + "@g.us", IsGroup: true, NameSealed: []byte("sealed"), NameKeyID: id, NameArchiveKey: key})
+		}},
+		{"contact name", func(id uint32, key []byte) error {
+			return contacts.Upsert(ctx, store.ContactName{TenantID: w.tenant, DeviceID: w.device,
+				ContactKey: next() + "@s.whatsapp.net", PushNameSealed: []byte("sealed"), ContentKeyID: id, ArchiveKey: key})
+		}},
+		{"picture", func(id uint32, key []byte) error {
+			return contacts.SetAvatar(ctx, w.tenant, w.device, next()+"@s.whatsapp.net", "pic", []byte("sealed"), id, key)
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if err := c.write(1, w.pub.Bytes()); err != nil {
+				t.Fatalf("content key 1 under its own key: %v", err)
+			}
+			if err := c.write(1, other.Bytes()); !errors.Is(err, store.ErrArchiveKeyChanged) {
+				t.Fatalf("content key 1 named with another archive key: %v, want ErrArchiveKeyChanged", err)
+			}
+			if err := c.write(2, w.pub.Bytes()); !errors.Is(err, store.ErrArchiveKeyChanged) {
+				t.Fatalf("a content key that is not stored: %v, want ErrArchiveKeyChanged", err)
+			}
+			if err := c.write(2, nil); err != nil {
+				t.Fatalf("a write that names no archive key: %v", err)
+			}
+		})
 	}
 }
 

@@ -32,17 +32,28 @@ import (
 // Exposed so workers outside this package — the avatar fetcher, which fetches
 // over plain HTTP and has nothing else to do with ingest — can seal without
 // each of them holding a sealer of its own.
+//
+// It also returns the archive key the value's content key was sealed to,
+// which the row's write names (store.ContactName.ArchiveKey and the like),
+// so the store refuses it when a reset deleted that content key (DS49). A
+// pipeline dropped meanwhile, or sealing to a key the number no longer
+// has, is built again once, as Router.ingest does.
 func (r *Router) SealFor(ctx context.Context, tenant, device, uid uuid.UUID,
-	kind seal.Kind, value []byte) ([]byte, uint32, error) {
-	pipe, err := r.pipelineFor(ctx, tenant, device)
-	if err != nil {
-		return nil, 0, err
+	kind seal.Kind, value []byte) (sealed []byte, keyID uint32, archiveKey []byte, err error) {
+	for try := 0; ; try++ {
+		pipe, err := r.pipelineFor(ctx, tenant, device)
+		if err != nil {
+			return nil, 0, nil, err
+		}
+		out, keyID, err := pipe.sealAll(ctx, uid, map[seal.Kind][]byte{kind: value})
+		if err == nil {
+			return out[kind], keyID, pipe.archiveKey, nil
+		}
+		if try > 0 || !staleKey(err) {
+			return nil, 0, nil, err
+		}
+		r.drop(device, pipe)
 	}
-	sealed, keyID, err := pipe.sealAll(ctx, uid, map[seal.Kind][]byte{kind: value})
-	if err != nil {
-		return nil, 0, err
-	}
-	return sealed[kind], keyID, nil
 }
 
 // recordName stores one contact name, sealed.
@@ -69,7 +80,7 @@ func (r *Router) recordName(ctx context.Context, deviceID string, jid, alt types
 	}
 	contactKey := key.ToNonAD().String()
 
-	sealed, keyID, err := r.SealFor(ctx, info.TenantID, device,
+	sealed, keyID, archiveKey, err := r.SealFor(ctx, info.TenantID, device,
 		store.ContactUID(device, contactKey), which, []byte(name))
 	if err != nil {
 		r.log.Error("could not seal a contact name", "contact", contactKey, "error", err)
@@ -83,6 +94,7 @@ func (r *Router) recordName(ctx context.Context, deviceID string, jid, alt types
 		ContactPN:    jidString(addr.PN),
 		IsGroup:      key.Server == types.GroupServer,
 		ContentKeyID: keyID,
+		ArchiveKey:   archiveKey,
 	}
 	switch which {
 	case seal.KindPushName:
@@ -250,13 +262,13 @@ func (r *Router) ImportContacts(ctx context.Context, deviceID string,
 			if candidate.text == "" {
 				continue
 			}
-			sealed, keyID, err := r.SealFor(ctx, info.TenantID, device, uid, candidate.kind,
+			sealed, keyID, archiveKey, err := r.SealFor(ctx, info.TenantID, device, uid, candidate.kind,
 				[]byte(candidate.text))
 			if err != nil {
 				return imported, err
 			}
 			*candidate.into = sealed
-			in.ContentKeyID = keyID
+			in.ContentKeyID, in.ArchiveKey = keyID, archiveKey
 			any = true
 		}
 		if !any {

@@ -226,11 +226,13 @@ func (w *keyServe) keysOpen(t *testing.T, priv seal.PrivateKey) {
 // notice drops it again, and the next message seals to the new key.
 //
 // Not listening (the notice lost, or a binary without it), a pipeline
-// built with the old key keeps it, and seals under its content key until
-// that is due (lost, the first case, which the notice ends). The check
-// before each content key then refuses a key sealed to the old one and
-// filed at epoch 1 (the third case), and the next message seals to the new
-// key.
+// built with the old key keeps it. Its next write names a content key the
+// reset deleted, and the store refuses it (the first case): before
+// device-key the message is refused, after it the router builds the
+// pipeline again and the message seals to the new key. Once its content
+// key is due, the check before each content key refuses one sealed to the
+// old key and filed at epoch 1 (the third case), and again the message
+// seals to the new key. No content key is left sealed to the old key.
 //
 // A notice sent while the process was not listening is lost, so when it
 // listens again every pipeline goes.
@@ -264,42 +266,40 @@ func TestResetThenDeviceKeyWhileServing(t *testing.T) {
 	})
 
 	t.Run("not listening", func(t *testing.T) {
-		w := newKeyServe(t)
-		if _, err := w.send(); err != nil {
-			t.Fatal(err)
-		}
-		w.reset(t)
-		fresh := w.deviceKey(t)
-		w.due()
-		if _, err := w.send(); !errors.Is(err, store.ErrArchiveKeyChanged) {
-			t.Fatalf("a content key sealed to the old key: %v, want ErrArchiveKeyChanged", err)
-		}
-		for range 3 {
-			m, err := w.send()
-			if err != nil {
-				t.Fatal(err)
-			}
-			w.opens(t, fresh, m)
-		}
-		var ids []int32
-		if err := pg.InTenantTx(context.Background(), w.pool, w.tenant.String(), func(tx pgx.Tx) error {
-			rows, err := tx.Query(context.Background(), `SELECT id FROM content_keys WHERE device_id = $1`, w.device)
-			if err != nil {
-				return err
-			}
-			ids, err = pgx.CollectRows(rows, pgx.RowTo[int32])
-			return err
-		}); err != nil {
-			t.Fatal(err)
-		}
-		for _, id := range ids {
-			blob, err := w.keys.SealedContentKey(context.Background(), w.tenant, w.device, uint32(id))
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, err := seal.OpenContentKey(fresh, w.tenant, w.device, uint32(id), blob); err != nil {
-				t.Fatalf("content key %d is sealed to the old key: %v", id, err)
-			}
+		for _, c := range []struct {
+			name string
+			// between sends a message between the reset and device-key;
+			// due makes the stale pipeline's content key due first.
+			between, due bool
+		}{
+			{"between the reset and device-key", true, false},
+			{"its content key not due", false, false},
+			{"its content key due", false, true},
+		} {
+			t.Run(c.name, func(t *testing.T) {
+				w := newKeyServe(t)
+				if _, err := w.send(); err != nil {
+					t.Fatal(err)
+				}
+				w.reset(t)
+				if c.between {
+					if _, err := w.send(); !errors.Is(err, store.ErrNoArchiveKey) {
+						t.Fatalf("a message between the reset and device-key: %v, want ErrNoArchiveKey", err)
+					}
+				}
+				fresh := w.deviceKey(t)
+				if c.due {
+					w.due()
+				}
+				for range 3 {
+					m, err := w.send()
+					if err != nil {
+						t.Fatal(err)
+					}
+					w.opens(t, fresh, m)
+				}
+				w.keysOpen(t, fresh)
+			})
 		}
 	})
 

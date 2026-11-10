@@ -253,6 +253,42 @@ func currentArchiveKeyIsTx(ctx context.Context, tx pgx.Tx, tenant, device uuid.U
 	return nil
 }
 
+// contentKeyIsTx returns ErrArchiveKeyChanged unless device's content key
+// id is stored, at an epoch whose archive key is archiveKey: the key it
+// was sealed to. Ingest's writes name both (InsertMessage.ArchiveKey and
+// the like), so a value sealed before a reset and written after it, under
+// a content key the reset deleted, is refused rather than stored
+// unreadable. So is one from a pipeline that missed the reset's notice,
+// even once device-key and a new content key took the same id again
+// (DS49). It checks nothing when archiveKey is nil (a tool or a test
+// that names no key) or id is 0 (nothing sealed).
+//
+// The caller holds the workspace's tenants row: nextSeq's update or the
+// write's own trigger (storage_lock) took it, and the read is a statement
+// after that. A reset holds the row from before its deletes to its
+// commit, so it is wholly before this read or wholly after the write.
+func contentKeyIsTx(ctx context.Context, tx pgx.Tx, device uuid.UUID, id uint32, archiveKey []byte) error {
+	if archiveKey == nil || id == 0 {
+		return nil
+	}
+	col, err := toColumnID(id)
+	if err != nil {
+		return err
+	}
+	var stored bool
+	if err := tx.QueryRow(ctx, `
+		SELECT EXISTS (SELECT 1 FROM content_keys c
+		  JOIN device_archive_keys k ON k.device_id = c.device_id AND k.epoch = c.epoch
+		 WHERE c.device_id = $1 AND c.id = $2 AND k.public_key = $3)`,
+		device, col, archiveKey).Scan(&stored); err != nil {
+		return fmt.Errorf("store: read the content key: %w", err)
+	}
+	if !stored {
+		return fmt.Errorf("%w: device %s has no content key %d under that archive key", ErrArchiveKeyChanged, device, id)
+	}
+	return nil
+}
+
 // SealedContentKey returns a stored content key, for a client to unwrap.
 func (k *Keys) SealedContentKey(ctx context.Context, tenant, device uuid.UUID, id uint32) ([]byte, error) {
 	col, err := toColumnID(id)

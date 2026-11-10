@@ -164,7 +164,7 @@ func (r *Router) Reproject(ctx context.Context, tenant, device uuid.UUID,
 		media = mediaRow(env.Type, env.Content.Media, sealed)
 	}
 
-	if err := r.cfg.Messages.Reproject(ctx, tenant, device, uid, env.Type, keyID,
+	if err := r.cfg.Messages.Reproject(ctx, tenant, device, uid, env.Type, keyID, pipe.archiveKey,
 		sealed[seal.KindBody], sealed[seal.KindPayload], sealed[seal.KindRawProto],
 		media); err != nil {
 		return ReprojectResult{}, err

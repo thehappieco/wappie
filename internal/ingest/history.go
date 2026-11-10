@@ -106,11 +106,12 @@ func (r *Router) ingestChunk(ctx context.Context, chunk historyChunk) {
 		r.failed("HistorySync", "bad_device")
 		return
 	}
-	pipe, err := r.pipelineFor(ctx, chunk.info.TenantID, deviceUUID)
-	if err != nil {
-		r.log.Error("cannot ingest history for this device",
-			"tenant", chunk.info.TenantID, "device", chunk.deviceID, "error", err)
-		r.failed("HistorySync", "no_pipeline")
+	// Built here so a number with no pipeline fails the chunk once. Each
+	// message fetches it again (Router.ingest): a notice may drop it in the
+	// middle of a chunk, and the chunk then goes on with the new one
+	// (DS49).
+	if _, err := r.pipelineFor(ctx, chunk.info.TenantID, deviceUUID); err != nil {
+		r.noHistoryPipeline(chunk, err)
 		return
 	}
 
@@ -131,8 +132,12 @@ func (r *Router) ingestChunk(ctx context.Context, chunk historyChunk) {
 	// was posted — which is the class of divergence this pipeline exists to
 	// prevent.
 	if msgs := chunk.data.GetStatusV3Messages(); len(msgs) > 0 {
-		s, d, k, e := r.ingestMessages(ctx, pipe, chunk, statusBroadcast, msgs)
+		s, d, k, e, stop := r.ingestMessages(ctx, chunk, deviceUUID, statusBroadcast, msgs)
 		stored, duplicate, skipped, failed = stored+s, duplicate+d, skipped+k, failed+e
+		if stop != nil {
+			r.noHistoryPipeline(chunk, stop)
+			return
+		}
 	}
 
 	for _, conv := range chunk.data.GetConversations() {
@@ -147,7 +152,7 @@ func (r *Router) ingestChunk(ctx context.Context, chunk historyChunk) {
 			continue
 		}
 
-		r.storeChatMeta(ctx, pipe, chunk, deviceUUID, chat, conv)
+		r.storeChatMeta(ctx, chunk, deviceUUID, chat, conv)
 
 		msgs := make([]*waWeb.WebMessageInfo, 0, len(conv.GetMessages()))
 		for _, hm := range conv.GetMessages() {
@@ -155,8 +160,12 @@ func (r *Router) ingestChunk(ctx context.Context, chunk historyChunk) {
 				msgs = append(msgs, web)
 			}
 		}
-		s, d, k, e := r.ingestMessages(ctx, pipe, chunk, chat, msgs)
+		s, d, k, e, stop := r.ingestMessages(ctx, chunk, deviceUUID, chat, msgs)
 		stored, duplicate, skipped, failed = stored+s, duplicate+d, skipped+k, failed+e
+		if stop != nil {
+			r.noHistoryPipeline(chunk, stop)
+			return
+		}
 	}
 
 	r.log.Info("history sync chunk ingested",
@@ -171,13 +180,24 @@ func (r *Router) ingestChunk(ctx context.Context, chunk historyChunk) {
 	r.handled("HistorySync")
 }
 
+// noHistoryPipeline reports a chunk stopped because the number has no
+// pipeline: notably no archive key, such as after a reset and before
+// device-key.
+func (r *Router) noHistoryPipeline(chunk historyChunk, err error) {
+	r.log.Error("cannot ingest history for this device",
+		"tenant", chunk.info.TenantID, "device", chunk.deviceID, "error", err)
+	r.failed("HistorySync", "no_pipeline")
+}
+
 // statusBroadcast is the pseudo-chat status updates belong to.
 var statusBroadcast = types.JID{User: "status", Server: types.BroadcastServer}
 
-// ingestMessages normalises and stores a run of history messages.
-func (r *Router) ingestMessages(ctx context.Context, pipe *Pipeline, chunk historyChunk,
-	chat types.JID, msgs []*waWeb.WebMessageInfo) (stored, duplicate, skipped, failed int) {
-	for _, web := range msgs {
+// ingestMessages normalises and stores a run of history messages. It
+// stops, with stop set, when the number has no pipeline any more: every
+// later message would fail the same way.
+func (r *Router) ingestMessages(ctx context.Context, chunk historyChunk, device uuid.UUID,
+	chat types.JID, msgs []*waWeb.WebMessageInfo) (stored, duplicate, skipped, failed int, stop error) {
+	for i, web := range msgs {
 		if ctx.Err() != nil {
 			return
 		}
@@ -197,7 +217,10 @@ func (r *Router) ingestMessages(ctx context.Context, pipe *Pipeline, chunk histo
 			continue
 		}
 
-		res, err := pipe.Ingest(ctx, env)
+		res, err := r.ingest(ctx, chunk.info.TenantID, device, env)
+		if none := (noPipelineError{}); errors.As(err, &none) {
+			return stored, duplicate, skipped, failed + len(msgs) - i, err
+		}
 		if err != nil {
 			r.log.Error("could not store a history message",
 				"chat", chat, "message", env.MessageID, "error", err)
@@ -213,7 +236,7 @@ func (r *Router) ingestMessages(ctx context.Context, pipe *Pipeline, chunk histo
 			r.cfg.Metrics.HistoryMessages.Inc()
 		}
 	}
-	return stored, duplicate, skipped, failed
+	return stored, duplicate, skipped, failed, nil
 }
 
 // storeChatMeta records what the sync says about a conversation.
@@ -222,7 +245,7 @@ func (r *Router) ingestMessages(ctx context.Context, pipe *Pipeline, chunk histo
 // — the ugly state v1 was abandoned in — because nothing on the live path
 // carries a name. The history sync does, and it is sealed like any other piece
 // of content: for a direct chat it is a person's name.
-func (r *Router) storeChatMeta(ctx context.Context, pipe *Pipeline, chunk historyChunk,
+func (r *Router) storeChatMeta(ctx context.Context, chunk historyChunk,
 	device uuid.UUID, chat types.JID, conv *waHistorySync.Conversation) {
 	addr := domain.AddressOf(chat)
 	meta := store.ChatMeta{
@@ -235,14 +258,15 @@ func (r *Router) storeChatMeta(ctx context.Context, pipe *Pipeline, chunk histor
 	}
 
 	if name := conv.GetName(); name != "" {
-		sealed, keyID, err := pipe.SealChatName(ctx, store.ChatUID(device, chat.String()), name)
+		sealed, keyID, archiveKey, err := r.SealFor(ctx, chunk.info.TenantID, device,
+			store.ChatUID(device, chat.String()), seal.KindContactName, []byte(name))
 		if err != nil {
 			// The messages matter more than the label. Losing the whole
 			// conversation because its name could not be sealed would be the
 			// wrong trade.
 			r.log.Error("could not seal a chat name", "chat", chat, "error", err)
 		} else {
-			meta.NameSealed, meta.NameKeyID = sealed, keyID
+			meta.NameSealed, meta.NameKeyID, meta.NameArchiveKey = sealed, keyID, archiveKey
 		}
 	}
 	if v := conv.GetEphemeralExpiration(); v > 0 {
@@ -355,14 +379,4 @@ func carriesMessages(t waHistorySync.HistorySync_HistorySyncType) bool {
 	default:
 		return false
 	}
-}
-
-// SealChatName seals a conversation's display name.
-func (p *Pipeline) SealChatName(ctx context.Context, chatUID uuid.UUID, name string) ([]byte, uint32, error) {
-	sealed, keyID, err := p.sealAll(ctx, chatUID,
-		map[seal.Kind][]byte{seal.KindContactName: []byte(name)})
-	if err != nil {
-		return nil, 0, fmt.Errorf("ingest: seal chat name: %w", err)
-	}
-	return sealed[seal.KindContactName], keyID, nil
 }

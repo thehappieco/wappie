@@ -61,7 +61,7 @@ func (r *Router) recordGroup(ctx context.Context, tenant, device uuid.UUID,
 		IsGroup: true,
 	}
 	if name.Name != "" {
-		sealed, keyID, err := r.SealFor(ctx, tenant, device,
+		sealed, keyID, archiveKey, err := r.SealFor(ctx, tenant, device,
 			store.ChatUID(device, chat.String()), seal.KindContactName, []byte(name.Name))
 		if err != nil {
 			// The conversation matters more than its label. Refusing to record
@@ -69,7 +69,7 @@ func (r *Router) recordGroup(ctx context.Context, tenant, device uuid.UUID,
 			// sidebar exactly as empty as before.
 			r.log.Error("could not seal a group name", "chat", chat, "error", err)
 		} else {
-			meta.NameSealed, meta.NameKeyID = sealed, keyID
+			meta.NameSealed, meta.NameKeyID, meta.NameArchiveKey = sealed, keyID, archiveKey
 		}
 	}
 	if participants > 0 {

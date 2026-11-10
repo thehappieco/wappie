@@ -361,7 +361,7 @@ func seedContacts(ctx context.Context, s *seal.Sealer, contacts *store.Contacts,
 			return err
 		}
 		if err := contacts.SetAvatar(ctx, tenant, device, p.key, "demo",
-			sealedPic[seal.KindAvatar], keyID); err != nil {
+			sealedPic[seal.KindAvatar], keyID, nil); err != nil {
 			return err
 		}
 	}
