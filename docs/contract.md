@@ -982,10 +982,16 @@ missing snapshot as unknown protection.
   the measurement or unlisted by a reset's pass is left out; one Wappie
   stops on its own (an operator's stop, `apply_failed`, `local_rule`,
   `creator_disabled_here`) is listed, as the acknowledgement reports it
-  suspended. An item no token holds, and a deleted one, has `[]`. A token
-  is never a person: never in `people`, `protected` or `other_backups`.
-  About 105 bytes a token: 100 tokens on each of about 97 numbers fill the
-  1 MiB.
+  suspended. The belt's stop writes no token row, so no trigger tells the
+  sender: a creator who leaves the workspace changes its members, which
+  makes the snapshot due at once, but a creator's disable or recovery
+  shows when the platform's own revocation of the token arrives (it
+  revokes such tokens itself, platform decision 0053), or at the next
+  snapshot for any other reason, an hour at most. Token auth refuses the
+  token at once either way. An item no token holds, and a deleted one,
+  has `[]`. A token is never a person: never in `people`, `protected` or
+  `other_backups`. About 105 bytes a token: 100 tokens on each of about
+  97 numbers fill the 1 MiB.
 - **Limits.** At most 1000 items, 5000 people on an item, 1000 tokens on
   an item and a 1 MiB body, and the kit's validation (labels and hints as
   the platform's strict intake checks them). A snapshot past them is not sent
@@ -1016,7 +1022,7 @@ snapshot shows (a number's state, label, identity or deletion, a
 permission, a grant, a membership, a person's status, a new platform link,
 the workspace's status or storage stop: 0051's triggers notify the leader
 at each commit; with 0053, a number's ordinal, a token's perms and its
-narrowings); at once after a document that changes the workspace's
+narrowings, but not the belt's stop, above); at once after a document that changes the workspace's
 members or names it first, and, every workspace's, when the token mode
 switches; 2 seconds after the earliest expiry of a token the last
 accepted one lists, since an expiry writes nothing (set in the same write
