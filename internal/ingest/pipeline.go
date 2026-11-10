@@ -178,9 +178,9 @@ type Config struct {
 	// content key a reset deleted (DS49). Optional.
 	ArchiveKey seal.PublicKey
 	Messages   *store.Messages
-	Bus      Publisher
-	Media    MediaQueue
-	Metrics  *obs.Metrics
+	Bus        Publisher
+	Media      MediaQueue
+	Metrics    *obs.Metrics
 	// Phones resolves a group participant's LID to the number behind it, so a
 	// sender can be matched against a contact list keyed by phone number.
 	// Optional: without it, LID-only senders stay LID-only.

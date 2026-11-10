@@ -198,8 +198,11 @@ var statusBroadcast = types.JID{User: "status", Server: types.BroadcastServer}
 func (r *Router) ingestMessages(ctx context.Context, chunk historyChunk, device uuid.UUID,
 	chat types.JID, msgs []*waWeb.WebMessageInfo) (stored, duplicate, skipped, failed int, stop error) {
 	for i, web := range msgs {
-		if ctx.Err() != nil {
-			return
+		// A process stopping is no failure of the number: stop is nil.
+		select {
+		case <-ctx.Done():
+			return stored, duplicate, skipped, failed, nil
+		default:
 		}
 		env, err := normalize.FromHistory(chat, web, normalize.Options{
 			TenantID: chunk.info.TenantID.String(),

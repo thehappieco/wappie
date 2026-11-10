@@ -435,19 +435,29 @@ func TestHistoryChunkAcrossReset(t *testing.T) {
 			ctx := context.Background()
 			var fresh seal.PrivateKey
 			bus := &resetBus{}
+			// On the history worker's goroutine: t.Error, never t.Fatal.
 			bus.do = func() {
 				if _, err := store.ResetArchive(ctx, w.pool, w.tenant, true); err != nil {
 					t.Error(err)
 					return
 				}
-				fresh = w.deviceKey(t)
+				pub, priv, err := seal.GenerateKeyPair()
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				if err := w.keys.CreateArchiveKey(ctx, w.tenant, w.device, 1, pub); err != nil {
+					t.Error(err)
+					return
+				}
+				fresh = priv
 				if heard {
 					w.router.ForgetWorkspace(w.tenant)
 				}
 			}
 			r, err := ingest.NewRouter(ingest.RouterConfig{
-				Lookup:   func(string) (ingest.DeviceInfo, bool) { return ingest.DeviceInfo{TenantID: w.tenant}, true },
-				Keys:     w.keys, KeyStore: w.keys,
+				Lookup: func(string) (ingest.DeviceInfo, bool) { return ingest.DeviceInfo{TenantID: w.tenant}, true },
+				Keys:   w.keys, KeyStore: w.keys,
 				Messages: store.NewMessages(w.pool), Bus: bus,
 				Log: slog.New(slog.DiscardHandler),
 			})
