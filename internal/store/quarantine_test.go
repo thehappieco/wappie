@@ -802,6 +802,11 @@ func TestQuarantineScopeHasOneDoor(t *testing.T) {
 		// until its purge as the snapshot does, and the person's document,
 		// whose deletion notices find their number (step 12a).
 		"Contract.NumbersOf": true, "Contract.PersonOf": true,
+		// The console's flags acts (step 12b's F1, DS21): a drop and a
+		// remove run on a deleted number of the workspace. The number's
+		// read, and on a deleted one the permission write, which 0036's
+		// ownership trigger checks against devices.
+		"flagsNumberTx": true, "writeFlagsTx": true,
 	}
 	const guc = "app.device_quarantine"
 	var found []string

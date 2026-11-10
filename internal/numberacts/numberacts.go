@@ -1,8 +1,9 @@
 // Package numberacts runs a number's acts for the platform console's
 // commands now (step 12a's commands release; the spec's 14.7), and for
 // Wappie's own socket frames later, as internal/relink does for a relink:
-// rename, stop and resume its capture, connect it now, and delete a
-// registration that never linked.
+// rename, stop and resume its capture, connect it now, delete a
+// registration that never linked, and change a person's flags on it
+// (flags.go, step 12b).
 //
 // Each act's checks and writes are one store transaction
 // (store/contract_command_acts.go): the number before the role, both roles,
@@ -38,11 +39,14 @@ type Registry interface {
 }
 
 // Sockets is what the runners ask of the process's socket server
-// (*wsapi.Server, its console_hooks.go).
+// (*wsapi.Server, its console_hooks.go and access.go).
 type Sockets interface {
 	CancelPairing(tenant, device string)
 	PushNotices(tenant string, raised []store.RaisedNotice)
 	BroadcastDeviceStatus(tenant, device, status, reason string)
+	// RevalidateAccess wakes the sessions open on this process to check
+	// their access again, after a flags act changed it.
+	RevalidateAccess()
 }
 
 // Run is one command a runner runs: its ledger row, the workspace, the
