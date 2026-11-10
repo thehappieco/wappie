@@ -402,7 +402,8 @@ func TestGrantsAreListedPerAccount(t *testing.T) {
 	if mineReply.Grants[0].SealedDSK == "" {
 		t.Error("the grant came back without the sealed key, so nothing could open")
 	}
-	// It names its key, which a grant.add of it echoes (DS49).
+	// It names the number's key, which a client compares with the key it
+	// opened before a grant.add (DS49).
 	device := uuid.MustParse(mineReply.Grants[0].DeviceID)
 	if want := grantFingerprint(t, h.keys, h.tenant, device, 1); mineReply.Grants[0].Fingerprint != want {
 		t.Errorf("the grant names the key %q, want %q", mineReply.Grants[0].Fingerprint, want)

@@ -2717,32 +2717,81 @@ core.
 
 The clients that send `grant.add`, changed with it: wappie-cloud's web
 (the permissions screen's `grantAccess`, the consent's `mcpSetup`, and
-the session's lender `createDeviceGrantLender`, which computes each
-key's fingerprint and refuses a stale grant) and `packages/cli`
-(`wsctl grant`). The Go `wsctl` only pairs, and the enclave reader only
+the session's lender `createDeviceGrantLender`) and `packages/cli`
+(`wsctl grant`). Each computes the fingerprint of the key it opened.
+Only the session's lender also refuses a grant whose key is not the
+listed one. The Go `wsctl` only pairs, and the enclave reader only
 reads grants.
 
 **The reader's measured client stays release A's** (the platform's
 W46, option A). The attested reader's image measures `packages/client`'s
-build (`scripts/check-client-dist.sh`, CI's "The reader's measured
-client is release A's"), and `packages/mcp` and `packages/mcp-http`
-whole (deploy/enclave/Dockerfile). This change moves none of them. In
-`packages/client` only declarations change: `GrantRequest.fingerprint`
+build, and `packages/mcp` and `packages/mcp-http` whole, with the
+attachment workers, nsm-attest and media-jail
+(deploy/enclave/Dockerfile). This change moves none of them. Two CI
+checks hold this:
+
+- `scripts/check-client-dist.sh` (CI's "The reader's measured client is
+  release A's") finds the client's measured files equal to c9ec561's,
+  release A's merge.
+- `scripts/check-reader-inputs.sh`, added here, finds the rest equal to
+  f7babbe's, main when it began. Before it nothing checked them:
+  711465a moved a measured file unnoticed.
+
+Neither baseline is the image the pilot runs. Reader 0.6.0's
+measurements name 2b540ba, whose client differs from c9ec561's
+(README.md, and dist/api/auth.js, client.js and protocol.js). Main has
+since moved packages/mcp-http/enclave/main.mjs (711465a) and
+deploy/enclave/build.sh (91fab1d) too. So "the measured client does not
+move" means equal to c9ec561's, the CI gate. The next reader release
+moves PCR0 for those older changes in any case.
+
+In `packages/client` only declarations change: `GrantRequest.fingerprint`
 and the grants' `fingerprint` in `ArchiveGrants`. So each client that
 sends `grant.add` computes the fingerprint with its own small code: the
-web's lender (the key's X25519 public half, then WebCrypto's SHA-256),
-and `wsctl` with Node's crypto (`archiveKeyFingerprint` in
-packages/cli/lib.mjs). Both are checked against the server's vectors,
+web (`web/src/crypto/archiveKeyFingerprint.ts`: the key's X25519 public
+half, then WebCrypto's SHA-256), and `wsctl` with Node's crypto
+(`archiveKeyFingerprint` in packages/cli/lib.mjs). Both are checked
+against the server's vectors,
 `internal/store/testdata/archive-key-fingerprints.json`, which
 `TestArchiveKeyFingerprint` reads too: wsctl's tests read it in the
 repository, and the web's tests read it from the core checkout the
-cloud's CI pins. So the paths cannot drift. A grant from `wsctl` whose
-key a reset replaced is refused by the server (`conflict`): wsctl does
-not see the listed fingerprint. The client's own version, where
-`withDeviceKey` and `withDeviceKeys` compute the fingerprint, pass it
-to `use` and refuse a stale grant with `no_grant`
-(`seal.archiveKeyFingerprint`), waits for reader 0.6.1 on the branch
-`codex/reader-061`, which also moves `wsctl` back to it.
+cloud's CI pins. So the paths cannot drift.
+
+What is missing until reader 0.6.1:
+
+- The web's password path (`grantAccess` with a password, `mcpSetup`'s
+  default lend) and `wsctl grant` compute the fingerprint but do not
+  compare it with the listed one. A grant from a key a reset replaced
+  reaches the server, which refuses it (`conflict`). Only the session's
+  lender refuses it first, with `no_grant`.
+- The local MCP reader with a password session
+  (`packages/mcp/reader.mjs`, through release A's `withDeviceKey`) opens
+  an old grant's key without comparing it. It sends no grant, so nothing
+  is recorded, but its reads fail as locked, not as a stale grant.
+- Release A's public client declares `GrantRequest.fingerprint` but
+  offers no helper to compute it. A third-party client could echo the
+  listed fingerprint. The server then takes a grant sealed with an old
+  key at a reused epoch, since it is listed with the new key's
+  fingerprint. The clients named above are the only ones known to send
+  `grant.add`.
+
+Reader 0.6.1 is the branch `codex/reader-061`. It is on the build
+machine only, not pushed. It holds two commits: c2fc4b9, this change's
+client part (`withDeviceKey` and `withDeviceKeys` compute the
+fingerprint, pass it to `use` and refuse a stale grant with `no_grant`;
+`seal.archiveKeyFingerprint`; `wsctl` back to it), and 09b1754, DS50's.
+They are stacked on `codex/contact-names-keys`, since their tests need
+its vectors files and fields. That branch is merged into it again when
+it changes. The release moves both checks' baselines, `READER_VERSION`
+and the docs.
+
+On its own, this change leaves one gap in the import. `ImportContacts`
+seals a contact's names one call each, so a pipeline built again between
+two names, after `device-key`, leaves the first under an archive key the
+write does not name, and the check at the write misses it. Contact
+names (DS50, `codex/contact-names-keys`) closes it by sealing a
+contact's names in one call. So the two ship together. If DS50 slips
+from the release, the release notes say this gap stays.
 
 Step 7's `token.grant` uses this file once step 7 merges main: its own
 `internal/store/archive_fingerprint.go` goes, and its `archiveKeyIsTx`
@@ -2761,8 +2810,9 @@ Not here: (c), never reusing an epoch number, needs a migration.
 Nothing finds or removes a grant recorded before this change with an
 old key at a reused epoch. One needs a `grant.add` sent between a reset
 with `-keep-devices`, `device-key` and the client's next read of its
-grants. The web now refuses to grant from one, and the server refuses
-any client's (`conflict`), but it still counts as Read. The listening
+grants. The web's session lender refuses to grant from one, and the
+server refuses any client's (`conflict`) unless the client echoes the
+listed fingerprint (above), but it still counts as Read. The listening
 connection can hang half open until TCP notices; the checks above hold
 meanwhile, as for deletions.
 

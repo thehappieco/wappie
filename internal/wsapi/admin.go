@@ -396,7 +396,7 @@ func (s *session) handleGrantAdd(ctx context.Context, f Frame) {
 	if !store.ValidArchiveKeyFingerprint(req.Fingerprint) {
 		// A client from before DS49 sends none.
 		s.replyError(f.ReqID, ErrCodeBadRequest,
-			"a grant names the fingerprint of the archive key it seals, as the grant you opened gave it")
+			"a grant names the fingerprint of the archive key it seals: the SHA-256 of the key it opened, never the listed one")
 		return
 	}
 
