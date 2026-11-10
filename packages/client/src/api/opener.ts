@@ -258,21 +258,37 @@ export class Opener {
    * someone calls themselves, what this account saved them as, and what
    * WhatsApp verified about a business — and which to show is the client's
    * decision, not the server's.
+   *
+   * Each opens with its own content key. The names are written one at a time,
+   * so they need not share the row's content_key_id, which names the key of
+   * the names written last. A server that predates the per-name ids sends
+   * only that one (DS50).
    */
   async contactNames(contact: P.ContactSummary): Promise<{
     full: Opened<string>
     business: Opened<string>
     push: Opened<string>
   }> {
+    const row = contact.content_key_id
     const [full, business, push] = await Promise.all([
-      this.text(contact.content_key_id, contact.uid, Kind.FullName, contact.full_name_sealed),
       this.text(
-        contact.content_key_id,
+        contact.full_name_key_id || row,
+        contact.uid,
+        Kind.FullName,
+        contact.full_name_sealed,
+      ),
+      this.text(
+        contact.business_name_key_id || row,
         contact.uid,
         Kind.BusinessName,
         contact.business_name_sealed,
       ),
-      this.text(contact.content_key_id, contact.uid, Kind.PushName, contact.push_name_sealed),
+      this.text(
+        contact.push_name_key_id || row,
+        contact.uid,
+        Kind.PushName,
+        contact.push_name_sealed,
+      ),
     ])
     return { full, business, push }
   }

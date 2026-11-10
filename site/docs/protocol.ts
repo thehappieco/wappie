@@ -657,10 +657,19 @@ export interface ContactSummary {
   contact_lid?: string
   contact_pn?: string
   is_group?: boolean
+  /**
+   * The content key of the names written last. The names are written one at
+   * a time, so they need not share it: each name's own key is in its
+   * `*_name_key_id`, and a reader opens each name with that one. A server
+   * that predates those sends only this (DS50).
+   */
   content_key_id?: number
   push_name_sealed?: string
   full_name_sealed?: string
   business_name_sealed?: string
+  push_name_key_id?: number
+  full_name_key_id?: number
+  business_name_key_id?: number
   has_avatar?: boolean
   avatar_id?: string
   avatar_key_id?: number

@@ -89,7 +89,7 @@ it('opens a Go-generated ciphertext over REST after a workspace move', async () 
 })
 
 it('reads bounded encrypted contact pages without starting contact discovery', async () => {
- const contacts = [{uid,contact_key:'100@lid',content_key_id:1,full_name_sealed:'c2VhbGVk'}]
+ const contacts = [{uid,contact_key:'100@lid',content_key_id:2,full_name_sealed:'c2VhbGVk',full_name_key_id:1}]
  const fetcher=vi.fn<typeof fetch>(async()=>json({device_id:device,contacts,has_more:true,next_key:'100@lid'}))
  await expect(client(fetcher).listContacts(device,{limit:2,afterKey:'099@lid'})).resolves.toMatchObject({contacts,next_key:'100@lid'})
  const url=new URL(String(fetcher.mock.calls[0][0]))
@@ -97,6 +97,7 @@ it('reads bounded encrypted contact pages without starting contact discovery', a
  expect(url.searchParams.get('after_key')).toBe('099@lid')
  await expect(client(vi.fn(async()=>json({device_id:uid,contacts:[],has_more:false}))).listContacts(device)).rejects.toMatchObject({code:'device_mismatch'})
  await expect(client(vi.fn(async()=>json({device_id:device,contacts:[{uid,contact_key:'x',content_key_id:-1}],has_more:false}))).listContacts(device)).rejects.toMatchObject({code:'invalid_response'})
+ for (const key of ['push_name_key_id','full_name_key_id','business_name_key_id']) await expect(client(vi.fn(async()=>json({device_id:device,contacts:[{uid,contact_key:'x',[key]:0}],has_more:false}))).listContacts(device)).rejects.toMatchObject({code:'invalid_response'})
  await expect(client(vi.fn(async()=>json({device_id:device,contacts,has_more:true,next_key:'099@lid'}))).listContacts(device,{afterKey:'099@lid'})).rejects.toMatchObject({code:'invalid_response'})
 })
 const scanFrom='2026-09-17T00:00:00.000000001Z',scanUntil='2026-09-18T00:00:00Z'

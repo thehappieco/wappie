@@ -130,6 +130,30 @@ describe('a chat and a contact', () => {
     )
   })
 
+  it('opens each contact name with its own content key', async () => {
+    // The names are written one at a time, so the row's content_key_id can
+    // name a later key than a name was sealed under (DS50). Here it names a
+    // key nobody has, and every name still opens with its own.
+    const id = frames.content_key.id
+    const names = await opener.contactNames({
+      ...frames.contact,
+      content_key_id: id + 1000,
+      push_name_key_id: id,
+      full_name_key_id: id,
+      business_name_key_id: id,
+    })
+    expect(names.push.state === 'ok' && names.push.value).toBe(frames.contact_names.push)
+    expect(names.full.state === 'ok' && names.full.value).toBe(frames.contact_names.full)
+    expect(names.business.state === 'ok' && names.business.value).toBe(
+      frames.contact_names.business,
+    )
+  })
+
+  it('opens a contact name with the row key when the server sends none of its own', async () => {
+    const names = await opener.contactNames({ ...frames.contact, full_name_key_id: undefined })
+    expect(names.full.state === 'ok' && names.full.value).toBe(frames.contact_names.full)
+  })
+
   it('opens a profile picture against the contact uid', async () => {
     const opened = await opener.avatar(frames.avatar)
     expect(opened.state).toBe('ok')
