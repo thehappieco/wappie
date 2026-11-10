@@ -19,7 +19,7 @@ row.
 |---|---|---|---|---|
 | `deleted` | `item.deleted` | the owner's sub, `person` | who read the number just before | `purge_at`: its `purge_after` |
 | `recovered` | `item.recovered` | the owner's sub, `person` | who reads it after the recovery | |
-| `sync_paused` | `item.sync_paused` | the person's sub, `person` (an owner or an admin, or a personal workspace's person: [who pauses](devices.md#who-pauses-and-resumes)); or an API key's creator's, `key` | the readers when it was paused, and those of every pause folded into it (below) | |
+| `sync_paused` | `item.sync_paused` | the person's sub, `person` (an owner or an admin, or a personal workspace's person: [who pauses](devices.md#who-pauses-and-resumes)); or an API key's creator's, `key` | the readers when it was paused, and those of every pause folded into it (below) | `stop`: `pause`, only while the token mode is on (below) |
 | `purged` | `item.purged` | null, `app` | `[]` | |
 | `moved_out` | `item.moved_out` | the mover's sub, `person` | the team's readers before the move: at most the mover | `to`: `personal` |
 | `stranded` | `item.stranded` | the owner's sub, `person` | who read it just before the change, the person stranded among them | `person`: the stranded person's sub (omitted when they have none); `cause`: `revoked` (a removal) or `disabled` (a disable) |
@@ -67,6 +67,15 @@ byte for byte the renderer's golden file
   platform sub; it is sent with actor null" once per event and leader, and
   the class `event_actor_unknown`. A key with no creator, and a replayed row
   whose local account is gone, go as `actor: null` with no ERROR.
+- **`stop`** goes on every `item.sync_paused` while the token mode is on
+  (`whatserverd contract tokens on`), and never while it is off: the
+  platform decodes strictly, and tokens on says its side takes it. It is
+  always `pause`: every pause stops one number's capture, a person's, a
+  key's or a token's; Wappie never sends `turn_off`. Events render at send
+  time, so a row queued before tokens on goes with it, and one queued
+  while on goes without it once off. The golden file
+  `internal/membership/testdata/events/sync_paused-tokens.json` is the
+  pause with tokens on.
 - **`cause`** is set for a stranding by a local act (`revoked` from a
   removal, `disabled` from a disable). A stranding the platform causes
   (enforce, a membership it ended) has none, and the platform fills it from

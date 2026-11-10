@@ -124,6 +124,10 @@ type ContractEvent struct {
 	Replayed  bool
 	// Folded counts the rows folded into it.
 	Folded int
+	// TokenMode: the token mode was on when the batch was read. A pause
+	// then goes with what the gate adds, its stop (step 7's plan, 6.3),
+	// whenever the row was written.
+	TokenMode bool
 }
 
 // ActorUnknown reports a person, or a key whose creator is known, with no
@@ -256,10 +260,30 @@ func (c *Contract) EventBatch(ctx context.Context, workspace uuid.UUID, limit in
 			if err := writeFoldsTx(ctx, tx, workspace, rows); err != nil {
 				return err
 			}
-			return replayedLabelsTx(ctx, tx, out.Events)
+			if err := replayedLabelsTx(ctx, tx, out.Events); err != nil {
+				return err
+			}
+			return tokenModeTx(ctx, tx, out.Events)
 		})
 	})
 	return out, err
+}
+
+// tokenModeTx marks events with the token mode as tx reads it: events
+// render at send time, so a row queued before tokens on goes with what
+// the gate adds, and one queued while on goes without it once off.
+func tokenModeTx(ctx context.Context, tx pgx.Tx, events []ContractEvent) error {
+	if len(events) == 0 {
+		return nil
+	}
+	var on bool
+	if err := tx.QueryRow(ctx, `SELECT coalesce((SELECT mode = 'on' FROM contract_token_state), false)`).Scan(&on); err != nil {
+		return err
+	}
+	for i := range events {
+		events[i].TokenMode = on
+	}
+	return nil
 }
 
 // owedEventsTx locks and reads every owed row of the workspace of tx, in
