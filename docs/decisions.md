@@ -2773,3 +2773,104 @@ and `mcpContent` tests check each `grant.add` names the key's
 fingerprint, and `deviceGrants` that a stale grant is refused.
 `packages/client`'s check the same, the Go vectors, and
 `packages/cli`'s that it is passed on.
+
+**DS50. A contact's names each name their own content key** (from the
+review of DS49; the platform: names that become unreadable are a defect,
+to fix in (b)'s release if it is ready).
+
+The finding. A contact has three sealed names (push, full, business) and
+one `content_key_id`. Each name arrives on its own (`recordName`: a push
+name, an address book name, a business name, a bootstrap's PUSH_NAME
+chunk) and is sealed under the content key current then. The upsert set
+`content_key_id` to the key of the name it wrote and kept the other
+names as they were. A content key is replaced after 1000 seals or 15
+minutes (kit `seal/sealer.go`), so a name written earlier under the key
+before no longer opened with the row's id: every reader got "envelope
+requires content key N, this key is M". `ImportContacts` sealed each name
+of a contact in its own call, so a key replaced between two of them did
+the same within one write.
+
+Why not reseal the other names in the same write. The server cannot read
+them: it never holds the archive private key, and it drops each content
+key from memory when it takes the next. whatsmeow's own cache holds the
+names in plain text, but not every name the archive holds (a relink
+starts it empty), so a reseal from it would still leave some rows mixed,
+or drop names. Why no migration: none is needed, and 0053 and 0054 are
+taken. Every sealed value already names its content key in the clear,
+after its header (`header ‖ u32be id ‖ nonce ‖ ciphertext`;
+`seal.ContentKeyID`). Only that key opens it: `ContentKey.Open` checks
+the id before it decrypts.
+
+What changes:
+
+- The store reads each name's key from its envelope
+  (`store.nameKeyID`): `ContactRow.PushNameKeyID`, `FullNameKeyID` and
+  `BusinessNameKeyID`. A name whose envelope gives none (not a batch
+  envelope, or an id out of range) gets the row's id, as before.
+  `content_key_id` stays the key of the names written last. The write
+  does not change.
+- `contacts.list`, `contacts.resolve` and `GET /v1/devices/{id}/contacts`
+  gain `push_name_key_id`, `full_name_key_id` and `business_name_key_id`.
+  This only adds fields.
+- Readers open each name with its own id, and fall back to
+  `content_key_id` when the server sends none: `packages/client`'s
+  `Opener.contactNames` (the web, the local MCP reader and the attested
+  reader all open names there) and `wsctl`.
+- `ImportContacts` seals all of a contact's names in one call
+  (`Router.sealValues`), so they share the row's content key. This also
+  closes a gap in DS49: a pipeline built again between two names, after
+  `device-key`, left the first under an archive key the write did not
+  name, and the check at the write missed it.
+
+Every other place was checked. One key id covers several sealed values
+only where they are written together:
+
+- `messages.content_key_id` covers the body, the payload and the raw
+  protobuf. An insert, a filled placeholder (`fillStub`) and a
+  reprojection each write all three and the id in one statement.
+- `media.content_key_id` covers the media key, the thumbnail and the file
+  name, all sealed in the message's call and written in the message's
+  transaction under its key. Readers open them with the message's id.
+  A reprojection inserts media `ON CONFLICT DO NOTHING`, which would keep
+  an older row under an older key, but an unsupported message never has
+  one: normalize sets media only on a classified type.
+- `chats.name_key_id` and `contacts.avatar_key_id` each cover one value,
+  written with it.
+- `ai_derived` and `mcp_outbound` are sealed straight to the archive key,
+  one value a row.
+
+The readers. Before this, every reader took one id per contact: the web
+and the MCP readers through `Opener.contactNames`, `wsctl` itself. A
+reader that predates the new fields still does, and shows the older names
+as locked (not tampered). The web gets the fix with the core its cloud
+pins. The attested reader gets it at its next release, which this change
+does not make.
+
+Rows already damaged. The names are intact; only the row's id was wrong.
+Since 0009, nothing deletes a content key short of a reset or a number's
+purge, and both delete the contacts with it. So every older name's key is still
+stored, sealed to the number's archive key, and a reader with that key
+opens it with the id its envelope names. No repair write is needed, and
+none is made. A reader that predates the new fields still cannot open
+them. For those, each start of `wappie-api` runs `ImportContacts`, which
+reseals every name whatsmeow holds for a contact under one key; a name
+only the archive holds stays mixed. A name sealed before DS49 by a stale
+pipeline, under a content key a reset deleted, cannot be opened by
+anyone. That is DS49's case, not this one.
+
+For later: a contact name's key is named only in its envelope and in the
+ids read from it, not in a column. Anything that ever prunes content keys
+must read the names' envelopes, not only the key id columns.
+
+Tests: `TestContactNamesUnderTwoContentKeys` (store: three names under
+three keys, read through `List`, `Some` and `Page`, each opens with its
+own id), `TestContactNamesAcrossContentKeys` (ingest: an address book
+event, a business name event and a PUSH_NAME chunk through the history
+worker, the content key replaced between them) and
+`TestImportedNamesShareOneContentKey` (ingest: a clock that makes every
+seal take a new key; the imported names share the row's id).
+`TestRESTContactsPageIsSealedAndComplete` (restapi) checks the wire's
+ids. `packages/client`'s `frames.spec.ts` opens each name with its own id
+while the row's names a key nobody has, and with the row's when the
+server sends none; `rest.spec.ts` checks the new ids' shape. Each was
+checked to fail with its change removed.
