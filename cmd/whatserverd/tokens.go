@@ -100,6 +100,24 @@ func tokensCommand(args []string, stdin io.Reader, out io.Writer) error {
 			return usageError{arg: "tokens " + strings.Join(args, " ")}
 		}
 		run = func(ctx context.Context, a *app) error { return listTokenStops(ctx, store.NewTokens(a.pools.API), out) }
+	case "retire-keys":
+		fs := flag.NewFlagSet("tokens retire-keys", flag.ContinueOnError)
+		fs.SetOutput(tokensFlagOutput)
+		dry := fs.Bool("dry-run", false, "print every live key and standing service account, and what the retirement would do; write nothing")
+		apply := fs.Bool("apply", false, "revoke the keys and remove the service accounts the dry run lists")
+		confirm := fs.Int("confirm", -1, "with -apply: the dry run's count of keys to revoke")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		switch {
+		case fs.NArg() != 0 || *dry == *apply:
+			return errors.New("tokens retire-keys: give -dry-run, or -apply -confirm N")
+		case *apply && *confirm < 0:
+			return errors.New("tokens retire-keys: -apply needs -confirm N, the dry run's count of keys to revoke")
+		case *dry && *confirm >= 0:
+			return errors.New("tokens retire-keys: -confirm goes with -apply")
+		}
+		run = func(ctx context.Context, a *app) error { return retireKeys(ctx, a, *apply, *confirm, out) }
 	default:
 		return usageError{arg: "tokens " + strings.Join(args, " ")}
 	}

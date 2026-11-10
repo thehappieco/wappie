@@ -163,3 +163,31 @@ func TestASetupKeyWorksOnlyThroughItsConnectionOnTheSocket(t *testing.T) {
 		t.Fatalf("a bound one: %s %s", f.Type, f.Payload)
 	}
 }
+
+// TestARevokedKeysSocketClosesWithinASecond (step 7's plan, 7.2 and 10.7):
+// tokens retire-keys runs in a process of its own, which holds no socket,
+// so it closes none itself; a socket of a key it revoked closes at the
+// server's next one-second check (ConnectionKey), as the store's write
+// alone reaches it here.
+func TestARevokedKeysSocketClosesWithinASecond(t *testing.T) {
+	c := newConsole(t)
+	ctx := context.Background()
+	conn := dial(t, c.srv)
+	send(t, conn, wsapi.TypeHello, wsapi.Hello{APIKey: c.apiKey, Version: wsapi.Version})
+	if f := read(t, conn); f.Type != wsapi.TypeWelcome {
+		t.Fatalf("hello: %s %s", f.Type, f.Payload)
+	}
+	for _, sql := range []string{
+		`UPDATE contract_state SET mode = 'observe', events_from = coalesce(events_from, clock_timestamp()), events_paused_at = NULL`,
+		`UPDATE contract_token_state SET mode = 'on'`,
+	} {
+		if _, err := c.pool.Exec(ctx, sql); err != nil {
+			t.Fatal(err)
+		}
+	}
+	done, err := store.NewAPIKeys(c.pool).Retire(ctx, 1, "root")
+	if err != nil || done.Revoke != 1 {
+		t.Fatalf("the retirement: %+v %v", done, err)
+	}
+	expectAccessClosed(t, conn)
+}
