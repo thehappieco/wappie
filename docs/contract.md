@@ -941,17 +941,24 @@ keeps send or manage while Read was already gone (a raise, a drop of the
 other) ends nothing, on the screen as in the acts, and nor does a
 refusal (`last_reader`, an admin on an owner). A connection already live
 whose person has no Read on a number it holds (given before 0061, or
-left by a lost Read before F3) is not swept: it ends when their access
-there is removed (a remove, or their last flag going), on the number's
-deletion or move, on a revoke or at its expiry (DS47). Every consent,
-metadata included, and every renewal must name only numbers its person
-reads at that moment (the flag and a grant at the current epoch): one
-prepared before their Read went and recorded after is refused
-(`key_unsuitable`, HTTP 422). A `grant.revoke` alone, which leaves the
-Read flag, ends nothing yet: under 0061 it counts as Read taken away
-when it leaves the person no grant at the number's current epoch, a
-follow-up after R3 (DS47). After a `ran` that wrote, this process's
-sockets check their access at once; the others within their access loop.
+left by a lost Read before F3 or a lone `grant.revoke` before F4) ends
+once, at the upgrade, whole and `access_lost`, its readers told; a
+person waiting for a rotated number's new key keeps theirs (DS48). That
+sweep is built and tested, and no start runs it until its once-marker is
+chosen; until then such a connection ends when their access there is
+removed (a remove, or their last flag going), on the number's deletion
+or move, on a revoke or at its expiry (DS47). Every consent, metadata
+included, and every renewal must name only numbers its person reads at
+that moment (the flag and a grant at the current epoch): one prepared
+before their Read went and recorded after is refused (`key_unsuitable`,
+HTTP 422). A `grant.revoke` alone, which leaves the Read flag, counts as
+Read taken away when it leaves the person no grant at the number's
+current epoch (0061): in its transaction it ends their connections that
+held the number the same way, and their readers are told after the
+commit. A rotation of the number's key and a grant replaced in the same
+transaction do not count (DS48). After a `ran` that wrote, this
+process's sockets check their access at once; the others within their
+access loop.
 
 The runners live in `internal/numberacts`, beside the relink, and reach
 the socket server through `internal/wsapi/console_hooks.go`; parity tests

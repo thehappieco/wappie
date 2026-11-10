@@ -2191,20 +2191,19 @@ nothing), or a refusal (`last_reader`, an admin on an owner). The
 screen's PUT without Read still deletes a dormant grant, as before
 ([contract](contract.md), the flags kinds).
 
-Connections already live with no Read behind them are not swept. Before
-0061 a metadata consent asked no Read (an admin could give one on any
-number of the workspace), and before F3 a lost Read left a content
+Connections already live with no Read behind them are not swept by F3.
+Before 0061 a metadata consent asked no Read (an admin could give one on
+any number of the workspace), and before F3 a lost Read left a content
 connection or an AI integration as it was. Such a connection, whose
 person has no Read on a number its key names, has no Read for a drop of
-read to take: it ends when the person's access to that number is
-removed (a remove, the screen's PUT with no flag, a drop of their last
-flag), when the number is deleted or moved out, on a revoke, or at its
-expiry. A content one or an AI integration cannot renew without Read,
-so it lasts at most its consented lifetime (90 days at most); a metadata
-one never renews and lasts up to its own (a year at most, for a tested
-web client). Whether R3 ends them once, at its first start
-(`access_lost`, readers told), is asked of the platform; until it
-answers, they are kept.
+read to take: it ends when the person's access to that number is removed
+(a remove, the screen's PUT with no flag, a drop of their last flag),
+when the number is deleted or moved out, on a revoke, or at its expiry.
+A content one or an AI integration cannot renew without Read, so it
+lasts at most its consented lifetime (90 days at most); a metadata one
+never renews and lasts up to its own (a year at most, for a tested web
+client). The platform answered: they end once, at the upgrade, in F4's
+sweep (DS48, its once-marker still open).
 
 Every consent, metadata included, and every renewal is refused
 (`ErrMCPKeyUnsuitable`, HTTP 422 `key_unsuitable`) unless the person
@@ -2225,10 +2224,117 @@ connection's own rows, as a revoke takes them. The AI pick still asks
 for the number on the row's key as well as in its `ai_config`, though
 nothing narrows a live integration's key any more.
 
-Still open (0061's third rule, a small follow-up PR, F4, after R3 and
-not holding it): an act that revokes a person's grant on a number and
-leaves them none at its current epoch counts as Read taken away, even
-with the Read flag kept; Wappie's socket `grant.revoke` is such an act
-and today leaves the person's connections as they were. A rotation of
-the number's key, which sends connections to `reseal`, and a grant
-replaced in the same transaction do not count.
+0061's third rule, a `grant.revoke` alone that leaves the person no
+grant at the number's current epoch, is F4 (DS48).
+
+**DS48. A grant revoked alone takes Read; the upgrade's sweep** (the
+platform's decision 0061, its third rule, QF3, and the platform's answer
+on F4's scope; F4).
+
+The socket's `grant.revoke` deletes the person's grants on the number,
+at every epoch, as before. A revoke that deleted one leaves them no
+grant at the number's current epoch, so it takes their Read, even with
+the Read flag kept. In the same transaction it ends every live MCP
+connection they consented to (metadata or content) and every AI
+integration they created that held the number, whole, `access_lost`, as
+a drop of read does (`Keys.RevokeGrantEnded`, `grantTakenTx`, then F3's
+`leaveOwnConnectionsTx`). Their readers are told after the commit, as
+the screen and the console's acts tell them (best effort; the 30-second
+re-tell is the backstop). A revoke that finds no grant ends nothing; a
+refusal (`last_device_reader`) changes nothing. Another person's
+connections, workspace API keys and legacy MCP tokens keep what they
+were given, whoever gave it (0032, 0053).
+
+The rule looks after the act at what is left: a grant at the number's
+current epoch, its archive key not retired. So a grant replaced in the
+same transaction takes nothing, and nor does an act that deletes an old
+epoch's grant and keeps the current one. A rotation deletes no grant and
+never reaches the rule; every connection needs a renewal after it
+anyway (0061). A `grant.revoke` during a rotation, when the person holds
+only the old epoch's key, takes the key they would be sealed again from:
+it counts.
+
+Every path that deletes or invalidates a person's grant, and why it is
+or is not the lone revoke:
+
+- `Keys.RevokeGrant` (`grant.revoke`): the lone revoke. The flag stays,
+  so nothing else would end the connections. It counts, as above.
+- `setDevicePermissionTx` with its keys dropped (the screen's PUT
+  without Read, `item.flags_drop` of read, `item.access_remove`): the
+  Read flag goes with the grants. F3 already ends the connections when
+  Read goes or no flag is left (DS47). With Read gone before, there was
+  no Read to take; it ends nothing, as before.
+- `UpdateMember` to disabled and `removeMember`: every grant and
+  permission of the person in the workspace goes after
+  `endConnectionsOfMemberTx` ended all their connections
+  (`member_disabled`, `member_removed`). Nothing is left to end.
+- `removeServiceAccountTx` (a connection's end, the janitor's expired
+  provisional accounts): a connection service account's copies, never a
+  person's grant. Not counted.
+- `TransferPersonal` (a move to Personal): it moves only a number
+  nobody else has access to (0040), so the grants it deletes hold no
+  one's Read; the mover's own connections to the number end in the same
+  transaction (`access_lost`). Not the lone case.
+- Cascades: a number purged after its deletion (its connections ended
+  at the deletion), a registration that never linked, a person's
+  account deleted (their connections go with it), a workspace deleted.
+  None is an act on one person's grant; nothing is left to end.
+- `ResetArchive` (the operator's reset of a workspace's archive): every
+  archive key and grant goes and the epoch goes back to 0. An operator
+  discarding the archive, closer to a rotation than to a revoke. Not
+  counted, as before.
+- `CreateArchiveKey` at a new epoch (a rotation): every grant of the
+  old epoch stops being current without being deleted. 0061: it does
+  not count.
+- `retired_at` on an archive key: nothing sets it today.
+- `PutGrant`'s upsert: a grant's sealed key replaced at the same epoch,
+  in place. Not a removal.
+
+The sweep. The connections already live whose person no longer reads
+one of their numbers end once, at the upgrade, whole, `access_lost`, and
+their readers are told (`EndConnectionsWithoutRead`). They are what the
+rules before left: a metadata consent that asked no Read before 0061, a
+content connection or AI integration whose person lost Read before F3,
+and a connection whose person lost their grant to a `grant.revoke`
+before F4. Every kind and every live status counts: metadata, content
+and AI; pending, active and reseal. A connection holds a number as
+`leaveOwnConnectionsTx` counts it: its key's row, or its service
+account's permission or grant on it. Its person reads the number as
+`consenterReadsTx` asks of a consent: the Read flag, a grant at the
+number's current epoch, its key not retired, the number not deleted.
+Each workspace runs in one transaction under its tenants row lock, the
+connections in id order, each ended through `endMCPConnectionTx` as a
+revoke ends it; a workspace that fails keeps none of the others back.
+The pilot holds no live connection: it is for self-hosted installations
+that upgrade later.
+
+A rotation does not count. The sweep keeps a connection whose person
+waits for a rotated number's new key: they keep the Read flag and hold a
+grant at an earlier epoch of the number, its archive key not retired,
+and none at the current one. Once that old key is retired, or the old
+grant is gone (a `grant.revoke`), they no longer wait.
+
+Still open: the sweep's once-marker. It must run once per database. A
+later start must not sweep again: it would end connections whose Read
+went in ways 0061 does not count, such as a rotation finished since or
+an operator's reset. Wappie's boot work so far keeps no marker: its
+backfills are idempotent (`backfillChatIdentities`, `linkPhoneNumbers`),
+and one-time data work rode in a migration's SQL (0050 to 0052). No
+table holds a done-marker without stretching its meaning:
+`contract_state` and `contract_settings_state` have only typed columns,
+`security_events`, `item_events` and `mcp_connection_notices` check
+their kinds, and `mcp_reader_state` is the readers' sealed state.
+Migrations 0053 and 0054 belong to other branches. So the sweep is built
+and tested, and no start calls it, until the platform chooses: a
+migration whose one-row marker the server sets after a clean pass; that
+marker added to 0053 or 0054; the sweep written in a migration's SQL,
+whose ledger is then the marker (it would write `endMCPConnectionTx`
+again in SQL, and the readers would learn only from the re-tell); or a
+pass at every start that relies on the rotation skip, which is not once.
+
+Tests: `TestGrantRevokeEndsOwnConnections`,
+`TestGrantRevokeTakesNothing` and `TestGrantRevokeRotation` (store);
+`TestConsoleParityOwnConnections` runs the socket's lone `grant.revoke`
+as a fourth path, with the same rows left and the same readers told,
+and the Read flag kept (wsapi); `TestConnectionsWithoutReadSweep`
+(store).

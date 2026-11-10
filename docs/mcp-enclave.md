@@ -1050,6 +1050,8 @@ a `DELETE` of grants removes zero rows under FORCE RLS, silently):
 | a number's deletion (`device.delete`, [devices.md](devices.md#deletion-and-recovery)), or a restore's replay excluding it again: every live connection whose key names the number, any kind | `access_lost` |
 | a move to Personal ([device-personal-transfer.md](device-personal-transfer.md)): the mover's own live connections to the number, any kind | `access_lost` |
 | a person's Read on a number taken, or no flag left them on it (Wappie's permissions screen, the console's `item.flags_drop` of read or of the last flag left, and `item.access_remove`; DS47, the platform's 0061): every live connection they consented to and every AI integration they created that holds the number, any kind, whole, one holding other numbers too | `access_lost` |
+| the socket's `grant.revoke` that leaves the person no grant at the number's current epoch, the Read flag kept or not (DS48, the platform's 0061): the same connections as the row above | `access_lost` |
+| the upgrade's sweep, once per database (DS48; no start runs it until its once-marker is chosen): every live connection whose person does not read one of its numbers, any kind, whole; a person waiting for a rotated number's new key keeps theirs | `access_lost` |
 
 `ExpireServiceAccounts(ctx, pool)`, run beside `ExpireMCPConnections`, applies
 `removeServiceAccountTx` per tenant to every membership past `expires_at` that
@@ -1364,23 +1366,26 @@ the lifecycle with connection ids, reasons and counts.
   epoch; consent, renewal and the drop all hold the workspace's tenants
   row, so a consent prepared before the drop and recorded after it is
   refused.
-- Not swept (asked of the platform): a connection already live whose
-  person has no Read on a number its key names, a metadata one given
-  before 0061 (it asked no Read then) or a content one or AI integration
-  left by a lost Read before F3. With no Read to take, a drop of read
-  never reaches it; it ends when the person's access to that number is
-  removed (a remove, the screen's PUT with no flag, a drop of their last
-  flag), on the number's deletion or move, on a revoke, or at its expiry
-  (a content or AI one cannot renew without Read). Whether R3 ends them
-  once at its first start (`access_lost`, readers told) is the
-  platform's to say; until then they are kept (DS47).
-- Still open (0061's third rule; a small follow-up after R3): a
-  `grant.revoke` alone that leaves the person no grant at the number's
-  current epoch counts as Read taken away, even with the Read flag kept,
-  and will end their connections the same way. Today the socket's
-  `grant.revoke` leaves them as they were. A rotation of the number's key
-  (connections go to `reseal`) and a grant replaced in the same
-  transaction do not count.
+- The upgrade's sweep (DS48, the platform's answer): a connection
+  already live whose person has no Read on a number it holds, a
+  metadata one given before 0061 (it asked no Read then), a content one
+  or AI integration left by a lost Read before F3, or one whose person
+  lost their grant to a lone `grant.revoke` before F4, ends once at the
+  upgrade, whole, `access_lost`, its reader told. A person waiting for
+  a rotated number's new key (the Read flag, a grant at an earlier epoch
+  whose key is not retired, none at the current one) keeps theirs. The
+  sweep is built and tested; no start runs it until its once-marker is
+  chosen. Until then such a connection ends when the person's access to
+  that number is removed (a remove, the screen's PUT with no flag, a
+  drop of their last flag), on the number's deletion or move, on a
+  revoke, or at its expiry (a content or AI one cannot renew without
+  Read).
+- 0061's third rule (DS48): a `grant.revoke` alone that leaves the
+  person no grant at the number's current epoch counts as Read taken
+  away, even with the Read flag kept, and ends their connections the
+  same way in its transaction; their readers are told after the commit.
+  A rotation of the number's key (connections go to `reseal`) and a
+  grant replaced in the same transaction do not count.
 - How each host presents `reconsent_required` and its link (UNCONFIRMED;
   elicitation is 2d).
 
