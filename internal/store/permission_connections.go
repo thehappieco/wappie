@@ -10,8 +10,9 @@ import (
 // A person's lost Read on a number ends their own MCP connections and AI
 // integrations that held it, whole (the owner's answer to the platform's
 // Q8 and the platform's decision 0061, DS47; docs/mcp-enclave.md 15.15).
-// Wappie's permissions screen and the console's item.flags_drop of read and
-// item.access_remove reach it the same way, through setDevicePermissionTx.
+// Wappie's permissions screen and the console's item.flags_drop (of read,
+// or of the last flag left) and item.access_remove reach it the same way,
+// through setDevicePermissionTx, which decides from the flags it writes.
 
 // consenterReadsTx refuses a consent of any kind, metadata included, and a
 // renewal, with ErrMCPKeyUnsuitable unless actor reads every number of the

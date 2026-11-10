@@ -30,8 +30,9 @@ import (
 // person's that held the number ends access_lost whole, one that also
 // reaches another number too (the platform's 0061); another person's
 // connection and a workspace key keep the number. With Read already gone,
-// a raise of send ends nothing on either side, and the screen with no flag
-// left ends them as a remove does.
+// a raise of send ends nothing on either side, and a change that leaves no
+// flag ends them as a remove does: the screen's PUT with no flag and the
+// console's drop of send, the last flag, alike.
 
 // tells records the connections a route or a runner told readers about.
 type tells struct {
@@ -278,28 +279,37 @@ func TestConsoleParityOwnConnections(t *testing.T) {
 		c.endAll(t)
 	}
 
-	// Read gone before DS47 (no flag left, the grants deleted, the
-	// connections left as they were).
+	// Read gone before DS47 (the Read flag off, send off or kept, the
+	// grants deleted, the connections left as they were).
 	keptGone := kept
 	keptGone.PersonGrants = 0
 	gone := map[string]struct {
+		send   bool
 		change func(s connSet) string
 		want   left
 	}{
-		"the screen's raise of send": {func(s connSet) string { return c.put(t, adminToken, s.number, s.person, false, true, false) }, keptGone},
-		"the console's raise of send": {func(s connSet) string {
+		"the screen's raise of send": {false, func(s connSet) string { return c.put(t, adminToken, s.number, s.person, false, true, false) }, keptGone},
+		"the console's raise of send": {false, func(s connSet) string {
 			return c.outcome(c.runner.FlagsRaise(ctx, c.command(t, kc.OpItemFlagsRaise, admin, adminSub), s.number, s.person, //nolint:contextcheck // the world's helpers run on a context of their own
 				[]string{}, []string{kc.CanSend}))
 		}, keptGone},
-		"the screen with no flag": {func(s connSet) string { return c.put(t, adminToken, s.number, s.person, false, false, false) }, want},
-		"a remove with read gone": {paths["a remove"], want},
+		"the screen with no flag": {false, func(s connSet) string { return c.put(t, adminToken, s.number, s.person, false, false, false) }, want},
+		"the screen's drop of send to none": {true, func(s connSet) string {
+			return c.put(t, adminToken, s.number, s.person, false, false, false)
+		}, want},
+		"the console's drop of send to none": {true, func(s connSet) string {
+			return c.outcome(c.runner.FlagsDrop(ctx, c.command(t, kc.OpItemFlagsDrop, admin, adminSub), s.number, s.person, //nolint:contextcheck // the world's helpers run on a context of their own
+				[]string{kc.CanSend}, []string{}))
+		}, want},
+		"a remove with read gone": {false, paths["a remove"], want},
 	}
-	for _, name := range []string{"the screen's raise of send", "the console's raise of send", "the screen with no flag", "a remove with read gone"} {
+	for _, name := range []string{"the screen's raise of send", "the console's raise of send", "the screen with no flag",
+		"the screen's drop of send to none", "the console's drop of send to none", "a remove with read gone"} {
 		person, _ := c.person(t, strings.ReplaceAll(name, " ", "-"), "admin")
 		s := c.set(t, person, shared, name)
 		c.scoped(ctx, t, func(tx pgx.Tx) error {
-			if _, err := tx.Exec(ctx, `UPDATE device_permissions SET can_read = false, can_send = false WHERE device_id = $1 AND user_id = $2`,
-				s.number, person); err != nil {
+			if _, err := tx.Exec(ctx, `UPDATE device_permissions SET can_read = false, can_send = $3 WHERE device_id = $1 AND user_id = $2`,
+				s.number, person, gone[name].send); err != nil {
 				return err
 			}
 			_, err := tx.Exec(ctx, `DELETE FROM device_key_grants WHERE device_id = $1 AND user_id = $2`, s.number, person)

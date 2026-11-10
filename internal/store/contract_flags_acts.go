@@ -227,8 +227,11 @@ func (c *Contract) RunFlagsRaise(ctx context.Context, run ContractRun, item, use
 // are taken from the stored ones, so a flag raised since stays. When read
 // is among them, every grant of user on the number goes, at every epoch,
 // even when the flag was gone already (no dormant key, 0040), unless user
-// is its last reader (last_reader), and user's own connections and
-// integrations that held the number end whole (DS47). It runs as
+// is its last reader (last_reader). When Read goes, or no flag is left
+// (a drop of send or manage, the last one, with Read gone already: no key
+// goes, but the screen's PUT with no flag ends them too), user's own
+// connections and integrations that held the number end whole (DS47;
+// setDevicePermissionTx decides from the flags written). It runs as
 // access_remove does (tightenFlags). wrote reports a ran that wrote; ended
 // the connections it ended, for their readers to be told after the commit.
 func (c *Contract) RunFlagsDrop(ctx context.Context, run ContractRun, item, user uuid.UUID, before, after []string) (

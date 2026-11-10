@@ -619,40 +619,56 @@ func TestOwnConnectionsRenewNeedsRead(t *testing.T) {
 }
 
 // TestOwnConnectionsReadAlreadyGone: with the person's Read already gone
-// and a connection left on the number from before DS47, a change that
-// keeps send or manage (a raise, a drop of the other) ends nothing, on the
-// screen as in the acts; one that leaves no flag ends them, as a remove
-// does.
+// and connections left on the number from before DS47 (a content one that
+// also holds the shared number, one of the number alone, a metadata one),
+// a change that keeps send or manage (a raise, a drop of the other, a drop
+// of read) ends nothing, on the screen as in the acts. One that leaves no
+// flag ends them whole and names them for their readers, whether read is
+// among the flags it drops or not: the screen's PUT with no flag, the
+// console's drop of the last flag left (send) and a remove alike.
 func TestOwnConnectionsReadAlreadyGone(t *testing.T) {
 	ctx := context.Background()
 	w := newOwnWorld(t)
 	admin, adminSub := w.actor(t, "admin", "admin")
-	gone := func(label string) (person, number uuid.UUID, only, meta string) {
-		person, _ = w.actor(t, "admin", "admin")
-		number = w.number(t, label)
-		w.reads(t, w.owner, number)
-		w.reads(t, person, number)
-		only, _ = w.connect(t, person, store.KindContent, number)
-		meta, _ = w.connect(t, person, store.KindMetadata, number)
-		w.execOne(t, `UPDATE device_permissions SET can_read = false WHERE device_id = $1 AND user_id = $2`, number, person)
-		w.execOne(t, `DELETE FROM device_key_grants WHERE device_id = $1 AND user_id = $2`, number, person)
-		return person, number, only, meta
+	type goneSet struct {
+		person, number   uuid.UUID
+		both, only, meta string
 	}
-	live := func(what string, ids ...string) {
+	gone := func(label string) goneSet {
 		t.Helper()
-		for _, id := range ids {
-			if r := w.row(t, id); r.status != "active" || len(r.devices) != 1 {
+		var s goneSet
+		s.person, _ = w.actor(t, "admin", "admin")
+		s.number = w.number(t, label)
+		w.reads(t, w.owner, s.number)
+		w.reads(t, s.person, s.number)
+		w.reads(t, s.person, w.shared)
+		s.both, _ = w.connect(t, s.person, store.KindContent, s.number, w.shared)
+		s.only, _ = w.connect(t, s.person, store.KindContent, s.number)
+		s.meta, _ = w.connect(t, s.person, store.KindMetadata, s.number)
+		w.execOne(t, `UPDATE device_permissions SET can_read = false WHERE device_id = $1 AND user_id = $2`, s.number, s.person)
+		w.execOne(t, `DELETE FROM device_key_grants WHERE device_id = $1 AND user_id = $2`, s.number, s.person)
+		return s
+	}
+	live := func(what string, s goneSet) {
+		t.Helper()
+		for _, id := range []string{s.both, s.only, s.meta} {
+			if r := w.row(t, id); r.status != "active" || !r.keyLive || !slices.Contains(r.devices, s.number) {
 				t.Fatalf("%s: connection %s %+v", what, id, r)
 			}
 		}
 	}
-	lost := func(what string, ended []store.EndedConnection, ids ...string) {
+	lost := func(what string, s goneSet, ended []store.EndedConnection) {
 		t.Helper()
-		if len(ended) != len(ids) {
-			t.Fatalf("%s: ended %+v", what, ended)
+		got := map[string]string{}
+		for _, e := range ended {
+			got[e.ID] = e.Reader
 		}
-		for _, id := range ids {
-			if r := w.row(t, id); r.status != "revoked" || r.reason != store.ReasonAccessLost {
+		want := map[string]string{s.both: "enclave", s.only: "enclave", s.meta: store.HostedReader}
+		if len(ended) != len(want) || !maps.Equal(got, want) {
+			t.Fatalf("%s: ended %+v, want %v", what, ended, want)
+		}
+		for id := range want {
+			if r := w.row(t, id); r.status != "revoked" || r.reason != store.ReasonAccessLost || r.keyLive {
 				t.Fatalf("%s: connection %s %+v", what, id, r)
 			}
 		}
@@ -660,34 +676,56 @@ func TestOwnConnectionsReadAlreadyGone(t *testing.T) {
 
 	// The screen: a raise of send, then a raise of manage with a drop of
 	// send, keep them; no flag left ends them.
-	person, number, only, meta := gone("Screen")
+	s := gone("Screen")
 	for _, p := range []store.DevicePermission{{Send: true}, {Manage: true}} {
-		p.DeviceID, p.UserID = number, person
+		p.DeviceID, p.UserID = s.number, s.person
 		if ended, err := w.users.SetDevicePermissionEnded(ctx, w.tenant, admin, p); err != nil || len(ended) != 0 {
 			t.Fatalf("the screen's %+v: %v %v", p, ended, err)
 		}
-		live(fmt.Sprintf("the screen's %+v", p), only, meta)
+		live(fmt.Sprintf("the screen's %+v", p), s)
 	}
-	ended, err := w.users.SetDevicePermissionEnded(ctx, w.tenant, admin, store.DevicePermission{DeviceID: number, UserID: person})
+	ended, err := w.users.SetDevicePermissionEnded(ctx, w.tenant, admin, store.DevicePermission{DeviceID: s.number, UserID: s.person})
 	if err != nil {
 		t.Fatal(err)
 	}
-	lost("the screen with no flag", ended, only, meta)
+	lost("the screen with no flag", s, ended)
 
-	// The acts: a raise of send and a drop of it keep them; a remove ends
-	// them.
-	person, number, only, meta = gone("Acts")
-	act, _, err := w.c.RunFlagsRaise(ctx, w.command(t, kc.OpItemFlagsRaise, admin, adminSub), number, person, []string{}, []string{kc.CanSend})
-	ranAct(t, "a raise of send", act, err)
-	live("a raise of send", only, meta)
-	act, _, ended, err = w.c.RunFlagsDrop(ctx, w.command(t, kc.OpItemFlagsDrop, admin, adminSub), number, person, []string{kc.CanSend}, []string{})
-	if ranAct(t, "a drop of send", act, err); len(ended) != 0 {
-		t.Fatalf("a drop of send ended %+v", ended)
+	// The acts: a raise of send and manage, a drop of manage and a drop of
+	// read (gone already) keep them; the drop of send, the last flag, ends
+	// them, though read is not among the flags it drops. A remove after it
+	// has nothing more to end.
+	s = gone("Acts")
+	act, _, err := w.c.RunFlagsRaise(ctx, w.command(t, kc.OpItemFlagsRaise, admin, adminSub), s.number, s.person,
+		[]string{}, []string{kc.CanSend, kc.CanManage})
+	ranAct(t, "a raise of send and manage", act, err)
+	live("a raise of send and manage", s)
+	for _, drop := range [][]string{{kc.CanManage}, {kc.CanRead}} {
+		act, _, ended, err = w.c.RunFlagsDrop(ctx, w.command(t, kc.OpItemFlagsDrop, admin, adminSub), s.number, s.person,
+			append([]string{kc.CanSend}, drop...), []string{kc.CanSend})
+		if ranAct(t, fmt.Sprintf("a drop of %v", drop), act, err); len(ended) != 0 {
+			t.Fatalf("a drop of %v ended %+v", drop, ended)
+		}
+		live(fmt.Sprintf("a drop of %v", drop), s)
 	}
-	live("a drop of send", only, meta)
-	act, _, ended, err = w.c.RunAccessRemove(ctx, w.command(t, kc.OpItemAccessRemove, admin, adminSub), number, person)
+	act, wrote, ended, err := w.c.RunFlagsDrop(ctx, w.command(t, kc.OpItemFlagsDrop, admin, adminSub), s.number, s.person,
+		[]string{kc.CanSend}, []string{})
+	if ranAct(t, "a drop of send, the last flag", act, err); !wrote {
+		t.Fatal("a drop of send, the last flag, wrote nothing")
+	}
+	lost("a drop of send, the last flag", s, ended)
+	if stored := w.stored(t, s.number, s.person); stored.Read || stored.Send || stored.Manage {
+		t.Fatalf("a drop of send, the last flag, left %+v", stored)
+	}
+	act, _, ended, err = w.c.RunAccessRemove(ctx, w.command(t, kc.OpItemAccessRemove, admin, adminSub), s.number, s.person)
+	if ranAct(t, "a remove after it", act, err); len(ended) != 0 {
+		t.Fatalf("a remove after it ended %+v", ended)
+	}
+
+	// A remove.
+	s = gone("Remove")
+	act, _, ended, err = w.c.RunAccessRemove(ctx, w.command(t, kc.OpItemAccessRemove, admin, adminSub), s.number, s.person)
 	ranAct(t, "a remove", act, err)
-	lost("a remove", ended, only, meta)
+	lost("a remove", s, ended)
 }
 
 // TestOwnConnectionsEndWhole: every connection and integration of the

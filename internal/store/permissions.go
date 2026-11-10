@@ -191,18 +191,23 @@ func (u *Users) SetDevicePermissionEnded(ctx context.Context, tenant, actor uuid
 // stored row had it) or no flag is left (the access removed), every one of
 // p.UserID's own connections and integrations that holds the number ends
 // whole, access_lost (leaveOwnConnectionsTx, DS47, the platform's 0061),
-// and they come back for their readers to be told; a change with Read
-// already gone that keeps send or manage (a raise, a drop of the other)
-// ends none, on the screen as in the acts. The
-// caller holds the workspace's lock (the tenants row) and has checked the
-// number and the person. A deleted number's row is written only inside
-// withQuarantine: 0036's archive_device_owner refuses it otherwise (WS002).
+// and they come back for their readers to be told. That hangs on the flags
+// written, not on dropKeys: the console's drop of send or manage that
+// leaves no flag deletes no key (DS19, and its freshness asks nothing,
+// DS23) but ends them as the screen's PUT with no flag does. A change with
+// Read already gone that keeps send or manage (a raise, a drop of the
+// other) ends none, on the screen as in the acts. The caller holds the
+// workspace's lock (the tenants row) and has checked the number and the
+// person. A deleted number's row is written only inside withQuarantine:
+// 0036's archive_device_owner refuses it otherwise (WS002).
 func setDevicePermissionTx(ctx context.Context, tx pgx.Tx, tenant uuid.UUID, p DevicePermission, dropKeys bool) ([]EndedConnection, error) {
-	var hadRead bool
 	if dropKeys {
 		if err := requireRemainingReader(ctx, tx, tenant, p.UserID, &p.DeviceID); err != nil {
 			return nil, err
 		}
+	}
+	var hadRead bool
+	if !p.Read {
 		if err := tx.QueryRow(ctx, `SELECT coalesce((SELECT can_read FROM device_permissions
 			WHERE tenant_id = $1 AND device_id = $2 AND user_id = $3), false)`, tenant, p.DeviceID, p.UserID).Scan(&hadRead); err != nil {
 			return nil, err
@@ -211,11 +216,13 @@ func setDevicePermissionTx(ctx context.Context, tx pgx.Tx, tenant uuid.UUID, p D
 	_, err := tx.Exec(ctx, `INSERT INTO device_permissions(tenant_id,device_id,user_id,can_read,can_send,can_manage)
    VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(tenant_id,device_id,user_id) DO UPDATE
    SET can_read=excluded.can_read,can_send=excluded.can_send,can_manage=excluded.can_manage`, tenant, p.DeviceID, p.UserID, p.Read, p.Send, p.Manage)
-	if err != nil || !dropKeys {
+	if err != nil {
 		return nil, err
 	}
-	if _, err := tx.Exec(ctx, `DELETE FROM device_key_grants WHERE tenant_id=$1 AND device_id=$2 AND user_id=$3`, tenant, p.DeviceID, p.UserID); err != nil {
-		return nil, err
+	if dropKeys {
+		if _, err := tx.Exec(ctx, `DELETE FROM device_key_grants WHERE tenant_id=$1 AND device_id=$2 AND user_id=$3`, tenant, p.DeviceID, p.UserID); err != nil {
+			return nil, err
+		}
 	}
 	// Read did not go and a flag is left: the connections stay.
 	if p.Read || !hadRead && (p.Send || p.Manage) {
