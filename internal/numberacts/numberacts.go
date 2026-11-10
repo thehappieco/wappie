@@ -49,6 +49,13 @@ type Sockets interface {
 	RevalidateAccess()
 }
 
+// Readers tells a connection's reader it ended (*mcpauth.Handler's
+// TellRevoked), as the console's revoke does: best effort, its 30-second
+// re-tell the backstop.
+type Readers interface {
+	TellRevoked(ctx context.Context, reader, id string)
+}
+
 // Run is one command a runner runs: its ledger row, the workspace, the
 // actor's sub and the local account linked to it. Its result is written in
 // the ledger in the act's transaction.
@@ -73,6 +80,9 @@ type Runner struct {
 	// Registry is the process's registry; Sockets its socket server.
 	Registry Registry
 	Sockets  Sockets
+	// Readers tells the readers of the connections a flags act ended; nil
+	// leaves it to their re-tell.
+	Readers Readers
 	// Recorder observes the receipt policy's decisions of a number it
 	// starts, as the frames' does.
 	Recorder func(kind, decision string)

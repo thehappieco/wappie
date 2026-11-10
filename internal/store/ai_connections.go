@@ -194,8 +194,10 @@ type AIPick struct {
 // PickAIAuthorization decides which authorization answers a requester's
 // request for a function on a number (docs/mcp-enclave.md §18.10). The
 // candidates are the workspace's AI rows that are active, unexpired, not
-// paused, cover the function on that number, and whose function and provider
-// are not off, while policy.Allowed holds. The requester's own come first,
+// paused, cover the function on that number, whose key still names it (a
+// creator's Read taken off it takes it off their integrations, DS47, while
+// ai_config keeps the number its tags were sealed over), and whose function
+// and provider are not off, while policy.Allowed holds. The requester's own come first,
 // newest first, unless their requesters are "console" and the origin is not;
 // then another person's whose requesters are "readers", when the requester
 // reads the number, oldest first. With none admitted, the requester's own
@@ -215,10 +217,11 @@ func (m *MCPConnections) PickAIAuthorization(ctx context.Context, tenant, reques
 	var candidates []candidate
 	var reads bool
 	err := pg.InTenantTx(ctx, m.pool, tenant.String(), func(tx pgx.Tx) error {
-		rows, err := tx.Query(ctx, `SELECT id::text, created_by, status, ai_config::text FROM mcp_connections
-			WHERE tenant_id=$1 AND kind='ai' AND status IN ('active','reseal') AND expires_at > now()
-			  AND ai_paused_at IS NULL AND NOT ($2 = ANY (ai_off)) AND ai_config->'features'->$3 ? $2
-			ORDER BY created_at, id`, tenant, feature, device.String())
+		rows, err := tx.Query(ctx, `SELECT c.id::text, c.created_by, c.status, c.ai_config::text FROM mcp_connections c
+			WHERE c.tenant_id=$1 AND c.kind='ai' AND c.status IN ('active','reseal') AND c.expires_at > now()
+			  AND c.ai_paused_at IS NULL AND NOT ($2 = ANY (c.ai_off)) AND c.ai_config->'features'->$3 ? $2
+			  AND EXISTS (SELECT 1 FROM api_key_devices x WHERE x.api_key_id = c.api_key_id AND x.device_id = $4)
+			ORDER BY c.created_at, c.id`, tenant, feature, device.String(), device)
 		if err != nil {
 			return err
 		}

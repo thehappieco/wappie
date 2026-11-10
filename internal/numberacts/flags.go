@@ -20,17 +20,21 @@ func (r *Runner) FlagsRaise(ctx context.Context, run Run, item, user uuid.UUID, 
 }
 
 // FlagsDrop is item.flags_drop for the local account user, as FlagsRaise.
+// A drop of read that ended some of the person's own connections tells
+// their readers (DS47).
 func (r *Runner) FlagsDrop(ctx context.Context, run Run, item, user uuid.UUID, before, after []string) (store.ContractAct, error) {
-	act, wrote, err := r.Store.RunFlagsDrop(ctx, run.contract(), item, user, before, after)
+	act, wrote, ended, err := r.Store.RunFlagsDrop(ctx, run.contract(), item, user, before, after)
 	r.accessChanged(wrote)
+	r.tellEnded(ctx, ended)
 	return act, err
 }
 
 // AccessRemove is item.access_remove for the local account user, as
-// FlagsRaise.
+// FlagsDrop.
 func (r *Runner) AccessRemove(ctx context.Context, run Run, item, user uuid.UUID) (store.ContractAct, error) {
-	act, wrote, err := r.Store.RunAccessRemove(ctx, run.contract(), item, user)
+	act, wrote, ended, err := r.Store.RunAccessRemove(ctx, run.contract(), item, user)
 	r.accessChanged(wrote)
+	r.tellEnded(ctx, ended)
 	return act, err
 }
 
@@ -39,5 +43,20 @@ func (r *Runner) AccessRemove(ctx context.Context, run Run, item, user uuid.UUID
 func (r *Runner) accessChanged(wrote bool) {
 	if wrote && r.Sockets != nil {
 		r.Sockets.RevalidateAccess()
+	}
+}
+
+// tellEnded tells the readers of the connections an act ended, after its
+// commit and within one bound for them all: the executor waits on it, and
+// a reader not told now is told again within 30 seconds.
+func (r *Runner) tellEnded(ctx context.Context, ended []store.EndedConnection) {
+	if len(ended) == 0 || r.Readers == nil {
+		return
+	}
+	tctx, cancel := detached(ctx)
+	defer cancel()
+	for _, e := range ended {
+		r.Readers.TellRevoked(tctx, e.Reader, e.ID)
+		r.log().Info("mcp connection revoked", "connection", e.ID, "reason", store.ReasonAccessLost)
 	}
 }

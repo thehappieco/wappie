@@ -52,11 +52,12 @@ func (h *attestedHarness) archiveKey(t *testing.T) {
 // serviceFor builds what the console builds before a content consent: a
 // provisional service account whose public key is pub, read-only on the
 // device with one grant, and a twenty-minute key acting as it, issued by
-// actor.
+// actor, who reads the device (consenterReads).
 func (h *attestedHarness) serviceFor(t *testing.T, actor uuid.UUID, pub []byte) (service uuid.UUID, key, prefix string) {
 	t.Helper()
 	ctx := context.Background()
 	h.archiveKey(t)
+	h.consenterReads(t, actor)
 	secret, _, err := h.users.NewProvisionalServiceInvitation(ctx, h.tenant, actor)
 	if err != nil {
 		t.Fatal(err)
@@ -82,6 +83,29 @@ func (h *attestedHarness) serviceFor(t *testing.T, actor uuid.UUID, pub []byte) 
 	}
 	prefix, _, _ = strings.Cut(key, ".")
 	return svc.ID, key, prefix
+}
+
+// consenterReads gives actor Read and the device's key, keeping their
+// other flags: a content or AI consent needs both (DS47).
+func (h *attestedHarness) consenterReads(t *testing.T, actor uuid.UUID) {
+	t.Helper()
+	ctx := context.Background()
+	p, err := h.users.StoredDevicePermission(ctx, h.tenant, actor, h.device)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !p.HasKey {
+		if err := store.NewKeys(h.pool).PutGrant(ctx, store.Grant{TenantID: h.tenant, DeviceID: h.device, UserID: actor, Epoch: 1,
+			SealedDSK: []byte("a person's")}, &h.owner.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !p.Read {
+		p.Read = true
+		if err := h.users.SetDevicePermission(ctx, h.tenant, h.owner.ID, p); err != nil {
+			t.Fatal(err)
+		}
+	}
 }
 
 func contentBody(t *testing.T, requestID, prefix string, service uuid.UUID) map[string]any {

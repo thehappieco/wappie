@@ -495,6 +495,7 @@ func TestAIKeychainRoutes(t *testing.T) {
 	expect(t, h.call(t, http.MethodDelete, "/v1/ai/keychain/"+created.ID, token, nil), http.StatusNoContent, "")
 	expect(t, h.call(t, http.MethodDelete, "/v1/ai/keychain/"+created.ID, token, nil), http.StatusNotFound, "not_found")
 	// Deleting a key an authorization uses ends it, and the reader is told.
+	h.reads(t, admin.ID)
 	id, keys := h.authorization(t, admin, "self")
 	expect(t, h.call(t, http.MethodDelete, "/v1/ai/keychain/"+keys["google"].String(), adminToken, nil), http.StatusNoContent, "")
 	a, err := h.conns.AIAuthorization(context.Background(), h.tenant, id)

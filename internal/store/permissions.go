@@ -141,7 +141,16 @@ func ownerTargetTx(ctx context.Context, tx pgx.Tx, tenant, user uuid.UUID) (bool
 }
 
 func (u *Users) SetDevicePermission(ctx context.Context, tenant, actor uuid.UUID, p DevicePermission) error {
-	return pg.InTenantTx(ctx, u.pool, tenant.String(), func(tx pgx.Tx) error {
+	_, err := u.SetDevicePermissionEnded(ctx, tenant, actor, p)
+	return err
+}
+
+// SetDevicePermissionEnded is SetDevicePermission, and the person's own
+// connections it ended (Read going, or no flag left, takes the number off
+// them, DS47), for their readers to be told after the commit.
+func (u *Users) SetDevicePermissionEnded(ctx context.Context, tenant, actor uuid.UUID, p DevicePermission) ([]EndedConnection, error) {
+	var ended []EndedConnection
+	err := pg.InTenantTx(ctx, u.pool, tenant.String(), func(tx pgx.Tx) error {
 		role, err := lockWorkspaceManager(ctx, tx, tenant, actor)
 		if err != nil {
 			return err
@@ -165,32 +174,53 @@ func (u *Users) SetDevicePermission(ctx context.Context, tenant, actor uuid.UUID
 		}
 		// Read revocation removes the envelope too. Re-enabling requires an
 		// explicit client-side grant by somebody who still holds the archive key.
-		return setDevicePermissionTx(ctx, tx, tenant, p, !p.Read)
+		ended, err = setDevicePermissionTx(ctx, tx, tenant, p, !p.Read)
+		return err
 	})
+	if err != nil {
+		return nil, err
+	}
+	return ended, nil
 }
 
 // setDevicePermissionTx is the write of a permission change, shared by
 // Wappie's own screen (SetDevicePermission) and the console's flags acts
 // (contract_flags_acts.go): the row upserted to p's flags; with dropKeys,
 // first requireRemainingReader (ErrLastDeviceReader), then every grant of
-// p.UserID on the number deleted, at every epoch. The caller holds the
-// workspace's lock (the tenants row) and has checked the number and the
-// person. A deleted number's row is written only inside withQuarantine:
-// 0036's archive_device_owner refuses it otherwise (WS002).
-func setDevicePermissionTx(ctx context.Context, tx pgx.Tx, tenant uuid.UUID, p DevicePermission, dropKeys bool) error {
+// p.UserID on the number deleted, at every epoch. When Read goes (the
+// stored row had it) or no flag is left (the access removed), the number
+// is also taken off p.UserID's own connections and integrations
+// (leaveOwnConnectionsTx, DS47), which come back when it ended them; a
+// change with Read already gone that keeps send or manage (a raise, a drop
+// of the other) takes nothing off them, on the screen as in the acts. The
+// caller holds the workspace's lock (the tenants row) and has checked the
+// number and the person. A deleted number's row is written only inside
+// withQuarantine: 0036's archive_device_owner refuses it otherwise (WS002).
+func setDevicePermissionTx(ctx context.Context, tx pgx.Tx, tenant uuid.UUID, p DevicePermission, dropKeys bool) ([]EndedConnection, error) {
+	var hadRead bool
 	if dropKeys {
 		if err := requireRemainingReader(ctx, tx, tenant, p.UserID, &p.DeviceID); err != nil {
-			return err
+			return nil, err
+		}
+		if err := tx.QueryRow(ctx, `SELECT coalesce((SELECT can_read FROM device_permissions
+			WHERE tenant_id = $1 AND device_id = $2 AND user_id = $3), false)`, tenant, p.DeviceID, p.UserID).Scan(&hadRead); err != nil {
+			return nil, err
 		}
 	}
 	_, err := tx.Exec(ctx, `INSERT INTO device_permissions(tenant_id,device_id,user_id,can_read,can_send,can_manage)
    VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(tenant_id,device_id,user_id) DO UPDATE
    SET can_read=excluded.can_read,can_send=excluded.can_send,can_manage=excluded.can_manage`, tenant, p.DeviceID, p.UserID, p.Read, p.Send, p.Manage)
 	if err != nil || !dropKeys {
-		return err
+		return nil, err
 	}
-	_, err = tx.Exec(ctx, `DELETE FROM device_key_grants WHERE tenant_id=$1 AND device_id=$2 AND user_id=$3`, tenant, p.DeviceID, p.UserID)
-	return err
+	if _, err := tx.Exec(ctx, `DELETE FROM device_key_grants WHERE tenant_id=$1 AND device_id=$2 AND user_id=$3`, tenant, p.DeviceID, p.UserID); err != nil {
+		return nil, err
+	}
+	// Read did not go and a flag is left: the connections keep the number.
+	if p.Read || !hadRead && (p.Send || p.Manage) {
+		return nil, nil
+	}
+	return leaveOwnConnectionsTx(ctx, tx, tenant, p.UserID, p.DeviceID)
 }
 
 func (u *Users) DevicePermissions(ctx context.Context, tenant, actor, device uuid.UUID) ([]DevicePermission, error) {

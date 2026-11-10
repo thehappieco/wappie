@@ -102,15 +102,24 @@ func flagsNumberTx(ctx context.Context, tx pgx.Tx, workspace, item uuid.UUID) (f
 	return err == nil, deleted, err
 }
 
-// writeFlagsTx is setDevicePermissionTx for a flags act. A deleted
-// number's row is written inside withQuarantine, since 0036's ownership
-// trigger reads the number under the caller's policies (WS002 otherwise).
-func writeFlagsTx(ctx context.Context, tx pgx.Tx, workspace uuid.UUID, p DevicePermission, dropKeys, deleted bool) error {
-	write := func() error { return setDevicePermissionTx(ctx, tx, workspace, p, dropKeys) }
-	if deleted {
-		return withQuarantine(ctx, tx, write)
+// writeFlagsTx is setDevicePermissionTx for a flags act, and the person's
+// own connections it ended. A deleted number's row is written inside
+// withQuarantine, since 0036's ownership trigger reads the number under the
+// caller's policies (WS002 otherwise).
+func writeFlagsTx(ctx context.Context, tx pgx.Tx, workspace uuid.UUID, p DevicePermission, dropKeys, deleted bool) ([]EndedConnection, error) {
+	var ended []EndedConnection
+	write := func() error {
+		var err error
+		ended, err = setDevicePermissionTx(ctx, tx, workspace, p, dropKeys)
+		return err
 	}
-	return write()
+	var err error
+	if deleted {
+		err = withQuarantine(ctx, tx, write)
+	} else {
+		err = write()
+	}
+	return ended, err
 }
 
 // activeTargetTx reports whether user may be given flags in workspace: an
@@ -204,7 +213,7 @@ func (c *Contract) RunFlagsRaise(ctx context.Context, run ContractRun, item, use
 		case !sameFlags(stored, was):
 			return refusedWith(kc.CodeStateChanged), nil
 		}
-		if err := writeFlagsTx(ctx, tx, run.Workspace, next, false, false); err != nil {
+		if _, err := writeFlagsTx(ctx, tx, run.Workspace, next, false, false); err != nil {
 			return actWrite{}, err
 		}
 		wrote = true
@@ -218,13 +227,16 @@ func (c *Contract) RunFlagsRaise(ctx context.Context, run ContractRun, item, use
 // are taken from the stored ones, so a flag raised since stays. When read
 // is among them, every grant of user on the number goes, at every epoch,
 // even when the flag was gone already (no dormant key, 0040), unless user
-// is its last reader (last_reader). It runs as access_remove does
-// (tightenFlags). wrote reports a ran that wrote.
-func (c *Contract) RunFlagsDrop(ctx context.Context, run ContractRun, item, user uuid.UUID, before, after []string) (ContractAct, bool, error) {
+// is its last reader (last_reader), and the number leaves user's own
+// connections and integrations (DS47). It runs as access_remove does
+// (tightenFlags). wrote reports a ran that wrote; ended the connections
+// it ended, for their readers to be told after the commit.
+func (c *Contract) RunFlagsDrop(ctx context.Context, run ContractRun, item, user uuid.UUID, before, after []string) (
+	act ContractAct, wrote bool, ended []EndedConnection, err error) {
 	was, errWas := flagsOf(before)
 	next, errNext := flagsOf(after)
 	if errWas != nil || errNext != nil || !within(next, was) || sameFlags(was, next) {
-		return ContractAct{}, false, ErrInvalidFlags
+		return ContractAct{}, false, nil, ErrInvalidFlags
 	}
 	removed := DevicePermission{Read: was.Read && !next.Read, Send: was.Send && !next.Send, Manage: was.Manage && !next.Manage}
 	return c.tightenFlags(ctx, run, item, user, func(stored DevicePermission) (DevicePermission, bool) {
@@ -237,9 +249,10 @@ func (c *Contract) RunFlagsDrop(ctx context.Context, run ContractRun, item, user
 // tightening (DS20): all three flags false with the row kept, so a later
 // key share gives no read or send (0023's grant_initial_permissions), and
 // every grant of user on the number deleted, also for a key holder without
-// read, unless user is its last reader (last_reader). wrote reports a ran
-// that wrote.
-func (c *Contract) RunAccessRemove(ctx context.Context, run ContractRun, item, user uuid.UUID) (ContractAct, bool, error) {
+// read, unless user is its last reader (last_reader); the number leaves
+// user's own connections and integrations (DS47). wrote and ended as
+// RunFlagsDrop's.
+func (c *Contract) RunAccessRemove(ctx context.Context, run ContractRun, item, user uuid.UUID) (ContractAct, bool, []EndedConnection, error) {
 	return c.tightenFlags(ctx, run, item, user, func(DevicePermission) (DevicePermission, bool) {
 		return DevicePermission{DeviceID: item, UserID: user}, true
 	})
@@ -253,10 +266,11 @@ func (c *Contract) RunAccessRemove(ctx context.Context, run ContractRun, item, u
 // change maps the stored flags to the new ones and says whether the keys
 // go; a change that changes nothing writes nothing.
 func (c *Contract) tightenFlags(ctx context.Context, run ContractRun, item, user uuid.UUID,
-	change func(stored DevicePermission) (DevicePermission, bool)) (ContractAct, bool, error) {
+	change func(stored DevicePermission) (DevicePermission, bool)) (ContractAct, bool, []EndedConnection, error) {
 	var wrote bool
+	var ended []EndedConnection
 	act, err := c.numbersAct(ctx, run, func(tx pgx.Tx) (actWrite, error) {
-		wrote = false
+		wrote, ended = false, nil
 		found, deleted, err := flagsNumberTx(ctx, tx, run.Workspace, item)
 		switch {
 		case err != nil:
@@ -293,7 +307,7 @@ func (c *Contract) tightenFlags(ctx context.Context, run ContractRun, item, user
 		if sameFlags(stored, next) && !dropKeys {
 			return shownRan(), nil
 		}
-		err = writeFlagsTx(ctx, tx, run.Workspace, next, dropKeys, deleted)
+		ended, err = writeFlagsTx(ctx, tx, run.Workspace, next, dropKeys, deleted)
 		switch {
 		case errors.Is(err, ErrLastDeviceReader):
 			return refusedWith(kc.CodeLastReader), nil
@@ -303,7 +317,10 @@ func (c *Contract) tightenFlags(ctx context.Context, run ContractRun, item, user
 		wrote = true
 		return shownRan(), nil
 	})
-	return act, wroteRan(act, wrote, err), err
+	if !wroteRan(act, wrote, err) {
+		return act, false, nil, err
+	}
+	return act, true, ended, nil
 }
 
 // StoredFlags is what the executor's R4 reads of a flags command's target

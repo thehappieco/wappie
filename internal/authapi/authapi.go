@@ -86,6 +86,15 @@ type Handler struct {
 	// service account's invitation and registration. Nil gates nothing; at
 	// observe it only logs (the plan's DB4).
 	Freshness membership.Freshness
+	// Readers tells the readers of the connections a permission change
+	// ended (DS47). Nil leaves it to their 30-second re-tell.
+	Readers Readers
+}
+
+// Readers tells a connection's reader it ended (*mcpauth.Handler's
+// TellRevoked), best effort.
+type Readers interface {
+	TellRevoked(ctx context.Context, reader, id string)
 }
 
 // Mount registers the routes on a mux.

@@ -531,6 +531,8 @@ func TestAIConfigAtDevicesMax(t *testing.T) {
 		}
 		device := uuid.MustParse(dev.ID)
 		f.archiveKey(ctx, t, device, 1)
+		// The person consenting reads every number (DS47).
+		f.ownerReads(ctx, t, f.owner, device)
 		devices = append(devices, device)
 	}
 	keys := map[string]uuid.UUID{"google": f.keychainItem(ctx, t, f.owner, "google"), "anthropic": f.keychainItem(ctx, t, f.owner, "anthropic"),

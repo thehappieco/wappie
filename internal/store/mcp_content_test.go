@@ -521,6 +521,8 @@ func TestRevokeContentCascadesUnderRLS(t *testing.T) {
 			name, reason = "consenter removed", store.ReasonMemberRemoved
 		}
 		admin, _ := transferOwner(t, f.archive, "admin")
+		// The person consenting reads the number (DS47).
+		f.ownerReads(ctx, t, admin, f.device)
 		t.Run(name, func(t *testing.T) {
 			conn, c := f.consentContent(ctx, t, admin)
 			// Any kind: their metadata connection ends too.
@@ -651,6 +653,7 @@ func TestStatusRevokedWhenServiceGone(t *testing.T) {
 	// The consenter disabled behind the ledger's back is the same.
 	conn, _ = f.consentContent(ctx, t, f.owner)
 	admin, _ := transferOwner(t, f.archive, "admin")
+	f.ownerReads(ctx, t, admin, f.device)
 	conn2, _ := f.consentContent(ctx, t, admin)
 	f.inTenant(ctx, t, func(tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, `UPDATE workspace_memberships SET status='disabled' WHERE tenant_id=$1 AND user_id=$2`, f.tenant, admin)

@@ -4,8 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -190,4 +194,98 @@ func TestFlagsRevalidateAccess(t *testing.T) {
 	r.Sockets = nil
 	act, err = r.FlagsRaise(ctx, w.run(t, kc.OpItemFlagsRaise, admin, adminSub), w.device, target, []string{}, []string{kc.CanSend})
 	step("a raise with no sockets", act, err, "ran", "", 0)
+}
+
+// readers is the runners' Readers, recording each tell and whether it
+// came with a deadline.
+type readers struct {
+	mu    sync.Mutex
+	told  []string
+	bound bool
+}
+
+func (r *readers) TellRevoked(ctx context.Context, reader, id string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	_, r.bound = ctx.Deadline()
+	r.told = append(r.told, reader+"/"+id)
+}
+
+func (r *readers) take() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := r.told
+	r.told = nil
+	return out
+}
+
+// connect records and activates a metadata connection user consents to on
+// the number alone.
+func (w *flagsWorld) connect(t *testing.T, user uuid.UUID) string {
+	t.Helper()
+	ctx := context.Background()
+	in := time.Now().Add(20 * time.Minute)
+	key, err := store.NewAPIKeys(w.pool).IssueActingAsForDevices(ctx, w.tenant.String(), "assistant", store.ScopeRead, &user, nil,
+		[]uuid.UUID{w.device}, &in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prefix, _, _ := strings.Cut(key, ".")
+	conns := store.NewMCPConnections(w.pool)
+	conn, err := conns.Create(ctx, w.tenant, user, store.CreateMCPConnection{RequestID: uuid.NewString(), KeyPrefix: prefix,
+		ClientName: "Claude", RedirectHost: "claude.ai", DeviceCount: 1, ReaderKID: "0123456789abcdef", ExpiresAt: time.Now().Add(24 * time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := conns.Activate(ctx, store.HostedReader, conn.ID); err != nil {
+		t.Fatal(err)
+	}
+	return conn.ID
+}
+
+// TestFlagsTellReaders: a drop of read and a remove that end the person's
+// own connections tell their readers, once each, within a bound (DS47);
+// a refusal, a drop of send and a drop with nothing left to end tell
+// nobody; and with no Readers the act runs all the same.
+func TestFlagsTellReaders(t *testing.T) {
+	ctx := context.Background()
+	w := newFlagsWorld(t)
+	admin, adminSub := w.actor(t, "admin")
+	member, memberSub := w.actor(t, "member")
+	dropped, removed := w.person(t, "admin"), w.person(t, "admin")
+	w.reads(t, dropped)
+	w.reads(t, removed)
+	droppedConn, removedConn := w.connect(t, dropped), w.connect(t, removed)
+	rd := &readers{}
+	r := &numberacts.Runner{Store: store.NewContract(w.pool), Readers: rd}
+	step := func(what string, act store.ContractAct, err error, outcome string, told ...string) {
+		t.Helper()
+		if err != nil || act.Result.Outcome != outcome {
+			t.Fatalf("%s: %+v %v, want %s", what, act, err, outcome)
+		}
+		if got := rd.take(); !slices.Equal(got, told) {
+			t.Fatalf("%s: told %v, want %v", what, got, told)
+		}
+	}
+	read := []string{kc.CanRead}
+	act, err := r.FlagsDrop(ctx, w.run(t, kc.OpItemFlagsDrop, member, memberSub), w.device, dropped, read, []string{})
+	step("a member's drop", act, err, "refused")
+	act, err = r.FlagsDrop(ctx, w.run(t, kc.OpItemFlagsDrop, admin, adminSub), w.device, dropped, []string{kc.CanSend}, []string{})
+	step("a drop of send", act, err, "ran")
+	act, err = r.FlagsDrop(ctx, w.run(t, kc.OpItemFlagsDrop, admin, adminSub), w.device, dropped, read, []string{})
+	step("a drop of read", act, err, "ran", store.HostedReader+"/"+droppedConn)
+	if !rd.bound {
+		t.Fatal("the readers were told with no deadline")
+	}
+	act, err = r.FlagsDrop(ctx, w.run(t, kc.OpItemFlagsDrop, admin, adminSub), w.device, dropped, read, []string{})
+	step("a drop of read again", act, err, "ran")
+	act, err = r.AccessRemove(ctx, w.run(t, kc.OpItemAccessRemove, admin, adminSub), w.device, removed)
+	step("a remove", act, err, "ran", store.HostedReader+"/"+removedConn)
+	// No Readers: the act ends the connection all the same.
+	r.Readers = nil
+	again := w.person(t, "admin")
+	w.reads(t, again)
+	w.connect(t, again)
+	act, err = r.AccessRemove(ctx, w.run(t, kc.OpItemAccessRemove, admin, adminSub), w.device, again)
+	step("a remove with no readers", act, err, "ran")
 }
