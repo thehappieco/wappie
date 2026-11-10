@@ -20,8 +20,8 @@ import {
   type KDFParams,
 } from '../crypto/account.js'
 import { fromBase64, parseUUID, toBase64, type Bytes } from '../crypto/bytes.js'
-import { importArchiveKey, type PrivateKey } from '../crypto/hpke.js'
-import { grantRow, Kind, openDirect } from '../crypto/seal.js'
+import { importArchiveKey, publicFromPrivate, type PrivateKey } from '../crypto/hpke.js'
+import { archiveKeyFingerprint, grantRow, Kind, openDirect } from '../crypto/seal.js'
 import { endpoint } from './endpoint.js'
 import type { BrowserLogin } from '../session.js'
 import { sealBrowserAccountKey, type BrowserKeyEnvelope } from '../crypto/browserAccount.js'
@@ -77,8 +77,12 @@ interface GrantReply {
   label: string
   epoch: number
   sealed_dsk: string
-  /** The archive key's fingerprint, which a grant.add of it echoes (wappie DS49). */
-  fingerprint: string
+  /**
+   * The fingerprint of the number's archive key now (wappie DS49). A grant
+   * whose opened key has another one holds a key from before a reset.
+   * Absent from a server before DS49.
+   */
+  fingerprint?: string
 }
 
 export interface MeReply {
@@ -570,8 +574,10 @@ export const MaxDeviceKeys = 100
  * make the caller responsible for the erasing, and callers forget.
  * `use` also receives the immutable archive namespace. Use it, rather than the
  * currently selected workspace, when sealing another grant after a transfer.
- * And it receives the key's fingerprint, as the server listed it with the
- * grant: a grant.add of this key echoes it (wappie DS49).
+ * And it receives the fingerprint of the key it opened (archiveKeyFingerprint
+ * of its public half), which a grant.add of this key sends (wappie DS49). A
+ * grant whose key is not the one the server lists for the number now is
+ * refused with no_grant: it holds a key from before a reset.
  */
 export async function withDeviceKey<T>(
   input: WithDeviceKeyInput,
@@ -651,7 +657,13 @@ export async function withDeviceKeys<T>(
       const row = await grantRow(archiveTenant, parseUUID(deviceID), user, grant.epoch)
       const deviceKey = await openDirect(account, Kind.DeviceGrant, archiveTenant, row, fromBase64(grant.sealed_dsk))
       try {
-        results.push(await use(deviceID, deviceKey, grant.epoch, archiveTenantID, grant.fingerprint))
+        // The key opened names itself. The listed fingerprint is the
+        // number's key now, which an old grant at a reused epoch is not.
+        const fingerprint = await archiveKeyFingerprint(await publicFromPrivate(deviceKey))
+        if (grant.fingerprint !== undefined && grant.fingerprint !== fingerprint) {
+          throw new AuthError('no_grant', t('sua conta não tem a chave deste aparelho, então não há o que conceder'))
+        }
+        results.push(await use(deviceID, deviceKey, grant.epoch, archiveTenantID, fingerprint))
       } finally {
         deviceKey.fill(0)
       }

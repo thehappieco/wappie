@@ -14,7 +14,7 @@
 
 import { bind, SealError, type ContentKey as KitContentKey } from '@thehappieco/kit/seal'
 import { wappieSeal } from '@thehappieco/kit/profiles/wappie'
-import { encodeUTF8, type Bytes } from './bytes.js'
+import { encodeUTF8, toHex, type Bytes } from './bytes.js'
 
 export { Kind, kindName } from '@thehappieco/kit/profiles/wappie'
 export { MODE_BATCH, MODE_DIRECT, SealError, SUITE_V1, VERSION, type Header } from '@thehappieco/kit/seal'
@@ -66,6 +66,17 @@ export const ContentKey = wappie.ContentKey
  * key sealed to one person's public key, bound to (device, user, epoch).
  */
 export const grantRow = wappie.grantRow
+
+/**
+ * archiveKeyFingerprint names a number's archive public key as the server
+ * does (wappie DS49, store.ArchiveKeyFingerprint): the lowercase hex SHA-256
+ * of its 32 raw bytes, 64 characters, no prefix. A grant.add names the key it
+ * seals by this, so the server refuses a key the number no longer has: after
+ * a reset, a new key takes the same epoch again.
+ */
+export async function archiveKeyFingerprint(publicKey: Bytes): Promise<string> {
+  return toHex(new Uint8Array(await crypto.subtle.digest('SHA-256', publicKey)))
+}
 
 /**
  * draftRow derives the row an assistant's draft binds to (docs/mcp-enclave.md
