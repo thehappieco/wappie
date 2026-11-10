@@ -343,3 +343,90 @@ func TestGrantAddConnectionAccount(t *testing.T) {
 		}
 	}
 }
+
+// TestSetPermissionConnectionAccount: Wappie's screen's PUT on a live
+// connection's own account (DS48), which the REST API reaches. A PUT that
+// takes the account's Read, or deletes its grant, would narrow the
+// connection, the state 0061 removes: it ends that connection whole,
+// access_lost, in the same transaction, and returns it for its reader to
+// be told, as grant.revoke does. Any other change is held to PutGrant's
+// rule: on a number its key does not name, or that its person does not
+// read, ErrConnectionAccountGrant, and nothing is written, a row with no
+// flag included. A raise on its own number is taken and ends nothing. A
+// provisional account no connection names yet takes any. The check at
+// the next start then finds nothing to end.
+func TestSetPermissionConnectionAccount(t *testing.T) {
+	ctx := context.Background()
+	w := newOwnWorld(t)
+	person, _ := w.actor(t, "admin", "admin")
+	s := w.own(t, person, "Put")
+	put := func(device, user uuid.UUID, read, send bool) ([]store.EndedConnection, error) {
+		return w.users.SetDevicePermissionEnded(ctx, w.tenant, w.owner, store.DevicePermission{DeviceID: device, UserID: user, Read: read, Send: send})
+	}
+	other := w.number(t, "Other")
+	w.reads(t, w.owner, other)
+	only := s.services[s.only]
+
+	// Wider than the consent: refused, nothing written. other is read by
+	// the owner alone; the person reads the shared number, which s.only's
+	// key does not name.
+	for _, c := range []struct {
+		what       string
+		device     uuid.UUID
+		read, send bool
+	}{
+		{"Read on a number nobody consented to", other, true, false},
+		{"send alone there", other, false, true},
+		{"a row with no flag there", other, false, false},
+		{"Read on a number its key does not name", w.shared, true, false},
+	} {
+		if ended, err := put(c.device, only, c.read, c.send); !errors.Is(err, store.ErrConnectionAccountGrant) || len(ended) != 0 {
+			t.Fatalf("%s: %v %v", c.what, ended, err)
+		}
+		if p, g := w.holds(t, only, c.device); p != 0 || g != 0 {
+			t.Fatalf("%s: the account holds %d permissions and %d grants", c.what, p, g)
+		}
+	}
+	// Its own number, Read kept: taken, nothing ends.
+	if ended, err := put(s.number, only, true, true); err != nil || len(ended) != 0 {
+		t.Fatalf("a raise on its own number: %v %v", ended, err)
+	}
+	w.untouched(t, "a raise on its own number", s)
+
+	// Narrower than the consent: the connection ends whole, the other
+	// number with it. Every flag dropped on a content connection's
+	// account, Read dropped and send kept on an integration's.
+	for _, c := range []struct {
+		id   string
+		send bool
+	}{{s.both, false}, {s.aiBoth, true}} {
+		ended, err := put(w.shared, s.services[c.id], false, c.send)
+		if err != nil || len(ended) != 1 || ended[0] != (store.EndedConnection{ID: c.id, Reader: "enclave"}) {
+			t.Fatalf("Read taken off %s's account: %+v %v", c.id, ended, err)
+		}
+		if r := w.row(t, c.id); r.status != "revoked" || r.reason != store.ReasonAccessLost || r.keyLive {
+			t.Fatalf("connection %s %+v", c.id, r)
+		}
+		if tr := w.trace(t, s.services[c.id]); tr != (serviceTrace{}) {
+			t.Fatalf("an ended connection's account remains: %+v", tr)
+		}
+	}
+	for _, id := range []string{s.only, s.aiOnly, s.meta, s.metaBoth, s.theirs} {
+		if r := w.row(t, id); r.status != "active" || !r.keyLive {
+			t.Fatalf("connection %s %+v", id, r)
+		}
+	}
+	if p := w.stored(t, w.shared, person); !p.Read || !p.HasKey {
+		t.Fatalf("the person's Read on the shared number: %+v", p)
+	}
+
+	// An account no live connection names yet: a consent's, before it is
+	// recorded.
+	provisional := w.prepare(t, person, store.KindContent, s.number)
+	if _, err := put(other, provisional.ServiceUserID, true, false); err != nil {
+		t.Fatalf("a provisional account: %v", err)
+	}
+	if got, _ := sweep(t, w); len(got) != 0 {
+		t.Fatalf("the check after: %v", got)
+	}
+}

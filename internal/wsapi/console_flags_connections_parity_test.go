@@ -364,11 +364,13 @@ func TestConsoleParityOwnConnections(t *testing.T) {
 	}
 }
 
-// TestGrantFramesConnectionAccount: the socket's grant frames on an
-// assistant connection's own account (DS48). A grant.add of a number its
-// key does not name is not_authorized, and nothing is recorded. A
-// grant.revoke of the account's grant on its number ends the connection
-// whole, access_lost, and tells its reader, where it once narrowed it.
+// TestGrantFramesConnectionAccount: the socket's grant frames and the
+// screen's PUT on an assistant connection's own account (DS48). A
+// grant.add of a number its key does not name is not_authorized, and so
+// is a PUT of Read there (403); nothing is recorded. A grant.revoke of
+// the account's grant on its number ends the connection whole,
+// access_lost, and tells its reader, where it once narrowed it; so does a
+// PUT that takes the account's Read.
 func TestGrantFramesConnectionAccount(t *testing.T) {
 	c := newConnParity(t)
 	ctx := context.Background()
@@ -386,8 +388,21 @@ func TestGrantFramesConnectionAccount(t *testing.T) {
 	if got := frameOutcome(t, f, wsapi.TypeReaders); got != kc.CodeNotAuthorized {
 		t.Fatalf("a grant.add of a number its key does not name: %s", got)
 	}
-	if h := c.held(t, shared, account); h.Grants != 0 {
+	if got := c.put(t, c.token, shared, account, true, false, false); got != "not_authorized" {
+		t.Fatalf("a PUT of Read on a number its key does not name: %s", got)
+	}
+	if h := c.held(t, shared, account); h != (held{}) {
 		t.Fatalf("the account holds %+v on the shared number", h)
+	}
+
+	// The screen's PUT without Read on the account of a second
+	// connection: it ends, and its reader is told.
+	second, secondAccount := c.connect(t, person, true, number)
+	if got := c.put(t, c.token, number, secondAccount, false, false, false); got != "ok" {
+		t.Fatalf("a PUT without Read on the account: %s", got)
+	}
+	if told := c.told.take(); !slices.Equal(told, []string{"enclave/" + second}) {
+		t.Fatalf("told %v", told)
 	}
 
 	if got := c.revoke(t, c.token, number, account); got != "ok" {
@@ -399,6 +414,12 @@ func TestGrantFramesConnectionAccount(t *testing.T) {
 	})
 	if status != "revoked" || reason != store.ReasonAccessLost {
 		t.Fatalf("the connection is %s %s", status, reason)
+	}
+	c.scoped(ctx, t, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `SELECT status, coalesce(revoke_reason, '') FROM mcp_connections WHERE id = $1`, second).Scan(&status, &reason)
+	})
+	if status != "revoked" || reason != store.ReasonAccessLost {
+		t.Fatalf("the second connection is %s %s", status, reason)
 	}
 	if told := c.told.take(); !slices.Equal(told, []string{"enclave/" + id}) {
 		t.Fatalf("told %v", told)
