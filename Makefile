@@ -25,11 +25,30 @@ cover: ## Report coverage
 	$(GO) test -race -timeout=30m -coverprofile=coverage.out $(PKGS)
 	$(GO) tool cover -func=coverage.out | tail -1
 
+# The fuzz budget is a number of calls, not a duration. With a duration
+# (-fuzztime=10s) Go 1.26's fuzz coordinator can report its own timeout as
+# the test's failure: when the timer fires it wakes on the timeout context,
+# reads DeadlineExceeded there, and treats that as a normal stop only if its
+# child context already reads the same. The child is canceled just after the
+# parent's done channel closes, so now and then it does not yet, and the
+# target fails with a bare "context deadline exceeded" and no failing input
+# (CI on #68, FuzzDecrypt, 2026-11-09). With a count the coordinator has no
+# timeout context at all. A real failure still writes its input under
+# testdata/fuzz/<Target>/ and prints "Failing input written to".
+#
+# Minimizing is a count too. Left at its default, one worker may spend
+# FUZZTIME divided by the worker count (a quarter on CI's four) shrinking a
+# single new input while the others wait for the budget to free up, which put
+# FuzzContractNeverGivesThePushName anywhere from 5 to 24 seconds in local
+# runs. A failing input is still minimized within this budget, then written.
+FUZZTIME         ?= 400000x
+FUZZMINIMIZETIME ?= 5000x
+
 fuzz: ## Short fuzz pass over every fuzz target
 	@for p in $$($(GO) list $(PKGS)); do \
 	  for f in $$($(GO) test -list='Fuzz.*' $$p 2>/dev/null | grep '^Fuzz' || true); do \
 	    echo "--- $$p $$f"; \
-	    $(GO) test -run=NONE -fuzz=$$f -fuzztime=10s $$p || exit 1; \
+	    $(GO) test -run=NONE -fuzz="^$$f\$$" -fuzztime=$(FUZZTIME) -fuzzminimizetime=$(FUZZMINIMIZETIME) $$p || exit 1; \
 	  done; \
 	done
 
