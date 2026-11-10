@@ -730,25 +730,28 @@ type TokenGrantContextRequest struct {
 
 // TokenGrantContext is the reply to token.grant_context. The reading key is
 // the one Wappie pinned for the token, in the kit's text (unpadded
-// base64url of 32 bytes), with its fingerprint as the kit computes it: the
-// page shows the fingerprint and seals to this key only, never to one from
-// its URL. IdentityID is the user the grant is sealed for:
-// GrantRow(archive tenant, device, identity, epoch). Live says whether the
-// token is live here now; KeyChanged that a record brought another key, so
-// no grant is taken. Fresh says whether a signed GET of its record is under
-// a minute old (fetched_at), which a grant needs: Wappie asks for one first
-// when it is older.
+// base64url of 32 bytes), with the reading key's fingerprint as the kit
+// computes it (reading_key_fingerprint; an archive key's fingerprint is
+// another thing, named archive_key_fingerprint): the page shows it and
+// seals to this key only, never to one from its URL. IdentityID is the
+// user the grant is sealed for: GrantRow(archive tenant, device, identity,
+// epoch). Live says whether the token is live here now; KeyChanged that a
+// record brought another key, so no grant is taken. Fresh says whether a
+// signed GET of its record is under a minute old (fetched_at), which a
+// grant needs: for a live token Wappie asks for one first when it is older.
+// With fresh false, the page may still send the grant, which asks the
+// platform once more.
 type TokenGrantContext struct {
-	TokenID     string             `json:"token_id"`
-	Name        string             `json:"name"`
-	ReadingKey  string             `json:"reading_key"`
-	Fingerprint string             `json:"fingerprint"`
-	IdentityID  string             `json:"identity_id"`
-	Live        bool               `json:"live"`
-	KeyChanged  bool               `json:"key_changed"`
-	Fresh       bool               `json:"fresh"`
-	FetchedAt   *time.Time         `json:"fetched_at,omitempty"`
-	Numbers     []TokenGrantNumber `json:"numbers"`
+	TokenID               string             `json:"token_id"`
+	Name                  string             `json:"name"`
+	ReadingKey            string             `json:"reading_key"`
+	ReadingKeyFingerprint string             `json:"reading_key_fingerprint"`
+	IdentityID            string             `json:"identity_id"`
+	Live                  bool               `json:"live"`
+	KeyChanged            bool               `json:"key_changed"`
+	Fresh                 bool               `json:"fresh"`
+	FetchedAt             *time.Time         `json:"fetched_at,omitempty"`
+	Numbers               []TokenGrantNumber `json:"numbers"`
 }
 
 // TokenGrantNumber is one number of the grant page, left out when it is not
@@ -756,7 +759,9 @@ type TokenGrantContext struct {
 // fingerprint of its archive key at that epoch (absent with none), the
 // token's Read there (applied, waiting, refused or none) and whether the
 // token's identity holds a grant at that epoch. A grant names the epoch and
-// the fingerprint it was sealed for.
+// the fingerprint of the key it sealed. The page computes that fingerprint
+// from the key it opened and refuses to seal when it is not this one; it
+// never sends this one back as its own.
 type TokenGrantNumber struct {
 	DeviceID              string `json:"device_id"`
 	ArchiveTenantID       string `json:"archive_tenant_id"`
@@ -789,8 +794,13 @@ type TokenWaitingList struct {
 // TokenGrantRequest hands a token's identity the key of one number: the
 // number's private archive key at its current epoch, sealed to the token's
 // reading key by the client, and the fingerprint of the archive key whose
-// private half it sealed (TokenGrantNumber's). A grant for another key, such
-// as the one an archive reset deleted, is refused (archive_key_changed).
+// private half it sealed (store.ArchiveKeyFingerprint, DS49). The client
+// MUST compute that fingerprint itself, from the X25519 public half of the
+// private key it seals, compare it with TokenGrantNumber's, and seal
+// nothing on a mismatch. An echo of the context's value would let a key an
+// archive reset deleted through, at the epoch the new key reuses. A grant
+// for another key, or for a number with no key, is refused conflict, as
+// grant.add answers it.
 type TokenGrantRequest struct {
 	TokenID               string `json:"token_id"`
 	DeviceID              string `json:"device_id"`
@@ -1988,15 +1998,14 @@ const (
 
 	// The refusals of token.grant: the token is not live here (revoked,
 	// expired, stopped, or tokens are off); a record brought another
-	// reading key than the one pinned, or none was pinned; Wappie could not
-	// confirm the token's record with the platform within the last minute;
-	// the token holds no applied Read on the number; and the grant was
-	// sealed for another archive key of the number than its key now.
+	// reading key than the one pinned; Wappie could not confirm the token's
+	// record with the platform within the last minute; and the token holds
+	// no applied Read on the number. A grant sealed for another archive key
+	// of the number is conflict, as grant.add answers it (DS49).
 	ErrCodeTokenNotLive      = "token_not_live"
 	ErrCodeReadingKeyChanged = "reading_key_changed"
 	ErrCodeTokenUnconfirmed  = "token_unconfirmed"
 	ErrCodeTokenNoRead       = "token_no_read"
-	ErrCodeArchiveKeyChanged = "archive_key_changed"
 )
 
 // Error is the failure payload. Readers comes with device_has_readers, and

@@ -19,13 +19,16 @@ import (
 // wait for a number's key, and token.grant writes the grant
 // (store.Tokens.PutTokenGrant). A token of another workspace answers as an
 // unknown one. A grant needs a signed GET of the token's record under a
-// minute old: both the context and the grant ask the platform for one
-// first when it is older (TokenRecords).
+// minute old when Wappie writes it. The context of a live token, and a
+// grant the store finds stale, ask the platform for one first
+// (TokenRecords).
 //
 // A grant also names the archive key it was sealed for, by its fingerprint
-// (store.ArchiveKeyFingerprint). After an archive reset that kept the
+// (store.ArchiveKeyFingerprint, DS49). After an archive reset that kept the
 // numbers, a number's new key takes epoch 1 again, so the epoch alone
-// cannot tell the old key's grant from the new one's.
+// cannot tell the old key's grant from the new one's. The client computes
+// the fingerprint from the key it seals and compares it with the
+// context's; an echo of the context's would let the deleted key through.
 
 // TokenRecords is what the grant frames ask of the contract's client: a
 // token's record fetched by a signed GET and applied
@@ -36,6 +39,10 @@ type TokenRecords interface {
 
 // maxTokenGrantNumbers is how many numbers one grant frame may name.
 const maxTokenGrantNumbers = 100
+
+// noSuchToken answers a token id this workspace does not hold, one of
+// another workspace, and one with no reading key yet, alike.
+const noSuchToken = "no such token in this workspace, or it has no reading key yet"
 
 // tokenStore is the store of platform tokens, nil when none is configured.
 func (s *Server) tokenStore() *store.Tokens {
@@ -110,12 +117,6 @@ func (s *session) fetchToken(ctx context.Context, tenant, token uuid.UUID) bool 
 	return false
 }
 
-// tokenFetched reports whether a signed GET of the token's record is under
-// a minute old at now (store.TokenGrantFresh).
-func tokenFetched(at *time.Time, now time.Time) bool {
-	return at != nil && now.Sub(*at) <= store.TokenGrantFresh
-}
-
 // handleTokenGrantContext answers what the grant page draws from. When the
 // token is live and its last signed GET is over a minute old, it asks the
 // platform for its record first, and answers what Wappie holds after it.
@@ -140,11 +141,11 @@ func (s *session) handleTokenGrantContext(ctx context.Context, f Frame) {
 	}
 	now := time.Now()
 	got, err := tokens.TokenGrantContext(ctx, tenant, token, devices, now)
-	if err == nil && got.Live && !tokenFetched(got.FetchedAt, now) && s.fetchToken(ctx, tenant, token) {
+	if err == nil && got.Live && !store.TokenFetchedFresh(got.FetchedAt, now) && s.fetchToken(ctx, tenant, token) {
 		got, err = tokens.TokenGrantContext(ctx, tenant, token, devices, now)
 	}
 	if errors.Is(err, store.ErrNotFound) {
-		s.replyError(f.ReqID, ErrCodeNotFound, "no such token in this workspace")
+		s.replyError(f.ReqID, ErrCodeNotFound, noSuchToken)
 		return
 	}
 	if err != nil {
@@ -153,8 +154,8 @@ func (s *session) handleTokenGrantContext(ctx context.Context, f Frame) {
 		return
 	}
 	out := TokenGrantContext{TokenID: got.ID.String(), Name: got.Name, ReadingKey: base64.RawURLEncoding.EncodeToString(got.Key),
-		Fingerprint: got.Fingerprint, IdentityID: got.Identity.String(), Live: got.Live, KeyChanged: got.KeyChanged,
-		Fresh: tokenFetched(got.FetchedAt, now), FetchedAt: got.FetchedAt, Numbers: make([]TokenGrantNumber, 0, len(got.Numbers))}
+		ReadingKeyFingerprint: got.Fingerprint, IdentityID: got.Identity.String(), Live: got.Live, KeyChanged: got.KeyChanged,
+		Fresh: store.TokenFetchedFresh(got.FetchedAt, now), FetchedAt: got.FetchedAt, Numbers: make([]TokenGrantNumber, 0, len(got.Numbers))}
 	for _, n := range got.Numbers {
 		out.Numbers = append(out.Numbers, TokenGrantNumber{DeviceID: n.Device.String(), ArchiveTenantID: n.ArchiveTenantID.String(),
 			Epoch: int(n.CurrentEpoch), ArchiveKeyFingerprint: n.ArchiveKeyFingerprint, Read: n.Read, Granted: n.Granted})
@@ -195,11 +196,13 @@ func (s *session) handleTokenWaiting(ctx context.Context, f Frame) {
 
 // handleTokenGrant records a number's key sealed to a token's identity,
 // after the person's step-up and their own freshness, as grant.add does.
-// When the token's last signed GET is over a minute old at the request's
-// start, it asks the platform for the record and tries once more. It
-// answers the number's readers, its tokens apart, as they now stand.
+// The store judges the token's liveness and its record's minute on
+// Wappie's clock at the write (0053: under a minute old when Wappie accepts
+// the grant), so the time the step-up and the freshness check take counts.
+// When the record is stale there, it asks the platform for the record and
+// tries once more. It answers the number's readers, its tokens apart, as
+// they now stand.
 func (s *session) handleTokenGrant(ctx context.Context, f Frame) {
-	now := time.Now()
 	who, tenant, tokens, ok := s.grantFrame(f.ReqID)
 	if !ok {
 		return
@@ -219,7 +222,8 @@ func (s *session) handleTokenGrant(ctx context.Context, f Frame) {
 		s.replyError(f.ReqID, ErrCodeBadRequest, "epoch must be between 1 and 65535")
 		return
 	case !store.ValidArchiveKeyFingerprint(req.ArchiveKeyFingerprint):
-		s.replyError(f.ReqID, ErrCodeBadRequest, "archive_key_fingerprint must be the 64 lowercase hex characters token.grant_context gives")
+		s.replyError(f.ReqID, ErrCodeBadRequest,
+			"archive_key_fingerprint must be the fingerprint of the archive key you sealed: 64 lowercase hex characters, computed from that key")
 		return
 	case len(req.SealedDSK) == 0:
 		s.replyError(f.ReqID, ErrCodeBadRequest, "a grant with no sealed key is not a grant")
@@ -234,9 +238,10 @@ func (s *session) handleTokenGrant(ctx context.Context, f Frame) {
 		return
 	}
 	g := store.TokenGrant{Workspace: tenant, Token: token, Device: device, Epoch: uint16(req.Epoch), //nolint:gosec // G115: checked above
-		ArchiveKeyFingerprint: req.ArchiveKeyFingerprint, SealedDSK: req.SealedDSK, Sealer: who.userID, Now: now}
+		ArchiveKeyFingerprint: req.ArchiveKeyFingerprint, SealedDSK: req.SealedDSK, Sealer: who.userID, Now: time.Now()}
 	err := tokens.PutTokenGrant(ctx, g)
 	if errors.Is(err, store.ErrTokenStale) && s.fetchToken(ctx, tenant, token) {
+		g.Now = time.Now()
 		err = tokens.PutTokenGrant(ctx, g)
 	}
 	if err != nil {
@@ -251,7 +256,7 @@ func (s *session) handleTokenGrant(ctx context.Context, f Frame) {
 func (s *session) tokenGrantRefused(reqID string, token, device uuid.UUID, err error) {
 	switch {
 	case errors.Is(err, store.ErrNotFound):
-		s.replyError(reqID, ErrCodeNotFound, "no such token in this workspace")
+		s.replyError(reqID, ErrCodeNotFound, noSuchToken)
 	case errors.Is(err, store.ErrTokenNotLive):
 		s.replyError(reqID, ErrCodeTokenNotLive, "this token is not live here: it is revoked, expired or stopped, or platform tokens are off")
 	case errors.Is(err, store.ErrTokenKeyChanged):
@@ -267,7 +272,8 @@ func (s *session) tokenGrantRefused(reqID string, token, device uuid.UUID, err e
 	case errors.Is(err, store.ErrNoArchiveKey):
 		s.replyError(reqID, ErrCodeConflict, "this number has no archive key, so there is nothing to grant")
 	case errors.Is(err, store.ErrArchiveKeyChanged):
-		s.replyError(reqID, ErrCodeArchiveKeyChanged, "this number's archive key is not the one the grant was sealed for; reload and seal again")
+		// conflict, as grant.add answers it (DS49).
+		s.replyError(reqID, ErrCodeConflict, "this number's archive key is not the one the grant was sealed for; reload and seal again")
 	case errors.Is(err, store.ErrSealerCannotRead):
 		s.replyError(reqID, ErrCodeNotAuthorized, "only an owner or admin who reads this number now can share its key")
 	default:
