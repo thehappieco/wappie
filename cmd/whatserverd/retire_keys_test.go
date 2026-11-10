@@ -117,7 +117,9 @@ func (l *everyLine) WithGroup(string) slog.Handler      { return l }
 // TestMaintainOnceDeletesEndedKeys (step 7's plan, 7.6): the hourly pass
 // deletes a key whose end is 13 months past, right after the expiry pass,
 // whatever the token mode, and keeps one ended less long ago; a key past
-// its 13 months whose connection is still active is kept with a WARN.
+// its 13 months whose connection is still active is kept with a WARN. A
+// connection whose status says active past its expiry, as where MCP is
+// off and no pass expires connections, has ended: its key goes.
 func TestMaintainOnceDeletesEndedKeys(t *testing.T) {
 	pool := pgtest.Fresh(t, migrate.Run)
 	ctx := context.Background()
@@ -131,22 +133,25 @@ func TestMaintainOnceDeletesEndedKeys(t *testing.T) {
 		t.Fatal(err)
 	}
 	owner = u.ID
-	var held uuid.UUID
+	ids := map[string]uuid.UUID{}
 	for _, k := range []struct{ prefix, revoked string }{
 		{"0000000a", `clock_timestamp() - interval '14 months'`},
 		{"0000000b", `clock_timestamp() - interval '12 months'`},
 		{"0000000c", `clock_timestamp() - interval '14 months'`},
+		{"0000000d", `clock_timestamp() - interval '14 months'`},
 	} {
 		var id uuid.UUID
 		if err := pool.QueryRow(ctx, `INSERT INTO api_keys (tenant_id, prefix, key_hash, name, revoked_at, created_by, origin)
 			VALUES ($1, $2, 'x', $2, `+k.revoked+`, $3, 'rest') RETURNING id`, tenant, k.prefix, owner).Scan(&id); err != nil {
 			t.Fatal(err)
 		}
-		held = id
+		ids[k.prefix] = id
 	}
-	execSQL(t, pool, `INSERT INTO mcp_connections (tenant_id, request_id, api_key_id, created_by, client_name, redirect_host,
-		device_count, reader_kid, status, expires_at) VALUES ($1, 'r', $2, $3, 'Claude', 'claude.ai', 1, '0123456789abcdef', 'active',
-		clock_timestamp() + interval '1 day')`, tenant, held, owner)
+	for prefix, expires := range map[string]string{"0000000c": `clock_timestamp() + interval '1 day'`, "0000000d": `clock_timestamp() - interval '14 months'`} {
+		execSQL(t, pool, `INSERT INTO mcp_connections (tenant_id, request_id, api_key_id, created_by, client_name, redirect_host,
+			device_count, reader_kid, status, expires_at) VALUES ($1, $2, $3, $4, 'Claude', 'claude.ai', 1, '0123456789abcdef', 'active',
+			`+expires+`)`, tenant, prefix, ids[prefix], owner)
+	}
 
 	logged := &warnings{}
 	a := &app{log: slog.New(logged), pools: &pg.Pools{Live: pool, History: pool, API: pool}, storage: store.NewStorage(pool)}

@@ -256,9 +256,11 @@ every installation, whatever the token mode, once Wappie's clock and the
 database's both say the 13 months have passed. The key's MCP connection goes
 with it, with the connection's chats, send ledger, usage counts and notices.
 An AI integration's results stay, and no longer name it. A key whose
-connection has not ended is kept, and the pass logs the WARN "ended api keys
-kept: their connection has not ended" with a count; a key and its
-connection end together, so look into it. The INFO line "api keys deleted"
+connection has not ended (its status live and its expiry ahead) is kept,
+and the pass logs the WARN "ended api keys kept: their connection has not
+ended" with a count; a key and its connection end together, so look into
+it. A connection past its expiry has ended, whatever its status says: where
+MCP is off, no pass marks it expired. The INFO line "api keys deleted"
 gives counts by origin, never a prefix.
 
 A restore of the database brings back the keys deleted since its snapshot,

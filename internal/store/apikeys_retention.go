@@ -39,9 +39,15 @@ func endedKey(cut string) string {
 	return `least(k.revoked_at, k.expires_at) + ` + apiKeyKeep + ` <= ` + cut
 }
 
-// liveConnectionSQL is a key whose MCP connection has not ended. A key and
-// its connection end together, so this belt should hold nothing.
-const liveConnectionSQL = `EXISTS (SELECT 1 FROM mcp_connections c WHERE c.api_key_id = k.id AND c.status IN ('pending', 'active', 'reseal'))`
+// liveConnection is a key whose MCP connection has not ended: its status
+// says live and its expiry is after cut. A key and its connection end
+// together, so this belt should hold nothing. An installation that turned
+// MCP off no longer runs ExpireMCPConnections, so its connections keep a
+// live status past their expiry; the expiry is what ends them there.
+func liveConnection(cut string) string {
+	return `EXISTS (SELECT 1 FROM mcp_connections c WHERE c.api_key_id = k.id AND c.status IN ('pending', 'active', 'reseal')
+		AND c.expires_at > ` + cut + `)`
+}
 
 // APIKeyRetention is what RetainAPIKeys did.
 type APIKeyRetention struct {
@@ -89,7 +95,7 @@ func RetainAPIKeys(ctx context.Context, pool *pgxpool.Pool, now time.Time) (APIK
 				if err := lockWorkspaceAccess(ctx, tx, ws); err != nil {
 					return err
 				}
-				if err := tx.QueryRow(ctx, `SELECT count(*) FROM api_keys k WHERE k.tenant_id = $1 AND `+endedKey("$2")+` AND `+liveConnectionSQL,
+				if err := tx.QueryRow(ctx, `SELECT count(*) FROM api_keys k WHERE k.tenant_id = $1 AND `+endedKey("$2")+` AND `+liveConnection("$2"),
 					ws, cut).Scan(&held); err != nil {
 					return err
 				}
@@ -101,12 +107,12 @@ func RetainAPIKeys(ctx context.Context, pool *pgxpool.Pool, now time.Time) (APIK
 				if err := withQuarantine(ctx, tx, func() error {
 					_, err := tx.Exec(ctx, `UPDATE ai_derived SET authorization_id = NULL WHERE authorization_id IN (
 						SELECT c.id FROM mcp_connections c JOIN api_keys k ON k.id = c.api_key_id
-						WHERE k.tenant_id = $1 AND `+endedKey("$2")+` AND NOT `+liveConnectionSQL+`)`, ws, cut)
+						WHERE k.tenant_id = $1 AND `+endedKey("$2")+` AND NOT `+liveConnection("$2")+`)`, ws, cut)
 					return err
 				}); err != nil {
 					return err
 				}
-				rows, err := tx.Query(ctx, `DELETE FROM api_keys k WHERE k.tenant_id = $1 AND `+endedKey("$2")+` AND NOT `+liveConnectionSQL+`
+				rows, err := tx.Query(ctx, `DELETE FROM api_keys k WHERE k.tenant_id = $1 AND `+endedKey("$2")+` AND NOT `+liveConnection("$2")+`
 					RETURNING coalesce(k.origin, '')`, ws, cut)
 				if err != nil {
 					return err
