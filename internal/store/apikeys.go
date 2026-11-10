@@ -410,6 +410,28 @@ func (a *APIKeys) Verify(ctx context.Context, presented string) (tenantID string
 
 // VerifyScoped resolves a presented key to its tenant and what it may do.
 func (a *APIKeys) VerifyScoped(ctx context.Context, presented string) (Verified, error) {
+	return a.verify(ctx, presented, "")
+}
+
+// setupHeldSQL is a setup's key that no connection names, while keys are
+// narrowed (keysNarrowedSQL): not a REST key (the plan's 7.3, L8). The
+// setup asks for the key over the person's session, and the consent's
+// connection names it before the key is first used.
+const setupHeldSQL = ` AND NOT (api_keys.origin IS NOT DISTINCT FROM 'mcp_setup'
+	AND NOT EXISTS (SELECT 1 FROM mcp_connections c WHERE c.api_key_id = api_keys.id)
+	AND (EXISTS (SELECT 1 FROM contract_token_state WHERE mode = 'on') OR EXISTS (SELECT 1 FROM key_retirements)))`
+
+// VerifyClient is VerifyScoped for REST, media, upload and the socket's
+// hello: while keys are narrowed (KeysNarrowed), it also refuses a live
+// setup's key (origin mcp_setup) that no MCP connection names, with
+// ErrInvalidKey and the same work as an unknown key. Otherwise any admin
+// could mint a renewable 30-minute read key. The MCP side keeps
+// VerifyScoped, and checks a key against its connection.
+func (a *APIKeys) VerifyClient(ctx context.Context, presented string) (Verified, error) {
+	return a.verify(ctx, presented, setupHeldSQL)
+}
+
+func (a *APIKeys) verify(ctx context.Context, presented, held string) (Verified, error) {
 	prefix, secret, ok := strings.Cut(presented, ".")
 	if !ok || len(prefix) != prefixLen || secret == "" {
 		return Verified{}, ErrInvalidKey
@@ -424,7 +446,7 @@ func (a *APIKeys) VerifyScoped(ctx context.Context, presented string) (Verified,
 		  FROM api_keys
 		 WHERE prefix = $1 AND revoked_at IS NULL
 		 AND (expires_at IS NULL OR expires_at > now())
-		 AND EXISTS (SELECT 1 FROM tenants t WHERE t.id=api_keys.tenant_id AND t.status='active')`, prefix).Scan(&id, &tenantID, &storedHash, &scope, &actsAs, &accessVersion)
+		 AND EXISTS (SELECT 1 FROM tenants t WHERE t.id=api_keys.tenant_id AND t.status='active')`+held, prefix).Scan(&id, &tenantID, &storedHash, &scope, &actsAs, &accessVersion)
 	if errors.Is(err, pgx.ErrNoRows) {
 		// Hash anyway so an unknown prefix costs the same time as a known one.
 		// Without this the response time distinguishes the two, which is a free

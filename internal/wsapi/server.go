@@ -689,7 +689,7 @@ func (s *session) credentials(ctx context.Context, hello Hello) (actor, error) {
 	if hello.APIKey == "" {
 		return actor{}, errors.New("no api key and no session")
 	}
-	key, err := s.srv.cfg.Keys.VerifyScoped(ctx, hello.APIKey)
+	key, err := s.srv.cfg.Keys.VerifyClient(ctx, hello.APIKey)
 	if err != nil {
 		return actor{}, errors.New("invalid api key")
 	}

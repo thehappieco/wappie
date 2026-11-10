@@ -178,3 +178,60 @@ func TestAnAskedKeyIsNarrowedWhileTokensAreOn(t *testing.T) {
 	w.exec(t, `INSERT INTO key_retirements (revoked, services_removed, services_kept, report, by) VALUES (0, 0, 0, '{}', 'root')`)
 	check("tokens off after a retirement", true)
 }
+
+// bind names key in a connection of the workspace, as a consent does.
+func (w *delWorld) bind(t *testing.T, key string) {
+	t.Helper()
+	w.exec(t, `INSERT INTO mcp_connections (tenant_id, request_id, api_key_id, created_by, client_name, redirect_host,
+		device_count, reader_kid, status, expires_at) VALUES ($1, $2, $3, $4, 'Claude', 'claude.ai', 1, '0123456789abcdef', 'pending',
+		clock_timestamp() + interval '1 day')`, w.tenant, uuid.NewString(), w.keyID(context.Background(), t, key), w.owner)
+}
+
+// TestASetupKeyWorksOnlyThroughItsConnection (the plan's 7.3, L8): while
+// keys are narrowed, VerifyClient (REST, media, upload, the socket's
+// hello) refuses a live setup's key that no connection names, as it
+// refuses an unknown key; once a connection names it, it works. Off the
+// narrowing it works as before; VerifyScoped (the MCP side) never asks.
+func TestASetupKeyWorksOnlyThroughItsConnection(t *testing.T) {
+	w := newDelWorld(t)
+	ctx := context.Background()
+	devices := []uuid.UUID{w.number(t, "Phone")}
+	in20 := time.Now().Add(20 * time.Minute)
+	setup := func() string {
+		key, err := w.apiKeys.IssueAsked(ctx, w.tenant.String(), "MCP · Claude", store.ScopeRead, &w.owner, nil, devices, &in20)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return key
+	}
+	unbound, bound := setup(), setup()
+	w.bind(t, bound)
+	rest, err := w.apiKeys.IssueAsked(ctx, w.tenant.String(), "deploy bot", store.ScopeFull, &w.owner, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	check := func(state string, narrowed bool) {
+		t.Helper()
+		for name, key := range map[string]string{"an unbound setup's key": unbound, "a bound one": bound, "a panel's key": rest} {
+			_, err := w.apiKeys.VerifyClient(ctx, key)
+			refused := narrowed && key == unbound
+			if refused && !errors.Is(err, store.ErrInvalidKey) || !refused && err != nil {
+				t.Errorf("%s: %s: VerifyClient %v, refused %v", state, name, err, refused)
+			}
+			if _, err := w.apiKeys.VerifyScoped(ctx, key); err != nil {
+				t.Errorf("%s: %s: VerifyScoped %v", state, name, err)
+			}
+		}
+	}
+	check("tokens off", false)
+	w.exec(t, `UPDATE contract_token_state SET mode = 'on'`)
+	check("tokens on", true)
+	w.exec(t, `UPDATE contract_token_state SET mode = 'off'`)
+	w.exec(t, `INSERT INTO key_retirements (revoked, services_removed, services_kept, report, by) VALUES (0, 0, 0, '{}', 'root')`)
+	check("after a retirement", true)
+	// Bound later, it works from then on.
+	w.bind(t, unbound)
+	if _, err := w.apiKeys.VerifyClient(ctx, unbound); err != nil {
+		t.Errorf("bound later: %v", err)
+	}
+}

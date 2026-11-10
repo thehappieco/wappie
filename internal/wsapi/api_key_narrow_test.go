@@ -132,3 +132,34 @@ func TestAPIKeyCreateIsNarrowedWhileTokensAreOn(t *testing.T) {
 		t.Fatalf("the listing's origins: %v", origins)
 	}
 }
+
+// TestASetupKeyWorksOnlyThroughItsConnectionOnTheSocket (the plan's 7.3):
+// with tokens on, a setup's key that no connection names gets the hello's
+// "invalid api key", as an unknown key does; once a connection names it,
+// it is welcomed.
+func TestASetupKeyWorksOnlyThroughItsConnectionOnTheSocket(t *testing.T) {
+	ts := newTokenSocket(t)
+	w := ts.w
+	ctx := context.Background()
+	device := w.Number("Vendas")
+	in20 := time.Now().Add(20 * time.Minute)
+	keys := store.NewAPIKeys(ts.pool)
+	key, err := keys.IssueAsked(ctx, w.Tenant.String(), "MCP · Claude", store.ScopeRead, &w.Owner, nil, []uuid.UUID{device}, &in20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, err := keys.VerifyScoped(ctx, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, f := ts.hello(t, wsapi.Hello{APIKey: key})
+	if e := wantError(t, f, wsapi.ErrCodeUnauthorized); e.Message != "invalid api key" {
+		t.Fatalf("an unbound setup's key: %q", e.Message)
+	}
+	w.Exec(`INSERT INTO mcp_connections (tenant_id, request_id, api_key_id, created_by, client_name, redirect_host,
+		device_count, reader_kid, status, expires_at) VALUES ($1, $2, $3, $4, 'Claude', 'claude.ai', 1, '0123456789abcdef', 'pending',
+		clock_timestamp() + interval '1 day')`, w.Tenant, uuid.NewString(), v.ID, w.Owner)
+	if _, f := ts.hello(t, wsapi.Hello{APIKey: key}); f.Type != wsapi.TypeWelcome {
+		t.Fatalf("a bound one: %s %s", f.Type, f.Payload)
+	}
+}
