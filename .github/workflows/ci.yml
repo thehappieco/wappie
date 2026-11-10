@@ -141,12 +141,20 @@ jobs:
         working-directory: packages/client
       # The attested reader's image measures packages/client's build into
       # PCR0: what it keeps of the client must equal release A's (c9ec561),
-      # whose reader the pilot runs, or the change needs a reader release.
-      # Type-only edits pass.
+      # or the change needs a reader release. Type-only edits pass. c9ec561
+      # is the gate's fixed point, not the pilot's image: reader 0.6.0 was
+      # built from 2b540ba, whose client differs.
       - name: The reader's measured client is release A's
         run: |
           git fetch --no-tags --depth=1 origin c9ec561ca2cc669cdec12d5d90523269c3c2396a
           scripts/check-client-dist.sh c9ec561ca2cc669cdec12d5d90523269c3c2396a
+      # The image also measures packages/mcp and packages/mcp-http whole
+      # (src/ and test/ pruned), the attachment workers, nsm-attest and
+      # media-jail. They must equal f7babbe's, main when this check began.
+      - name: The reader's other measured inputs are unchanged
+        run: |
+          git fetch --no-tags --depth=1 origin f7babbeeb0a386981eee8d1cee5c2dd071a9d2df
+          scripts/check-reader-inputs.sh f7babbeeb0a386981eee8d1cee5c2dd071a9d2df
       - run: npm ci && npm test
         working-directory: packages/cli
       - run: npm ci && npm test && npm pack --dry-run
