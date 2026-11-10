@@ -534,6 +534,9 @@ transaction):
 | `mcp.connect`, `mcp.token`, `ai.connect` | `RequireWidening` | the person, `IfStale` |
 | `mcp.renew` | `RequireWidening` | the person, `Always` |
 | `grant.revoke`, `permission.withhold_read` | `RequireBackups` | the number's other key holders |
+| the console's `item.sync_stop`, `item.sync_resume` | `RequireFresh` | the actor, `IfStale` |
+| the console's `item.flags_raise` | `RequireWidening` | the actor and the target, `IfStale` (a target not active locally is `not_found` before it) |
+| the console's `item.flags_drop` of read, `item.access_remove` | `RequireBackups` | the number's other key holders, when the target reads the number or holds its key |
 
 - **Parties.** Only a member of the workspace who is a person counts: a
   service identity, a membership with a deadline or a connection's account
@@ -671,7 +674,9 @@ answers each one `kind_not_accepted`. The second, **commands**, adds every
 followed person's own document and, in the mode `on`, runs the `numbers`
 kinds and the person's two ([the kinds](#the-kinds)).
 The decisions are DS1 to DS17 in [decisions](decisions.md#the-contracts-settings-part-2026-11-08);
-migration 0052 holds the schema of both releases.
+migration 0052 holds the schema of both releases. Step 12b adds the
+console's three flags kinds with no migration (release R3, `flags-pilot`;
+DS18 to DS25 and DS46 in [decisions](decisions.md#the-consoles-flags-kinds-2026-11-09)).
 
 ### The settings mode
 
@@ -696,9 +701,12 @@ whatserverd contract settings status [--check]
   platform first.
 - `read` lists no kind in any `accepts`, and answers every command
   `kind_not_accepted`; `on` lists the kinds this binary runs (`item.rename`,
-  `item.sync_stop`, `item.sync_resume`, `item.sync_now` and
-  `item.registration_delete` in `numbers`; `person.notices_dismiss` and
-  `person.sign_out_everywhere` in the person's document) and runs them. A switch makes every section and
+  `item.sync_stop`, `item.sync_resume`, `item.sync_now`,
+  `item.registration_delete`, `item.flags_raise`, `item.flags_drop` and
+  `item.access_remove` in `numbers`; `person.notices_dismiss` and
+  `person.sign_out_everywhere` in the person's document) and runs them.
+  There is no switch per kind: a binary lists the kinds it runs from its
+  start, so the platform is told before a release that adds kinds (DS46). A switch makes every section and
   person document due at once, with the new `accepts`: in its own
   transaction, and again once the leader's watcher holds the new mode, so
   a document measured in between, and sent with the old `accepts`, goes
@@ -722,7 +730,7 @@ Each recorded platform workspace's `numbers` section
 |---|---|
 | `state_seq`, `snapshot_seq` | `contract_workspaces.sections_seq` (the greatest of the clock in milliseconds and both columns plus one), and the last snapshot numbered; a workspace with no snapshot numbered yet sends no section |
 | `truncated` | a list over its bound (`pending` over 50, `items` over 1000) goes empty with `truncated`, never cut |
-| `accepts` | `[]` in `read`; in `on` the five `numbers` kinds of [the kinds](#the-kinds) |
+| `accepts` | `[]` in `read`; in `on` the eight `numbers` kinds of [the kinds](#the-kinds) |
 | `can_link` | the workspace active, below its capacity as `check_device_capacity` counts it (a deleted number takes no place), and not stopped by its storage |
 | `places_free` | `null` until entitlements reach Wappie |
 | `storage_paused` | the snapshot's quota verdict |
@@ -765,6 +773,10 @@ forgotten (`contract: failing sections due again`). A section is sent for
 every recorded workspace whose snapshot is numbered, a parked snapshot's
 included: its own `not_found` run and park stand for it, and a snapshot
 Wappie's check refused does not hold back a section the platform takes.
+A binary sends only the sections it renders (`numbers` today): a row of
+another section, which a later binary added (`mcp`, `integrations`), is
+never picked, so after a rollback the older binary never loops on it
+(DS25).
 
 ### The command feed and the ledger
 
@@ -845,24 +857,45 @@ check that fails answering it with the seq it was judged on (DS5, DS15):
 
 1. its kind is one this binary runs for its section in this mode, and
    Wappie's producer's (`kind_not_accepted`);
-2. its actor is followed with a document, and linked to a local account
-   (`not_held`; a person's kind with no seq);
+2. its actor is followed with a document, and linked to a local account,
+   and so is the person a flags kind's target names, whether or not
+   `based_on.docs` names them (`not_held`; a person's kind with no seq);
 3. every document it was drawn from is applied: `based_on.docs` at most the
    stored version of the current generation (`memberships_behind`,
    `retry_after` 5, the behind retry);
 4. for a workspace's kind, the workspace is recorded, Wappie's, and open
    (`not_found`, `team_closed`; judged again in the act's transaction,
    which holds the record, so a closing stored in between, by the
-   freshness below for one, is `team_closed` too);
-5. the freshness `item.sync_stop` and `item.sync_resume` ask in a team, as
-   the socket's stop asks it (only logged at observe;
-   `memberships_unconfirmed` with enforce);
+   freshness below for one, is `team_closed` too); then, for
+   `item.flags_raise`, a read-only look at its target: an active,
+   unexpired membership here, an active local account, and a stored
+   document `active` with no later disablement seen than its own, else a
+   final `not_found` before the freshness, so a suspended person is never
+   answered `memberships_unconfirmed` (the platform's Q6; the act checks
+   the membership again);
+5. the freshness the kind asks (only logged at observe;
+   `memberships_unconfirmed` with enforce): `item.sync_stop` and
+   `item.sync_resume` the actor's in a team, as the socket's stop asks it;
+   `item.flags_raise` the actor's and the target's in a team, and the
+   actor's own stored status in a personal workspace, as Wappie's screen
+   asks a raise (`RequireWidening`); `item.flags_drop` of read and
+   `item.access_remove`, when the target reads the number or holds its
+   key, the minute rule for its other key holders, in a team
+   (`RequireBackups`, as the screen asks withholding Read); a drop of
+   send or manage asks nothing (DS23);
 6. then the kind, in one transaction: its target first (a deleted number,
    another workspace's, or an id that is none of Wappie's: `not_found`, as
    on Wappie's own screens), then the actor's local role and the stored
    document's role, both (`not_authorized` where they differ), then
    `params.before` against the value Wappie publishes, then the act, its
    result at the act's seq, and the documents it shows in due at once.
+   The flags kinds differ (DS19, DS21, DS22): `item.flags_raise` answers
+   a deleted number of the workspace `state_changed`, and a target who is
+   not an active member here `not_found`, before the roles;
+   `item.flags_drop` and `item.access_remove` run on a deleted number of
+   the workspace, never compare `params.before` with the stored flags (a
+   drop takes `before \ after` from them), and answer `ran` for a person
+   with no membership row, after the roles.
 
 | Kind | Local rule (Wappie's screens) | Document's role | Refusals of its own | Runs as |
 |---|---|---|---|---|
@@ -871,8 +904,30 @@ check that fails answering it with the seq it was judged on (DS5, DS15):
 | `item.sync_resume` | owner or admin by role | owner or admin | `state_changed` (not paused, or a number that cannot run: no identity, logged out, banned) | `device.start` on a paused number, a move's pause included; its pause notices marked resumed in the lifting transaction; a start that fails, or runs past the start bound, keeps the pause lifted, and the supervisor starts the number (DS9) |
 | `item.registration_delete` | owner or admin | owner or admin | `state_changed` (it linked) | `device.delete` of a registration: its pairing cancelled and stopped first, the row deleted |
 | `item.sync_now` | Read, for a person, as the socket's own sync now asks it (a key keeps Manage) | any role | `paused`, `storage_paused`, `not_linked`, `read_only`, `item_busy`, `connect_failed` (a start past the start bound too), `rate_limited` within the failed start wait (no start) | `device.start` on a number not paused (DS13): an owner or admin who does not read the number may not |
+| `item.flags_raise` | owner or admin by role; an owner's flags only an owner's (Q58) | owner or admin; an owner's flags only an owner's | `state_changed` (`before` is not the stored flags, compared as a set; or the number was deleted since), `not_found` (the number gone or another workspace's; the target not an active member here) | `PUT …/permissions` with flags added: the flags written, never a key; `grant_needed` is never answered (send and manage need no seal, and the kit refuses a raise of read); the snapshot is due too |
+| `item.flags_drop` | as the raise | as the raise | `last_reader` (the number, a deleted one included, would be left with no reader) | the flags `before` has and `after` has not are taken from the stored ones, so one raised since stays; a drop of read deletes every grant of the person on the number at every epoch, even when the flag was already gone; it runs on a deleted number of the workspace (DS21); a person with no membership row at all is `ran`, a suspended one's flags and grants go all the same (DS22) |
+| `item.access_remove` | as the raise | as the raise | `last_reader` | every flag false with the row kept, so a key shared later gives no read or send; every grant of the person on the number deleted, a key holder's without read too; the number and the membership as the drop's (DS20) |
 | `person.sign_out_everywhere` | the actor | the actor | none | every session family of the actor begun before `issued_at` ends, its workspace sessions with it (the sockets close within a second), never a later one, an API key, an MCP or AI connection; `sessions_ended` counts the live sessions ended (DS11) |
 | `person.notices_dismiss` | the actor's own notices | the actor | `state_changed` (a pause notice whose version rose stays; every other one is dismissed) | Wappie's own "seen", at the version shown |
+
+**The flags kinds** (step 12b, DS18 to DS24) run on the write Wappie's
+own permissions screen makes (`setDevicePermissionTx`), so the two agree
+by construction, and `TestConsoleParityFlags` holds them to it. They
+differ where the console's rules do: drop and remove run on a deleted
+number, which the screen does not find (DS21), and a raise never touches
+a key, where the screen's PUT without Read deletes a dormant one. Wappie
+keeps no time per flag, so a drop retried late may undo a raise made
+since on Wappie's screen (the owner's Q7), and its tightenings never
+answer `state_changed`. Only an owner, by the local role and the
+document's both, changes the flags of an owner (local, or named owner
+by their document): an admin is `not_authorized` here and 403
+`not_authorized` on Wappie's own screen (the owner's Q58); `grant.revoke`,
+which changes no flag, keeps its own rule. A person's MCP connections and
+AI integrations keep their copy of the number's key after their Read
+goes, as on Wappie's screen ([mcp-enclave](mcp-enclave.md) 15.15), until
+F3 takes the number off their own (the owner's Q8). After a `ran` that
+wrote, this process's sockets check their access at once; the others
+within their access loop.
 
 The runners live in `internal/numberacts`, beside the relink, and reach
 the socket server through `internal/wsapi/console_hooks.go`; parity tests
@@ -890,8 +945,9 @@ after 5 tries it is answered `rate_limited`. The results go as in the
 read release.
 
 **Delivered again.** A tightening delivered `again` (after Wappie's own
-restore: `person.sign_out_everywhere` among the kinds this binary runs)
-is never answered with a retry. The platform keeps its first result,
+restore: `person.sign_out_everywhere`, `item.flags_drop` and
+`item.access_remove` among the kinds this binary runs) is never answered
+with a retry. The platform keeps its first result,
 takes the same outcome and code as a duplicate and any other as a
 conflict, and never issues it again, so a retry would leave undone what
 the tightening took away. Where a check would answer it with one (a mode
