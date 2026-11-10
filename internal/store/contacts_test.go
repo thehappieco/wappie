@@ -2,6 +2,7 @@ package store_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -280,5 +281,70 @@ func TestContactNamesUnderTwoContentKeys(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestContactWriteRefusesNamesUnderAnotherKey: a write names one content
+// key, and every name it carries must be under it. Names sealed one at a
+// time can straddle a new key, and the check at the write (DS49) then
+// covers only the last one (DS50).
+func TestContactWriteRefusesNamesUnderAnotherKey(t *testing.T) {
+	_, tenant, device, contacts := contactFixture(t)
+	ctx := context.Background()
+	pub, _, err := seal.GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	const key = "5511955554444@s.whatsapp.net"
+	uid := store.ContactUID(device, key)
+	sealUnder := func(id uint32, kind seal.Kind, name string) []byte {
+		t.Helper()
+		ck, err := seal.NewContentKey(pub, tenant, device, 1, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out, err := ck.Seal(kind, tenant, uid, []byte(name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	push := sealUnder(1, seal.KindPushName, "zé")
+	full := sealUnder(2, seal.KindFullName, "José Silva")
+	business := sealUnder(2, seal.KindBusinessName, "Padaria do Zé")
+
+	base := store.ContactName{TenantID: tenant, DeviceID: device, ContactKey: key, ContactPN: key}
+	for name, in := range map[string]store.ContactName{
+		"two keys in one write": {PushNameSealed: push, FullNameSealed: full, ContentKeyID: 2},
+		"no key named":          {FullNameSealed: full},
+		"another key named":     {BusinessNameSealed: business, ContentKeyID: 1},
+	} {
+		in.TenantID, in.DeviceID, in.ContactKey, in.ContactPN = base.TenantID, base.DeviceID, base.ContactKey, base.ContactPN
+		if err := contacts.Upsert(ctx, in); !errors.Is(err, store.ErrNameKeyMismatch) {
+			t.Errorf("%s: %v, want ErrNameKeyMismatch", name, err)
+		}
+	}
+	if rows, err := contacts.Some(ctx, tenant, device, []string{key}); err != nil || len(rows) != 0 {
+		t.Fatalf("a refused write stored %d rows (%v)", len(rows), err)
+	}
+
+	// Names under the key the write names are stored.
+	in := base
+	in.FullNameSealed, in.BusinessNameSealed, in.ContentKeyID = full, business, 2
+	if err := contacts.Upsert(ctx, in); err != nil {
+		t.Fatal(err)
+	}
+	in = base
+	in.PushNameSealed, in.ContentKeyID = push, 1
+	if err := contacts.Upsert(ctx, in); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := contacts.Some(ctx, tenant, device, []string{key})
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("%d rows (%v), want 1", len(rows), err)
+	}
+	if c := rows[0]; c.ContentKeyID != 1 || c.PushNameKeyID != 1 || c.FullNameKeyID != 2 || c.BusinessNameKeyID != 2 {
+		t.Fatalf("row %d, names %d, %d, %d; want 1, then 1, 2, 2", c.ContentKeyID,
+			c.PushNameKeyID, c.FullNameKeyID, c.BusinessNameKeyID)
 	}
 }

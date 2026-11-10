@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"time"
@@ -90,13 +91,37 @@ type ContactRow struct {
 	AvatarChecked *time.Time
 }
 
+// ErrNameKeyMismatch means a contact write carries a name sealed under
+// another content key than the one the write names. Every name of one
+// write is sealed in one call, under one key (DS50).
+var ErrNameKeyMismatch = errors.New("store: a contact name is under another content key than its write's")
+
 // Upsert records what is known about a contact.
 //
 // content_key_id becomes the key of the names written, and a name not
 // written keeps its own sealed value. So a row can hold names under
 // different content keys. Readers open each with its own key, which its
 // envelope names (ContactRow.PushNameKeyID and the others, DS50).
+//
+// Every name the write carries must be under in.ContentKeyID, or the
+// write is refused (ErrNameKeyMismatch). Names sealed one at a time can
+// straddle a new content key, and then the check at the write (DS49)
+// covers only the last. A name whose envelope names no key is not
+// checked, as nameKeyID gives it the write's id.
 func (c *Contacts) Upsert(ctx context.Context, in ContactName) error {
+	for _, name := range []struct {
+		kind   seal.Kind
+		sealed []byte
+	}{
+		{seal.KindPushName, in.PushNameSealed},
+		{seal.KindFullName, in.FullNameSealed},
+		{seal.KindBusinessName, in.BusinessNameSealed},
+	} {
+		if id := nameKeyID(name.sealed, in.ContentKeyID); id != 0 && id != in.ContentKeyID {
+			return fmt.Errorf("%w: %s is under content key %d, the write names %d",
+				ErrNameKeyMismatch, name.kind, id, in.ContentKeyID)
+		}
+	}
 	err := pg.InTenantTx(ctx, c.pool, in.TenantID.String(), func(tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, `
 			INSERT INTO contacts (tenant_id, device_id, contact_key, contact_lid, contact_pn,
