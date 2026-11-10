@@ -30,7 +30,7 @@ func TestGrantRevokeEndsOwnConnections(t *testing.T) {
 	w := newOwnWorld(t)
 	person, _ := w.actor(t, "admin", "admin")
 	s := w.own(t, person, "Revoke")
-	ended, err := w.keys.RevokeGrantEnded(ctx, w.tenant, s.number, person)
+	ended, err := w.keys.RevokeGrantEnded(ctx, w.tenant, w.owner, s.number, person)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -39,7 +39,7 @@ func TestGrantRevokeEndsOwnConnections(t *testing.T) {
 		t.Fatalf("the revoke took the Read flag: %+v", p)
 	}
 	// Again: no grant left to take, nothing more ended.
-	if ended, err := w.keys.RevokeGrantEnded(ctx, w.tenant, s.number, person); err != nil || len(ended) != 0 {
+	if ended, err := w.keys.RevokeGrantEnded(ctx, w.tenant, w.owner, s.number, person); err != nil || len(ended) != 0 {
 		t.Fatalf("the revoke again: %v %v", ended, err)
 	}
 	for _, kind := range []string{store.KindContent, store.KindAI, store.KindMetadata} {
@@ -69,7 +69,7 @@ func TestGrantRevokeTakesNothing(t *testing.T) {
 	w.reads(t, stale, s.number)
 	staleMeta, _ := w.connect(t, stale, store.KindMetadata, s.number)
 	w.execOne(t, `DELETE FROM device_key_grants WHERE device_id = $1 AND user_id = $2`, s.number, stale)
-	if ended, err := w.keys.RevokeGrantEnded(ctx, w.tenant, s.number, stale); err != nil || len(ended) != 0 {
+	if ended, err := w.keys.RevokeGrantEnded(ctx, w.tenant, w.owner, s.number, stale); err != nil || len(ended) != 0 {
 		t.Fatalf("a revoke that finds no grant: %v %v", ended, err)
 	}
 	if r := w.row(t, staleMeta); r.status != "active" || !r.keyLive {
@@ -84,7 +84,7 @@ func TestGrantRevokeTakesNothing(t *testing.T) {
 	w.reads(t, dormant, s.number)
 	dormantMeta, _ := w.connect(t, dormant, store.KindMetadata, s.number)
 	w.execOne(t, `UPDATE device_permissions SET can_read = false WHERE device_id = $1 AND user_id = $2`, s.number, dormant)
-	if ended, err := w.keys.RevokeGrantEnded(ctx, w.tenant, s.number, dormant); err != nil || len(ended) != 0 {
+	if ended, err := w.keys.RevokeGrantEnded(ctx, w.tenant, w.owner, s.number, dormant); err != nil || len(ended) != 0 {
 		t.Fatalf("a revoke of a dormant grant: %v %v", ended, err)
 	}
 	if g := w.grantsOf(t, s.number, dormant); g != 0 {
@@ -100,14 +100,14 @@ func TestGrantRevokeTakesNothing(t *testing.T) {
 	for _, holder := range []uuid.UUID{w.owner, s.standing} {
 		w.execOne(t, `DELETE FROM device_key_grants WHERE device_id = $1 AND user_id = $2`, s.number, holder)
 	}
-	if ended, err := w.keys.RevokeGrantEnded(ctx, w.tenant, s.number, person); !errors.Is(err, store.ErrLastDeviceReader) || len(ended) != 0 {
+	if ended, err := w.keys.RevokeGrantEnded(ctx, w.tenant, w.owner, s.number, person); !errors.Is(err, store.ErrLastDeviceReader) || len(ended) != 0 {
 		t.Fatalf("a revoke of the last key: %v %v", ended, err)
 	}
 	w.untouched(t, "a revoke of the last key", s)
 	w.reads(t, w.owner, s.number)
 
 	nobody := w.person(t, "nobody", "member")
-	if ended, err := w.keys.RevokeGrantEnded(ctx, w.tenant, s.number, nobody); err != nil || len(ended) != 0 {
+	if ended, err := w.keys.RevokeGrantEnded(ctx, w.tenant, w.owner, s.number, nobody); err != nil || len(ended) != 0 {
 		t.Fatalf("a revoke of nobody's grant: %v %v", ended, err)
 	}
 	w.untouched(t, "a revoke of nobody's grant", s)
@@ -157,9 +157,88 @@ func TestGrantRevokeRotation(t *testing.T) {
 	s := w.own(t, person, "Rotated")
 	w.epochKey(t, s.number, 2)
 	w.untouched(t, "a rotation", s)
-	ended, err := w.keys.RevokeGrantEnded(ctx, w.tenant, s.number, person)
+	ended, err := w.keys.RevokeGrantEnded(ctx, w.tenant, w.owner, s.number, person)
 	if err != nil {
 		t.Fatal(err)
 	}
 	w.left(t, "a revoke during a rotation", s, ended)
+}
+
+// TestGrantRevokeOwnerOnly: grant.revoke reads its actor's role again
+// under the workspace's lock (DS48). Only an owner changes an owner's
+// access (DS18, the platform's 0060): an admin's revoke of an owner's
+// grant, live or dormant, or of a person whose stored document names them
+// owner (read fail-closed), is ErrOwnerTarget before the last reader is
+// looked at, and nothing changes. An owner's revoke of another owner's
+// grant ends that owner's own connections, as any lone revoke does. An
+// actor who is no longer an active owner or admin, or a workspace that is
+// not active, is ErrMembershipForbidden.
+func TestGrantRevokeOwnerOnly(t *testing.T) {
+	ctx := context.Background()
+	w := newOwnWorld(t)
+	admin, _ := w.actor(t, "admin", "admin")
+	owner, _ := w.actor(t, "owner", "owner")
+	s := w.own(t, owner, "Owner's")
+	refused := func(what string, actor, target, device uuid.UUID, want error) {
+		t.Helper()
+		before := w.grantsOf(t, device, target)
+		if ended, err := w.keys.RevokeGrantEnded(ctx, w.tenant, actor, device, target); !errors.Is(err, want) || len(ended) != 0 {
+			t.Fatalf("%s: %v %v, want %v", what, ended, err, want)
+		}
+		if g := w.grantsOf(t, device, target); g != before {
+			t.Fatalf("%s: the target holds %d grants, had %d", what, g, before)
+		}
+	}
+	refused("an admin on an owner", admin, owner, s.number, store.ErrOwnerTarget)
+	w.untouched(t, "an admin on an owner", s)
+
+	// The owner of the workspace is the last key holder here: the role is
+	// asked first.
+	solo := w.number(t, "Solo")
+	w.reads(t, w.owner, solo)
+	refused("an admin on the last key holder, an owner", admin, w.owner, solo, store.ErrOwnerTarget)
+
+	// A dormant grant of an owner (the Read flag off): refused too.
+	dormant := w.number(t, "Dormant")
+	w.reads(t, w.owner, dormant)
+	w.reads(t, owner, dormant)
+	w.execOne(t, `UPDATE device_permissions SET can_read = false WHERE device_id = $1 AND user_id = $2`, dormant, owner)
+	refused("an admin on an owner's dormant grant", admin, owner, dormant, store.ErrOwnerTarget)
+
+	// An admin here whom their stored document names owner counts as an
+	// owner.
+	docOwner, _ := w.actor(t, "admin", "owner")
+	w.reads(t, docOwner, s.number)
+	refused("an admin on an owner by document", admin, docOwner, s.number, store.ErrOwnerTarget)
+	// And as an actor they are an admin: the local role decides who acts.
+	refused("an owner by document on an owner", docOwner, owner, s.number, store.ErrOwnerTarget)
+
+	// Neither an admin's own role nor the session decides: a member, a
+	// disabled admin and a suspended workspace are refused.
+	member, _ := w.actor(t, "member", "member")
+	w.reads(t, member, s.number)
+	refused("a member on their own grant", member, member, s.number, store.ErrMembershipForbidden)
+	former, _ := w.actor(t, "admin", "admin")
+	if err := w.users.UpdateMember(ctx, w.tenant, w.owner, former, "admin", "disabled"); err != nil {
+		t.Fatal(err)
+	}
+	refused("a disabled admin", former, member, s.number, store.ErrMembershipForbidden)
+	if _, err := w.pool.Exec(ctx, `UPDATE tenants SET status = 'suspended' WHERE id = $1`, w.tenant); err != nil {
+		t.Fatal(err)
+	}
+	refused("in a suspended workspace", w.owner, member, s.number, store.ErrMembershipForbidden)
+	if _, err := w.pool.Exec(ctx, `UPDATE tenants SET status = 'active' WHERE id = $1`, w.tenant); err != nil {
+		t.Fatal(err)
+	}
+
+	// An admin may revoke another admin's and a member's.
+	if _, err := w.keys.RevokeGrantEnded(ctx, w.tenant, admin, s.number, member); err != nil {
+		t.Fatal(err)
+	}
+	// An owner may revoke an owner's: their own connections end.
+	ended, err := w.keys.RevokeGrantEnded(ctx, w.tenant, w.owner, s.number, owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.left(t, "an owner on an owner", s, ended)
 }

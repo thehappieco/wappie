@@ -346,31 +346,49 @@ func (k *Keys) HasGrant(ctx context.Context, tenant, device, user uuid.UUID) (bo
 	return has, nil
 }
 
-// RevokeGrant removes one user's access to one device. It is
-// RevokeGrantEnded without the list: it may end the person's own
+// RevokeGrant is RevokeGrantEnded without the list. It may end
 // connections, and nobody tells their readers but the 30-second re-tell.
 // Code that serves a person's act calls RevokeGrantEnded and tells them,
 // as the socket's grant.revoke does.
-func (k *Keys) RevokeGrant(ctx context.Context, tenant, device, user uuid.UUID) error {
-	_, err := k.RevokeGrantEnded(ctx, tenant, device, user)
+func (k *Keys) RevokeGrant(ctx context.Context, tenant, actor, device, user uuid.UUID) error {
+	_, err := k.RevokeGrantEnded(ctx, tenant, actor, device, user)
 	return err
 }
 
-// RevokeGrantEnded is RevokeGrant (the socket's grant.revoke), and the
-// person's own connections it ended, for their readers to be told after
-// the commit. It deletes user's grants on device at every epoch, so a
-// revoke that deleted one leaves none at the number's current epoch. When
-// the person has the Read flag, it takes their Read though the flag stays,
-// and ends their own connections and integrations that held the number,
-// whole, access_lost, in the same transaction (grantTakenTx, the
-// platform's 0061, DS48). A revoke that finds no grant, or deletes a
-// dormant one (no Read flag), ends nothing; a refusal
+// RevokeGrantEnded is the socket's grant.revoke: actor removes user's
+// grants on device, at every epoch, so a revoke that deleted one leaves
+// none at the number's current epoch. It returns the connections it ended,
+// for their readers to be told after the commit.
+//
+// Who: actor's role is read again under the tenants row
+// (lockWorkspaceManager), since a session's role can be stale: an owner or
+// an admin, active, in an active workspace, else ErrMembershipForbidden.
+// Only an owner changes an owner's access (DS18, the platform's 0060): an
+// admin whose target ownerTargetTx reads as an owner, fail-closed, is
+// refused with ErrOwnerTarget before anything else is checked or deleted,
+// a live grant or a dormant one alike.
+//
+// What ends (DS48): when user has the Read flag, the revoke takes their
+// Read though the flag stays, and ends their own connections and
+// integrations that held the number, whole, access_lost, in the same
+// transaction (grantTakenTx, the platform's 0061). A revoke that finds no
+// grant, or deletes a dormant one (no Read flag), ends nothing; a refusal
 // (ErrLastDeviceReader) changes nothing.
-func (k *Keys) RevokeGrantEnded(ctx context.Context, tenant, device, user uuid.UUID) ([]EndedConnection, error) {
+func (k *Keys) RevokeGrantEnded(ctx context.Context, tenant, actor, device, user uuid.UUID) ([]EndedConnection, error) {
 	var ended []EndedConnection
 	err := pg.InTenantTx(ctx, k.pool, tenant.String(), func(tx pgx.Tx) error {
-		if err := lockWorkspaceAccess(ctx, tx, tenant); err != nil {
+		role, err := lockWorkspaceManager(ctx, tx, tenant, actor)
+		if err != nil {
 			return err
+		}
+		if role != "owner" {
+			owner, err := ownerTargetTx(ctx, tx, tenant, user)
+			if err != nil {
+				return err
+			}
+			if owner {
+				return ErrOwnerTarget
+			}
 		}
 		if err := requireRemainingReader(ctx, tx, tenant, user, &device); err != nil {
 			return err

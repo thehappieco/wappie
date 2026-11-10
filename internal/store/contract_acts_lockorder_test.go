@@ -378,7 +378,7 @@ func TestFlagsActsLockOrder(t *testing.T) {
 				return err
 			},
 			"a key revoked": func() error {
-				return w.keys.RevokeGrant(lctx, w.tenant, device, other)
+				return w.keys.RevokeGrant(lctx, w.tenant, w.owner, device, other)
 			},
 			"a member disabled": func() error {
 				return w.users.UpdateMember(lctx, w.tenant, w.owner, target, "member", "disabled")
@@ -546,7 +546,7 @@ func TestOwnConnectionsLockOrder(t *testing.T) {
 			// A lone grant.revoke on the same person, and the upgrade's
 			// sweep, take the same locks in the same order (DS48).
 			"a grant revoked": func() error {
-				_, err := w.keys.RevokeGrantEnded(lctx, w.tenant, device, screened)
+				_, err := w.keys.RevokeGrantEnded(lctx, w.tenant, admin, device, screened)
 				return raced(err)
 			},
 			"the upgrade's sweep": func() error {

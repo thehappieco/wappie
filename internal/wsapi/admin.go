@@ -500,10 +500,20 @@ func (s *session) handleGrantRevoke(ctx context.Context, f Frame) {
 	if !s.freshBackups(ctx, f.ReqID, TypeGrantRevoke, tenantUUID, deviceUUID, user) {
 		return
 	}
-	ended, err := s.srv.cfg.Keys2.RevokeGrantEnded(ctx, tenantUUID, deviceUUID, user)
+	ended, err := s.srv.cfg.Keys2.RevokeGrantEnded(ctx, tenantUUID, who.userID, deviceUUID, user)
 	if err != nil {
 		if errors.Is(err, store.ErrLastDeviceReader) {
 			s.replyError(f.ReqID, ErrCodeLastDeviceReader, "give another active member read access to this number before removing its last reader")
+			return
+		}
+		// The role read again under the workspace's lock (DS48): an admin
+		// on an owner (DS18), or an actor or a workspace no longer active.
+		if errors.Is(err, store.ErrOwnerTarget) {
+			s.replyError(f.ReqID, ErrCodeNotAuthorized, "only an owner changes an owner's access")
+			return
+		}
+		if errors.Is(err, store.ErrMembershipForbidden) {
+			s.replyError(f.ReqID, ErrCodeNotAuthorized, "this needs an active owner or admin of an active workspace")
 			return
 		}
 		s.log.Error("revoking a grant failed", "device", dev.ID, "error", err)

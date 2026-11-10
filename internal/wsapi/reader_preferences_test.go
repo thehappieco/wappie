@@ -27,6 +27,17 @@ func retainBackupReader(t *testing.T, pool *pgxpool.Pool, tenant, device uuid.UU
 	return user.ID
 }
 
+// workspaceOwner is a new owner of tenant, for an act that reads its
+// actor's role, as grant.revoke does (DS48).
+func workspaceOwner(t *testing.T, pool *pgxpool.Pool, tenant uuid.UUID) uuid.UUID {
+	t.Helper()
+	user, err := store.NewUsers(pool).Create(context.Background(), store.NewUser{TenantID: tenant, Email: "owner-" + uuid.NewString() + "@reader.test", Role: "owner", AuthKey: "proof", KDFSalt: make([]byte, 16), KDFParams: store.DefaultKDFParams(), PublicKey: make([]byte, 32), WrappedUSK: []byte("wrapped")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return user.ID
+}
+
 func TestReadingPreferenceBelongsToOnePersonAndNumber(t *testing.T) {
 	c := newConsole(t)
 	ctx := context.Background()
