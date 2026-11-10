@@ -755,6 +755,10 @@ func serve() error {
 			errc <- err
 		}
 	}()
+	// The read check at every start (DS48), once the listener is bound:
+	// the process this one replaces has let go of the port by then, and
+	// its sockets are ending. In serve only, and it never fails the start.
+	go a.checkReadAtStart(ctx, &a.readers)
 
 	select {
 	case err := <-errc:
