@@ -2843,23 +2843,61 @@ What changes:
   This only adds fields. A name carries one only when its key is not the
   row's. Most names are under the row's key, and a list can hold
   thousands of contacts. A name without one is under `content_key_id`.
-- `packages/client`'s `Opener.contactNames` reads each name's key from
-  its envelope first, then takes the server's id for it, then the row's.
-  So it opens mixed rows against a server that predates the new fields
-  too. The web, the local MCP reader and the attested reader all open
-  names there. `contactKeyIDs` lists every key a contact's names need,
-  for a prefetch. An id above what the server stores is not used: a keys
-  request naming one is refused whole.
-- The MCP reader's `resolve_contact` prefetches `contactKeyIDs`, so each
-  page's keys are one request again. The cloud web prefetches only
-  `content_key_id` (`archive.ts`); a name under another key costs it one
-  more request until it does the same.
+- A reader opens each name with the key its envelope names, read in
+  the clear after the 8-byte header (a u32 big-endian, only for a batch
+  envelope). Only that key opens it. A name whose envelope names none,
+  or an id outside 1 to 2147483647, takes the server's id for that name,
+  then the row's. An id above what the server stores is not used: a keys
+  request naming one is refused whole. Reading the envelope first opens
+  mixed rows against a server that predates the new fields too.
+- The cloud web does this in its own small code (its opener), and
+  prefetches every key a page's names need, so each page's keys are one
+  request. `packages/client` is the attested reader's measured client,
+  which stays release A's (W46, option A; DS49 has the rule), so the
+  client's version (`Opener.contactNames` reading the envelope,
+  `contactKeyIDs`, `seal.contentKeyID`) and the MCP reader's
+  `resolve_contact` prefetch of it wait for reader 0.6.1 on
+  `codex/reader-061`. Until then the attested reader and the local MCP
+  reader open every name with `content_key_id`, as before.
+- The web and `packages/client` read the same vectors as the server:
+  `internal/store/testdata/contact-name-key-ids.json` (sealed names and
+  the key each needs, or none), which `TestContactNameKeyIDVectors`
+  checks against `seal.ContentKeyID` and `nameKeyID`. The web's tests
+  read it from the core checkout the cloud's CI pins, so the two paths
+  cannot drift before 0.6.1 replaces the web's.
 - `wsctl` opens each name with the server's id for it, or the row's.
 - `ImportContacts` seals all of a contact's names in one call
   (`Router.sealValues`), so they share the row's content key. This also
   closes a gap in DS49: a pipeline built again between two names, after
   `device-key`, left the first under an archive key the write did not
   name, and the check at the write missed it.
+
+**The import's cost at each start** (the platform asked). `ImportContacts`
+runs at every start of `wappie-api`, for every linked number, before the
+API listens (cmd/whatserverd: `importContacts`, then the groups, then
+`srv.Serve`). It reads every contact whatsmeow caches for the number
+(`dev.Contacts`), and, as before this change, seals every name it has
+and upserts each contact with a name, one transaction each. Nothing
+skips an unchanged name, before or now: the server cannot compare a
+sealed name with a new one. One call per contact changes only the
+grouping. The same names are sealed, one AES-GCM each, under the same
+number of content keys (one per 1000 seals: the sealer counts values,
+not calls), and the same rows are written. Only the seal calls drop,
+from one per name to one per contact, at about 11 µs each. What the
+import gained is DS49's check at the write: one indexed read per
+contact, in its transaction, and one check per content key. With the
+pilot's counts (number A: 8106 names on at most 7038 contacts, 1068 of
+them with two; number B: 634 names on 633), a start makes 9 and 1
+content keys and 7038 and 633 writes, as before, 1068 and 1 fewer seal
+calls, and 7038 and 633 more reads. On the test database (Docker, 2
+CPUs) a contact write took 2.40 ms without the check and 2.87 ms with
+it, so A's import goes from about 17 s to 20 s and B's from 1.5 s to
+1.8 s; the grouping saves about 12 ms. An import used to leave about
+one contact a start with its two names under two keys; now none. Not
+done: the read could share the insert's round trip (a pipelined batch,
+after the trigger's lock), or the import could write many contacts per
+transaction with one check per content key. Both change DS49's check
+and its lock order, so they wait for their own review.
 
 Every other place was checked. One key id covers several sealed values
 only where they are written together:
@@ -2881,12 +2919,13 @@ only where they are written together:
 The readers. Before this, every reader took one id per contact: the web
 and the MCP readers through `Opener.contactNames`, `wsctl` itself. A
 reader that predates this change still does, and shows the older names
-as locked (not tampered). The web gets the fix with the core its cloud
-pins. The attested reader gets it at its next release, which this change
-does not make. The change to `packages/client` moves the reader's
-measured client (`scripts/check-client-dist.sh`, CI's "The reader's
-measured client is release A's"), as (b)'s own client change already
-does: that check fails on (b) and here alike.
+as locked (not tampered). The web gets the fix with its own opener, in
+the cloud release that pins this core. The attested reader and the local
+MCP reader get it at reader 0.6.1, which this change does not make:
+nothing here moves the reader's measured client
+(`scripts/check-client-dist.sh` passes, and `packages/mcp`,
+`packages/mcp-http` and deploy/enclave are unchanged). In
+`packages/client` only the declarations of the three new fields change.
 
 Rows already damaged. The names are intact; only the row's id was wrong.
 Since 0009, nothing deletes a content key short of a reset or a number's
@@ -2896,7 +2935,7 @@ opens it with the id its envelope names. No repair write is needed, and
 none is made. A reader that predates this change still cannot open
 them. For those, each start of `wappie-api` runs `ImportContacts`, which
 reseals every name whatsmeow holds for a contact under one key; a name
-only the archive holds stays mixed. A name sealed before DS49 by a stale
+only the archive holds stays mixed until reader 0.6.1. A name sealed before DS49 by a stale
 pipeline, under a content key a reset deleted, cannot be opened by
 anyone. That is DS49's case, not this one. After `device-key`, content
 key ids start at 1 again. Once the new archive has a key with that
@@ -2920,13 +2959,17 @@ worker, the content key replaced between them) and
 seal take a new key; the imported names share the row's id).
 `TestRESTContactsPageIsSealedAndComplete` (restapi) writes a row with
 names under two keys and checks only the name off the row's key carries
-an id. `packages/client`'s `frames.spec.ts` opens each name with its
+an id. `TestContactNameKeyIDVectors` (store) checks the vectors file:
+four envelopes under keys 1, 7, 65536 and 2147483647, and eleven that
+name none. Each was checked to fail with its change removed. The web's
+opener and prefetch tests are in the cloud's PR. On `codex/reader-061`:
+`packages/client`'s `frames.spec.ts` opens each name with its
 envelope's key while the row's names a key nobody has, and whatever ids
-the server sends; it checks `contactKeyIDs`, and that one prefetch is
-the only keys request. `rest.spec.ts` checks the new ids' shape, and that
-the opener reads the contact fields the server's OpenAPI document names.
-The Go frames fixture (`internal/wsapi/testdata/frames.json`) is the
-kit's copy (`TestFixturesMatchTheKit`), so it is not regenerated for
-this. `packages/mcp`'s `content.test.mjs` checks `resolve_contact` makes
-one keys request for names off the row's key. Each was checked to fail
-with its change removed.
+the server sends; it checks `contactKeyIDs` against the vectors file,
+and that one prefetch is the only keys request. `rest.spec.ts` checks
+the new ids' shape, and that the opener reads the contact fields the
+server's OpenAPI document names. `packages/mcp`'s `content.test.mjs`
+checks `resolve_contact` makes one keys request for names off the row's
+key. The Go frames fixture (`internal/wsapi/testdata/frames.json`) is
+the kit's copy (`TestFixturesMatchTheKit`), so it is not regenerated for
+this.
