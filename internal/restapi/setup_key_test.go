@@ -3,6 +3,7 @@ package restapi_test
 import (
 	"context"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -51,5 +52,43 @@ func TestASetupKeyWorksOnlyThroughItsConnectionOnREST(t *testing.T) {
 	r.w.Exec(`UPDATE contract_token_state SET mode = 'off'`)
 	if code, body := r.do(t, "/v1/devices", bearer(unbound)...); code != http.StatusOK {
 		t.Fatalf("an unbound setup's key with tokens off: %d %s", code, body)
+	}
+}
+
+// TestARenewalsKeyProvesItsGrantsOnREST (the plan's 7.3, and its L8's
+// limit): a content or AI renewal's new key acts as the renewal's new
+// provisional account, and the enclave's reader lists its grants with it
+// (GET /v1/grants) before the renewal is recorded and the ledger names
+// the key. With tokens on it works unbound, where a setup's key that acts
+// as no account does not.
+func TestARenewalsKeyProvesItsGrantsOnREST(t *testing.T) {
+	r := newTokenREST(t)
+	ctx := context.Background()
+	device := r.w.Number("Vendas")
+	secret, _, err := r.w.Users.NewProvisionalServiceInvitation(ctx, r.w.Tenant, r.w.Owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc, err := r.w.Users.SignupService(ctx, secret, "mcp-renewal", make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.w.Keys.PutGrant(ctx, store.Grant{TenantID: r.w.Tenant, DeviceID: device, UserID: svc.ID, Epoch: r.w.Epoch(device),
+		SealedDSK: []byte("sealed to the attested key")}, &r.w.Owner); err != nil {
+		t.Fatal(err)
+	}
+	in20 := time.Now().Add(20 * time.Minute)
+	key, err := store.NewAPIKeys(r.pool).IssueAsked(ctx, r.w.Tenant.String(), "MCP · Claude", store.ScopeRead, &r.w.Owner, &svc.ID,
+		[]uuid.UUID{device}, &in20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, body := r.do(t, "/v1/grants", bearer(key)...)
+	if code != http.StatusOK || !strings.Contains(body, svc.ID.String()) || !strings.Contains(body, device.String()) {
+		t.Fatalf("a renewal's key proving its grants: %d %s", code, body)
+	}
+	unbound, _ := setupKey(t, r.pool, r.w.Tenant, r.w.Owner, device)
+	if code, body := r.do(t, "/v1/grants", bearer(unbound)...); code != http.StatusUnauthorized || body != tokenUnauthorized {
+		t.Fatalf("a setup's key that acts as no account: %d %q", code, body)
 	}
 }

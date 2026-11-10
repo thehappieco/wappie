@@ -438,20 +438,25 @@ func (a *APIKeys) VerifyScoped(ctx context.Context, presented string) (Verified,
 	return a.verify(ctx, presented, "")
 }
 
-// setupHeldSQL is a setup's key that no connection names, while keys are
-// narrowed (keysNarrowedSQL): not a REST key (the plan's 7.3, L8). The
-// setup asks for the key over the person's session, and the consent's
-// connection names it before the key is first used.
-const setupHeldSQL = ` AND NOT (api_keys.origin IS NOT DISTINCT FROM 'mcp_setup'
+// setupHeldSQL is a setup's key that acts as no account and that no
+// connection names, while keys are narrowed (keysNarrowedSQL): not a REST
+// key (the plan's 7.3, L8). A consent records its connection, naming the
+// key, before the reader first uses it. A key that acts as a provisional
+// service account is let through: a content or AI renewal's new key, which
+// the enclave's reader uses to prove its grants (GET /v1/grants) before
+// the renewal is recorded and the ledger names the key (mcpauth's renew
+// relays the bundle first). decisions.md says what that leaves open.
+const setupHeldSQL = ` AND NOT (api_keys.origin IS NOT DISTINCT FROM 'mcp_setup' AND api_keys.acts_as IS NULL
 	AND NOT EXISTS (SELECT 1 FROM mcp_connections c WHERE c.api_key_id = api_keys.id)
 	AND (EXISTS (SELECT 1 FROM contract_token_state WHERE mode = 'on') OR EXISTS (SELECT 1 FROM key_retirements)))`
 
 // VerifyClient is VerifyScoped for REST, media, upload and the socket's
 // hello: while keys are narrowed (KeysNarrowed), it also refuses a live
-// setup's key (origin mcp_setup) that no MCP connection names, with
-// ErrInvalidKey and the same work as an unknown key. Otherwise any admin
-// could mint a renewable 30-minute read key. The MCP side keeps
-// VerifyScoped, and checks a key against its connection.
+// setup's key (origin mcp_setup) that acts as no account and that no MCP
+// connection names, with ErrInvalidKey and the same work as an unknown
+// key (setupHeldSQL). Otherwise any admin could mint a renewable 30-minute
+// read key. The MCP side keeps VerifyScoped, and checks a key against its
+// connection.
 func (a *APIKeys) VerifyClient(ctx context.Context, presented string) (Verified, error) {
 	return a.verify(ctx, presented, setupHeldSQL)
 }

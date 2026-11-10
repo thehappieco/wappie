@@ -2425,9 +2425,18 @@ shape with `tokens_are_the_platforms`; the command line's `key` and
 platform (the contract off, tokens off, no retirement), so it never lets
 through what the narrowing refuses; a standing service account's
 invitation gets 409 `tokens_are_the_platforms`, issued or redeemed; a
-setup's key that no connection names is refused on REST, media and the
-socket's hello, as an unknown key; and discovery says
-`tokens.platform.v1`. A self-hosted installation never turns tokens on, so
+setup's key that acts as no account and that no connection names is
+refused on REST, media and the socket's hello, as an unknown key; and
+discovery says `tokens.platform.v1`. A setup's key that acts as a
+provisional service account works unbound: a content or AI renewal's new
+key is one, and the enclave's reader lists its grants with it (`GET
+/v1/grants`) before the renewal is recorded and the ledger names it (a
+consent records its connection first, a renewal relays its bundle first).
+That is the limit of the plan's L8 guard: an admin who reads a number can
+still mint a 30-minute read key acting as a provisional account of their
+own, and use it on REST. It opens only what they sealed to that account
+themselves, each one needs a provisional invitation from the setups'
+budget, and it dies with the account's 30 minutes. A self-hosted installation never turns tokens on, so
 nothing changes there. The retirement revokes the live keys of class `rest`
 and `cli` (0053's `api_key_class`), and removes a standing service account
 a retired key acted as only where no spared key acts as it and every number

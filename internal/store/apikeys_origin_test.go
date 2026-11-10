@@ -189,9 +189,12 @@ func (w *delWorld) bind(t *testing.T, key string) {
 
 // TestASetupKeyWorksOnlyThroughItsConnection (the plan's 7.3, L8): while
 // keys are narrowed, VerifyClient (REST, media, upload, the socket's
-// hello) refuses a live setup's key that no connection names, as it
-// refuses an unknown key; once a connection names it, it works. Off the
-// narrowing it works as before; VerifyScoped (the MCP side) never asks.
+// hello) refuses a live setup's key that acts as no account and that no
+// connection names, as it refuses an unknown key; once a connection names
+// it, it works. A renewal's new key, which acts as a provisional account
+// and which the reader proves its grants with before the ledger names it,
+// works unbound. Off the narrowing every one works as before; VerifyScoped
+// (the MCP side) never asks.
 func TestASetupKeyWorksOnlyThroughItsConnection(t *testing.T) {
 	w := newDelWorld(t)
 	ctx := context.Background()
@@ -210,9 +213,20 @@ func TestASetupKeyWorksOnlyThroughItsConnection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// A renewal's new key acts as the renewal's new provisional account,
+	// and the reader proves its grants with it before the ledger names it.
+	provisional := w.serviceOf(t, true)
+	renewal, err := w.apiKeys.IssueAsked(ctx, w.tenant.String(), "MCP · Claude", store.ScopeRead, &w.owner, &provisional, devices, &in20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if origin, _ := w.originOf(t, renewal); origin != store.OriginMCPSetup {
+		t.Fatalf("a renewal's key: origin %q", origin)
+	}
 	check := func(state string, narrowed bool) {
 		t.Helper()
-		for name, key := range map[string]string{"an unbound setup's key": unbound, "a bound one": bound, "a panel's key": rest} {
+		for name, key := range map[string]string{"an unbound setup's key": unbound, "a bound one": bound, "a panel's key": rest,
+			"a renewal's unbound key": renewal} {
 			_, err := w.apiKeys.VerifyClient(ctx, key)
 			refused := narrowed && key == unbound
 			if refused && !errors.Is(err, store.ErrInvalidKey) || !refused && err != nil {
