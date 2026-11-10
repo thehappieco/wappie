@@ -7,8 +7,10 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
 	"whatserver2/internal/domain"
+	"whatserver2/internal/pg"
 	"whatserver2/internal/store"
 )
 
@@ -362,5 +364,42 @@ func TestAProtocolPlaceholderIsFilled(t *testing.T) {
 	}
 	if got := chatFor(t, m, tenant, device, chat).LastType; got != string(domain.TypeText) {
 		t.Errorf("chat last_type = %q, want text", got)
+	}
+}
+
+// TestASealForAGonePlaceholderWritesNothing (DS51): a message sealed to a
+// placeholder's uid, after a purge deleted the placeholder. A new row
+// under that uid would give a deleted row's uid to another row, so
+// nothing is written and the caller seals again to a fresh uid.
+func TestASealForAGonePlaceholderWritesNothing(t *testing.T) {
+	m, tenant, device, pool := chatFixtureWithPool(t)
+	ctx := context.Background()
+	const chat, waID = "120363000000000000@g.us", "3AD9FC72C86E3D46A830"
+	lastSeq := func() int64 {
+		t.Helper()
+		var seq int64
+		if err := pg.InTenantTx(ctx, pool, tenant.String(), func(tx pgx.Tx) error {
+			return tx.QueryRow(ctx, `SELECT last_seq FROM tenants WHERE id = $1`, tenant).Scan(&seq)
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return seq
+	}
+	before := lastSeq()
+
+	in := realMessage(uuid.New(), tenant, device, chat, waID, "a mensagem de verdade")
+	in.FillsPlaceholder = true
+	if _, err := m.Insert(ctx, in); !errors.Is(err, store.ErrPlaceholderGone) {
+		t.Fatalf("err = %v, want ErrPlaceholderGone", err)
+	}
+	rows, err := m.Page(ctx, tenant, device, []string{chat}, store.Cursor{}, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 0 {
+		t.Errorf("%d rows stored under a gone placeholder's uid", len(rows))
+	}
+	if after := lastSeq(); after != before {
+		t.Errorf("last_seq %d, then %d: a sequence was taken", before, after)
 	}
 }

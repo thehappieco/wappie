@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -324,6 +325,76 @@ func photo(f *fixture, waID string) domain.Envelope {
 	env.Content.Raw = []byte("the real message")
 	env.Content.Media = &domain.Media{MimeType: "image/jpeg", MediaKey: []byte("0123456789abcdef0123456789abcdef")}
 	return env
+}
+
+// TestAPlaceholderDeletedBetweenSealsGivesAFreshUID (DS51): the message is
+// sealed to a placeholder's uid, and a purge deletes the placeholder
+// before the second insert. The message is stored as a new row, under a
+// fresh uid: never under the deleted row's.
+func TestAPlaceholderDeletedBetweenSealsGivesAFreshUID(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	var metrics atomic.Pointer[obs.Metrics]
+	var armed, fired atomic.Bool
+	var placeholder uuid.UUID
+	deleted := make(chan error, 1)
+	now := func() time.Time {
+		// The first try sealed one body and then met the placeholder: this
+		// is the second seal, before its insert.
+		if m := metrics.Load(); armed.Load() && m != nil &&
+			testutil.ToFloat64(m.Sealed.WithLabelValues(seal.KindBody.String())) == 1 && fired.CompareAndSwap(false, true) {
+			deleted <- withTenant(ctx, f.pool, f.tenant, func(tx pgx.Tx) error {
+				_, err := tx.Exec(ctx, `DELETE FROM messages WHERE uid = $1`, placeholder)
+				return err
+			})
+		}
+		return time.Now()
+	}
+	pipe, q, m := clockedPipeline(t, f, now)
+	metrics.Store(m)
+
+	const waID = "3AD9FC72C86E3D46A834"
+	stub := f.envelope(waID, domain.KindMessage, domain.TypeUnsupported, "")
+	stub.Content = domain.Content{Raw: []byte("placeholder"), Unsupported: "someFutureMessage"}
+	first, err := pipe.Ingest(ctx, stub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	placeholder = first.UID
+	armed.Store(true)
+
+	res, err := pipe.Ingest(ctx, photo(f, waID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !fired.Load() {
+		t.Fatal("the placeholder was never deleted: the second seal did not happen")
+	}
+	if err := <-deleted; err != nil {
+		t.Fatal(err)
+	}
+	if res.Duplicate || res.Filled {
+		t.Errorf("result = %+v, want a new row", res)
+	}
+	if res.UID == placeholder {
+		t.Fatalf("the message took the deleted placeholder's uid %v", placeholder)
+	}
+	if n := testutil.ToFloat64(m.Sealed.WithLabelValues(seal.KindBody.String())); n != 3 {
+		t.Errorf("%v seals of the body, want 3: a fresh uid, the placeholder's, a fresh one", n)
+	}
+	row := readStored(t, f, chatJID.String(), waID)
+	if row.uid != res.UID || row.typ != string(domain.TypeImage) {
+		t.Fatalf("row = %v %s, want %v image", row.uid, row.typ, res.UID)
+	}
+	if got, err := f.opens(t, row.uid, seal.KindBody, row.keyID, row.body); err != nil || string(got) != "a foto" {
+		t.Errorf("body = %q, %v", got, err)
+	}
+	if !row.hasMedia {
+		t.Error("no media row")
+	}
+	if got := q.all(); len(got) != 1 || got[0] != res.UID {
+		t.Errorf("downloads nudged for %v, want [%v]", got, res.UID)
+	}
 }
 
 // TestAnotherSendersMessageDoesNotFillThroughThePipeline (DS51): a message

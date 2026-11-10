@@ -261,6 +261,11 @@ type Result struct {
 	Filled bool
 }
 
+// maxInsertTries bounds how often Ingest seals one message: to a fresh
+// uid, to the uid of the placeholder it fills, and to a fresh uid again
+// when that placeholder was deleted in between (DS51).
+const maxInsertTries = 3
+
 // Ingest stores one envelope.
 func (p *Pipeline) Ingest(ctx context.Context, env domain.Envelope) (Result, error) {
 	if err := validate(env); err != nil {
@@ -285,17 +290,31 @@ func (p *Pipeline) Ingest(ctx context.Context, env domain.Envelope) (Result, err
 
 	var in store.InsertMessage
 	var res store.InsertResult
-	for try := 0; ; try++ {
+	fills := false
+	for try := 1; ; try++ {
 		if in, err = p.row(ctx, uid, deviceID, env, probe); err != nil {
 			return Result{}, err
 		}
+		in.FillsPlaceholder = fills
 		res, err = p.messages.Insert(ctx, in)
+		if try == maxInsertTries {
+			break
+		}
 		// The message fills a placeholder, and the row keeps the
 		// placeholder's uid. A sealed value opens only under the uid it
 		// was sealed to, so it is sealed again to that one (DS51).
 		var fill *store.PlaceholderError
-		if try == 0 && errors.As(err, &fill) {
-			uid = fill.UID
+		if errors.As(err, &fill) {
+			uid, fills = fill.UID, true
+			continue
+		}
+		// The placeholder was deleted meanwhile. The message is new
+		// again, and gets a fresh uid rather than the deleted row's.
+		if errors.Is(err, store.ErrPlaceholderGone) {
+			if uid, err = uuid.NewV7(); err != nil {
+				return Result{}, fmt.Errorf("ingest: new uid: %w", err)
+			}
+			fills = false
 			continue
 		}
 		break

@@ -105,6 +105,13 @@ type InsertMessage struct {
 	// checks nothing.
 	ArchiveKey []byte
 
+	// FillsPlaceholder is set when the message was sealed again to the
+	// uid a PlaceholderError named. Insert then only fills that
+	// placeholder. If no row holds the message any more, it writes
+	// nothing and returns ErrPlaceholderGone, so a uid never names a
+	// second row (DS51).
+	FillsPlaceholder bool
+
 	Media *InsertMedia
 }
 
@@ -148,6 +155,13 @@ type PlaceholderError struct{ UID uuid.UUID }
 func (e *PlaceholderError) Error() string {
 	return fmt.Sprintf("store: the message fills placeholder %s and must be sealed to its uid", e.UID)
 }
+
+// ErrPlaceholderGone is Insert's answer to a message sealed to a
+// placeholder's uid (InsertMessage.FillsPlaceholder) when no row holds the
+// message any more: a purge or an erasure deleted the placeholder in
+// between. Nothing was written. The caller seals the message to a fresh
+// uid and inserts it again (DS51).
+var ErrPlaceholderGone = errors.New("store: the placeholder this message was sealed for is gone")
 
 // Insert stores one message and everything that follows from it, atomically.
 //
@@ -196,6 +210,12 @@ func (m *Messages) Insert(ctx context.Context, in InsertMessage) (InsertResult, 
 			return fillStub(ctx, tx, in, existingUID, &res)
 		case !errors.Is(err, pgx.ErrNoRows):
 			return fmt.Errorf("store: check for an existing message: %w", err)
+		}
+		if in.FillsPlaceholder {
+			// Sealed to a placeholder's uid, and the placeholder is gone. A
+			// new row under that uid would give a deleted row's uid to
+			// another row.
+			return ErrPlaceholderGone
 		}
 
 		rel, targetUID, err := resolveTarget(ctx, tx, in, keys)
