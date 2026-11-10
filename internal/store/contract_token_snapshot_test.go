@@ -331,50 +331,67 @@ func TestTheTokenGateMakesEverySnapshotDue(t *testing.T) {
 	}
 }
 
-// TestSnapshotDueByATokensExpiry (the plan's 6.2): the sender makes the
-// next snapshot due at the expiry of a token the accepted one lists, or
-// keeps it due sooner; never for a snapshot another has followed (its seq
-// passed), nor a parked workspace.
-func TestSnapshotDueByATokensExpiry(t *testing.T) {
+// TestSnapshotDueAtATokensExpiry (the plan's 6.2): an accepted snapshot
+// that lists a token is due again the debounce after the token's expiry,
+// in the same write as its outcome, when that is sooner than the hourly
+// one: so expiries under the debounce apart share one snapshot. A later
+// expiry leaves the hourly one, an expiry already past makes it due at
+// once, a due time set since the measurement stands unless the expiry's is
+// sooner, and a failure keeps its backoff whatever the expiry.
+func TestSnapshotDueAtATokensExpiry(t *testing.T) {
 	pool := pgtest.Fresh(t, migrate.Run)
 	ctx := context.Background()
 	c := store.NewContract(pool)
-	ws, parked := recordWorkspace(t, pool, "team"), recordWorkspace(t, pool, "team")
-	if _, err := pool.Exec(ctx, `UPDATE contract_workspaces SET snapshot_seq = 7, snapshot_due_at = clock_timestamp() + interval '1 hour',
-		parked_at = CASE WHEN workspace_id = $1 THEN clock_timestamp() END`, parked); err != nil {
-		t.Fatal(err)
-	}
-	var now time.Time
-	if err := pool.QueryRow(ctx, `SELECT date_trunc('second', clock_timestamp())`).Scan(&now); err != nil {
-		t.Fatal(err)
-	}
-	due := func(ws uuid.UUID) time.Time {
+	ws := recordWorkspace(t, pool, "team")
+	times := snapshotTimes
+	times.Debounce = 2 * time.Second
+	// sent records outcome for a snapshot measured now that lists a token
+	// expiring at expires from now, after a due time set since at set from
+	// now (none if empty); it gives the expiry and the row after it.
+	sent := func(name string, outcome store.ContractSnapshotOutcome, expires time.Duration, set string) (time.Time, snapshotRow) {
 		t.Helper()
-		return *readSnapshotRow(t, pool, ws).DueAt
-	}
-	for _, step := range []struct {
-		name string
-		ws   uuid.UUID
-		seq  int64
-		at   time.Time
-		want time.Time
-	}{
-		{"an expiry sooner", ws, 7, now.Add(time.Minute), now.Add(time.Minute)},
-		{"an expiry later", ws, 7, now.Add(10 * time.Minute), now.Add(time.Minute)},
-		{"another seq", ws, 8, now.Add(time.Second), now.Add(time.Minute)},
-	} {
-		if err := c.SnapshotDueBy(ctx, step.ws, step.seq, step.at); err != nil {
+		// The sender measures a snapshot once it is due.
+		if _, err := pool.Exec(ctx, `UPDATE contract_workspaces SET snapshot_due_at = least(snapshot_due_at, clock_timestamp())
+			WHERE workspace_id = $1`, ws); err != nil {
 			t.Fatal(err)
 		}
-		if got := due(step.ws); !got.Equal(step.want) {
-			t.Errorf("%s: due %v, want %v", step.name, got, step.want)
+		measured := dbClock(t, pool, "0")
+		seq, ok, err := c.SnapshotSeqForTest(ctx, ws, measured)
+		if err != nil || !ok {
+			t.Fatalf("%s: %v %v", name, ok, err)
 		}
+		if set != "" {
+			if _, err := pool.Exec(ctx, `UPDATE contract_workspaces SET snapshot_due_at = clock_timestamp() + $2::interval
+				WHERE workspace_id = $1`, ws, set); err != nil {
+				t.Fatal(err)
+			}
+		}
+		at := measured.Add(expires).Truncate(time.Second)
+		rec, err := c.SnapshotSent(ctx, ws, seq, measured, &at, outcome, "", times)
+		if err != nil || !rec.Recorded || rec.Again != (set != "") {
+			t.Fatalf("%s: %+v %v", name, rec, err)
+		}
+		return at, readSnapshotRow(t, pool, ws)
 	}
-	before := due(parked)
-	if err := c.SnapshotDueBy(ctx, parked, 7, now.Add(time.Second)); err != nil {
-		t.Fatal(err)
+	at, r := sent("an expiry in a minute", store.SnapshotAccepted, time.Minute, "")
+	if !r.DueAt.Equal(at.Add(2 * time.Second)) {
+		t.Errorf("an expiry in a minute: due %v, want %v", r.DueAt, at.Add(2*time.Second))
 	}
-	if got := due(parked); !got.Equal(before) {
-		t.Errorf("a parked workspace: due %v, was %v", got, before)
+	if _, r := sent("an expiry in two hours", store.SnapshotAccepted, 2*time.Hour, ""); r.DueIn < 54*time.Minute || r.DueIn > 55*time.Minute {
+		t.Errorf("an expiry after the hourly one: due in %v", r.DueIn)
+	}
+	at, r = sent("an expiry just past", store.SnapshotAccepted, -10*time.Second, "")
+	if !r.DueAt.Equal(at.Add(2*time.Second)) || r.DueIn > 0 {
+		t.Errorf("an expiry just past: due %v (in %v), want %v", r.DueAt, r.DueIn, at.Add(2*time.Second))
+	}
+	if _, r := sent("a sooner due time set since", store.SnapshotAccepted, time.Minute, "10 seconds"); r.DueIn > 10*time.Second {
+		t.Errorf("a due time set since, sooner than the expiry: due in %v", r.DueIn)
+	}
+	at, r = sent("a later due time set since", store.SnapshotAccepted, 3*time.Second, "1 minute")
+	if !r.DueAt.Equal(at.Add(2 * time.Second)) {
+		t.Errorf("a due time set since, later than the expiry: due %v, want %v", r.DueAt, at.Add(2*time.Second))
+	}
+	if _, r := sent("a failure", store.SnapshotFailed, -time.Minute, ""); r.DueIn <= 0 || r.Tries != 1 {
+		t.Errorf("a failure with an expiry past: due in %v, tries %d", r.DueIn, r.Tries)
 	}
 }

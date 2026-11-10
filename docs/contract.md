@@ -1009,9 +1009,11 @@ the workspace's status or storage stop: 0051's triggers notify the leader
 at each commit; with 0053, a number's ordinal, a token's perms and its
 narrowings); at once after a document that changes the workspace's
 members or names it first, and, every workspace's, when the token mode
-switches; at the earliest expiry of a token the last accepted one lists,
-since an expiry writes nothing; and 55 minutes after the last accepted
-one, so a snapshot is never an hour old. One sender, in the order they are due, at
+switches; 2 seconds after the earliest expiry of a token the last
+accepted one lists, since an expiry writes nothing (set in the same write
+as the outcome, so expiries under 2 seconds apart share one snapshot); and
+55 minutes after the last accepted one, so a snapshot is never an hour
+old. One sender, in the order they are due, at
 the leader's pace.
 
 **Outcomes.** `{"accepted": true}` resets its backoff. A signed `not_found`

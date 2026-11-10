@@ -55,8 +55,8 @@ type ContractSnapshot struct {
 	// takes them.
 	TokenMode bool
 	// TokensExpire is the earliest expiry after MeasuredAt of a token it
-	// lists, or nil. An expiry writes nothing, so the sender makes the
-	// next snapshot due then, and the token leaves it.
+	// lists, or nil. An expiry writes nothing, so once it is accepted the
+	// next snapshot is due then (SnapshotSent), and the token leaves it.
 	TokensExpire *time.Time
 }
 
@@ -531,18 +531,6 @@ func (c *Contract) SnapshotsDirty(ctx context.Context, ids []uuid.UUID, all bool
 	})
 }
 
-// SnapshotDueBy makes the workspace's snapshot due at at, or keeps it due
-// sooner, while seq is still its last snapshot_seq and it is not parked:
-// the expiry of a token the accepted snapshot seq lists (TokensExpire),
-// which writes nothing a trigger could tell. A later snapshot has its own.
-func (c *Contract) SnapshotDueBy(ctx context.Context, workspace uuid.UUID, seq int64, at time.Time) error {
-	return retryDeadlock(ctx, func() error {
-		_, err := c.pool.Exec(ctx, `UPDATE contract_workspaces SET snapshot_due_at = least(snapshot_due_at, $3)
-			WHERE workspace_id = $1 AND snapshot_seq = $2 AND parked_at IS NULL`, workspace, seq, at)
-		return err
-	})
-}
-
 // ContractSnapshotOutcome is what became of a snapshot sent.
 type ContractSnapshotOutcome int
 
@@ -565,8 +553,11 @@ const (
 // ContractSnapshotTimes are the sender's timings: an accepted snapshot's
 // next is due Every later (README 8's hourly), and a failure's after
 // BackoffMin doubled with each failure in a row, up to BackoffMax.
+// Debounce is README 8's wait after a change: an accepted snapshot that
+// lists a token is due again Debounce after its expiry, when that is
+// sooner than Every.
 type ContractSnapshotTimes struct {
-	Every, BackoffMin, BackoffMax time.Duration
+	Every, BackoffMin, BackoffMax, Debounce time.Duration
 }
 
 // SnapshotNotFoundFor is how long a workspace's snapshot is retried after
@@ -598,17 +589,20 @@ type ContractSnapshotRecord struct {
 // SnapshotSent records the outcome of the snapshot of workspace sent as
 // seq and measured at measured (with class, a failure's: a refusal's code,
 // an outcome, a transport's; never a message), by compare-and-set on seq.
-// Accepted: accepted now, due again Every later, the run of failures, a
-// not_found and a park ended. Not found: the run's first not_found kept,
-// and parked once it is SnapshotNotFoundFor old, else the backoff.
-// Refused: parked, with no not_found_since, so no document releases it.
-// Failed: the backoff. A due time someone set after the measurement stands
-// whatever the outcome, unless the outcome's own is sooner (Again), and a
-// failure then counts no try: the snapshot measured after that change is
-// what goes next. So the late outcome of a leader that lost its lock
-// without knowing it yet never puts off what the next leader's start or
-// debounce asked.
-func (c *Contract) SnapshotSent(ctx context.Context, workspace uuid.UUID, seq int64, measured time.Time,
+// expires is the earliest expiry of a token it lists (TokensExpire), or
+// nil. Accepted: accepted now, due again Every later, or Debounce after
+// expires when that is sooner (an expiry writes nothing a trigger could
+// tell, and expiries under Debounce apart share one snapshot); the run of
+// failures, a not_found and a park ended. Not found: the run's first
+// not_found kept, and parked once it is SnapshotNotFoundFor old, else the
+// backoff. Refused: parked, with no not_found_since, so no document
+// releases it. Failed: the backoff. A due time someone set after the
+// measurement stands whatever the outcome, unless the outcome's own is
+// sooner (Again), and a failure then counts no try: the snapshot measured
+// after that change is what goes next. So the late outcome of a leader
+// that lost its lock without knowing it yet never puts off what the next
+// leader's start or debounce asked.
+func (c *Contract) SnapshotSent(ctx context.Context, workspace uuid.UUID, seq int64, measured time.Time, expires *time.Time,
 	outcome ContractSnapshotOutcome, class string, times ContractSnapshotTimes) (ContractSnapshotRecord, error) {
 	var rec ContractSnapshotRecord
 	err := pg.InTx(ctx, c.pool, func(tx pgx.Tx) error {
@@ -653,7 +647,11 @@ func (c *Contract) SnapshotSent(ctx context.Context, workspace uuid.UUID, seq in
 		switch outcome {
 		case SnapshotAccepted:
 			accepted, errClass, rec.Tries, rec.NotFoundSince = &now, nil, 0, nil
-			next(now.Add(times.Every))
+			at := now.Add(times.Every)
+			if expires != nil && expires.Add(times.Debounce).Before(at) {
+				at = expires.Add(times.Debounce)
+			}
+			next(at)
 		case SnapshotNotFound:
 			if !rec.Again {
 				if rec.NotFoundSince == nil {

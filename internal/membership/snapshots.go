@@ -224,6 +224,7 @@ func (l *Leader) times() store.ContractSnapshotTimes {
 		Every:      or(l.SnapshotEvery, snapshotEvery),
 		BackoffMin: or(l.SnapshotBackoffMin, snapshotBackoffMin),
 		BackoffMax: or(l.SnapshotBackoffMax, snapshotBackoffMax),
+		Debounce:   or(l.SnapshotDebounce, snapshotDebounce),
 	}
 }
 
@@ -315,7 +316,7 @@ func (s *snapshotSender) send(ctx context.Context, next store.ContractSnapshotDu
 		}
 		l.log().Warn("contract: could not read a workspace's snapshot", "workspace", ws, "error", err)
 		// Recorded against the due time and the seq it was chosen with.
-		_, ok := s.record(ctx, ws, next.Seq, next.DueAt, store.SnapshotFailed, "database")
+		_, ok := s.record(ctx, ws, next.Seq, next.DueAt, nil, store.SnapshotFailed, "database")
 		return ok
 	case !ok:
 		// Parked meanwhile: nothing goes.
@@ -325,7 +326,7 @@ func (s *snapshotSender) send(ctx context.Context, next store.ContractSnapshotDu
 	snap := SnapshotOf(read, seq)
 	if why, rule := snapshotRule(snap); why != "" {
 		class := "local_invalid:" + why
-		rec, ok := s.record(ctx, ws, seq, read.MeasuredAt, store.SnapshotFailed, class)
+		rec, ok := s.record(ctx, ws, seq, read.MeasuredAt, nil, store.SnapshotFailed, class)
 		// Once per run, whichever leader, however many tries a document or
 		// a restart asks for in between (which count none).
 		if ok && rec.Recorded && rec.Before != class {
@@ -347,19 +348,15 @@ func (s *snapshotSender) send(ctx context.Context, next store.ContractSnapshotDu
 		return true
 	}
 	outcome, class := snapshotResult(err)
-	rec, stored := s.record(ctx, ws, seq, read.MeasuredAt, outcome, class)
+	// A token's expiry writes nothing: an accepted snapshot is due again
+	// just after the first one it lists, and that one leaves it out (step
+	// 7's plan, 6.2).
+	rec, stored := s.record(ctx, ws, seq, read.MeasuredAt, read.TokensExpire, outcome, class)
 	switch {
 	case !rec.Recorded:
 	case outcome == store.SnapshotAccepted:
 		l.log().Debug("contract: snapshot accepted", "workspace", ws, "seq", seq, "items", len(snap.Items))
 		s.labels(ws, read)
-		if read.TokensExpire != nil {
-			// A token's expiry writes nothing: the next snapshot is due
-			// then, and leaves it out (step 7's plan, 6.2).
-			if err := c.SnapshotDueBy(ctx, ws, seq, *read.TokensExpire); err != nil && ctx.Err() == nil {
-				l.log().Warn("contract: could not make a snapshot due at a token's expiry", "workspace", ws, "error", err)
-			}
-		}
 	case rec.Parked:
 		attrs := []any{"workspace", ws, "class", class}
 		if rec.NotFoundSince != nil {
@@ -380,10 +377,10 @@ func (s *snapshotSender) send(ctx context.Context, next store.ContractSnapshotDu
 
 // record stores an outcome, and logs a failure to store it (false): the
 // snapshot is then due as it was, and sent again.
-func (s *snapshotSender) record(ctx context.Context, ws uuid.UUID, seq int64, measured time.Time,
+func (s *snapshotSender) record(ctx context.Context, ws uuid.UUID, seq int64, measured time.Time, expires *time.Time,
 	outcome store.ContractSnapshotOutcome, class string) (store.ContractSnapshotRecord, bool) {
 	c := s.l.Members.Contract
-	rec, err := c.SnapshotSent(ctx, ws, seq, measured, outcome, class, s.l.times())
+	rec, err := c.SnapshotSent(ctx, ws, seq, measured, expires, outcome, class, s.l.times())
 	if err != nil {
 		if ctx.Err() == nil {
 			s.l.log().Warn("contract: could not record a snapshot's outcome", "workspace", ws, "error", err)

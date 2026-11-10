@@ -487,7 +487,7 @@ func TestSettingsLockOrder(t *testing.T) {
 				if err != nil || !ok {
 					return err
 				}
-				_, err = w.c.SnapshotSent(lctx, w.ws, s.Seq, s.MeasuredAt, SnapshotAccepted, "",
+				_, err = w.c.SnapshotSent(lctx, w.ws, s.Seq, s.MeasuredAt, nil, SnapshotAccepted, "",
 					ContractSnapshotTimes{Every: time.Hour, BackoffMin: time.Second, BackoffMax: time.Minute})
 				return err
 			},
