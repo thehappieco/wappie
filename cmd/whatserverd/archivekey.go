@@ -170,16 +170,16 @@ Create an account and run this again for the next device, and there will be
 nothing to save by hand.
 `, base64.RawURLEncoding.EncodeToString(raw))
 	}
-	fmt.Print(deviceKeyRestart)
+	fmt.Print(deviceKeyNext)
 	return nil
 }
 
-// deviceKeyRestart ends device-key's output, whatever it printed before:
-// a running server caches each number's key (ingest's pipelineFor), and
-// nothing tells it the key changed.
-const deviceKeyRestart = `
-Restart wappie-api now if it is running. A running server keeps sealing to the
-old key until it restarts.
+// deviceKeyNext ends device-key's output, whatever it printed before: a
+// running server hears the new key at its commit (store.ArchiveKeyChannel,
+// DS49), so nothing restarts.
+const deviceKeyNext = `
+A running wappie-api hears this key and seals to it from the next message on.
+It needs no restart.
 `
 
 // resolveDeviceAnywhere finds a device without being told its tenant.
