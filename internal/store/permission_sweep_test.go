@@ -143,9 +143,10 @@ func TestConnectionsWithoutReadSweep(t *testing.T) {
 	if !maps.Equal(got, want) {
 		t.Fatalf("ended %+v, want %v", ended, want)
 	}
-	// Each of these numbers has a key and a grant: no remedy to name.
+	// Each of these numbers has a key and a grant, and no account read
+	// less than its person: no remedy to name.
 	for _, e := range ended {
-		if e.Tenant != w.tenant || len(e.Keyless) != 0 || len(e.Orphan) != 0 {
+		if e.Tenant != w.tenant || len(e.Keyless) != 0 || len(e.Orphan) != 0 || len(e.Narrowed) != 0 {
 			t.Fatalf("ended %+v", e)
 		}
 	}
@@ -352,7 +353,9 @@ func TestConnectionsWithoutReadSweepLocksNothing(t *testing.T) {
 //   - keyless (epoch 0), as a row older than 0009 or a pairing cut off
 //     between its row and its key leaves one: Keyless;
 //   - orphan, a key and no grant to anyone (wsctl pair -orphan, or
-//     device-key with no account): Orphan;
+//     device-key with no account): Orphan; and so is one whose only grants
+//     left are connections' accounts' copies, sealed to keys that live
+//     only in readers;
 //   - every number of a workspace an older binary reset with its numbers
 //     kept, its connections left live: Keyless;
 //   - a workspace this binary reset with its numbers kept: the reset ended
@@ -363,14 +366,15 @@ func TestConnectionsWithoutReadSweepNobodyReads(t *testing.T) {
 	ctx := context.Background()
 	w := newOwnWorld(t)
 	person, _ := w.actor(t, "admin", "admin")
-	nKeyless, nOrphan, nFine := w.number(t, "Keyless"), w.number(t, "Orphan"), w.number(t, "Fine")
-	for _, d := range []uuid.UUID{nKeyless, nOrphan, nFine} {
+	nKeyless, nOrphan, nCopies, nFine := w.number(t, "Keyless"), w.number(t, "Orphan"), w.number(t, "Copies"), w.number(t, "Fine")
+	for _, d := range []uuid.UUID{nKeyless, nOrphan, nCopies, nFine} {
 		w.reads(t, w.owner, d)
 		w.reads(t, person, d)
 	}
 	keyless, _ := w.connect(t, person, store.KindMetadata, nKeyless, nFine)
 	orphan, _ := w.connect(t, person, store.KindContent, nOrphan)
 	both, _ := w.connect(t, person, store.KindMetadata, nKeyless, nOrphan)
+	copies, _ := w.connect(t, person, store.KindContent, nCopies)
 	fine, _ := w.connect(t, person, store.KindAI, nFine)
 	w.scoped(t, func(tx pgx.Tx) error {
 		// No key at all: its grants go with it.
@@ -381,7 +385,12 @@ func TestConnectionsWithoutReadSweepNobodyReads(t *testing.T) {
 			return err
 		}
 		// A key nobody holds.
-		_, err := tx.Exec(ctx, `DELETE FROM device_key_grants WHERE device_id = $1`, nOrphan)
+		if _, err := tx.Exec(ctx, `DELETE FROM device_key_grants WHERE device_id = $1`, nOrphan); err != nil {
+			return err
+		}
+		// A key no person holds: only the connection's account keeps its
+		// copy.
+		_, err := tx.Exec(ctx, `DELETE FROM device_key_grants WHERE device_id = $1 AND user_id IN ($2, $3)`, nCopies, w.owner, person)
 		return err
 	})
 
@@ -429,12 +438,18 @@ func TestConnectionsWithoutReadSweepNobodyReads(t *testing.T) {
 	got := map[string]named{}
 	for _, e := range ended {
 		got[e.ID] = named{e.Tenant, fmt.Sprint(e.Keyless), fmt.Sprint(e.Orphan)}
+		// Its person reads none of these: what its account still reads
+		// is not the reason.
+		if len(e.Narrowed) != 0 {
+			t.Fatalf("narrowed: %+v", e)
+		}
 	}
 	none := fmt.Sprint([]uuid.UUID(nil))
 	want := map[string]named{
 		keyless:    {w.tenant, fmt.Sprint([]uuid.UUID{nKeyless}), none},
 		orphan:     {w.tenant, none, fmt.Sprint([]uuid.UUID{nOrphan})},
 		both:       {w.tenant, fmt.Sprint([]uuid.UUID{nKeyless}), fmt.Sprint([]uuid.UUID{nOrphan})},
+		copies:     {w.tenant, none, fmt.Sprint([]uuid.UUID{nCopies})},
 		oldMeta:    {older.tenant, fmt.Sprint(sorted(o1, o2)), none},
 		oldContent: {older.tenant, fmt.Sprint([]uuid.UUID{o2}), none},
 	}
@@ -446,6 +461,65 @@ func TestConnectionsWithoutReadSweepNobodyReads(t *testing.T) {
 	}
 	if r := reset.row(t, resetMeta); r.status != "revoked" || r.reason != store.ReasonAccessLost {
 		t.Fatalf("the reset's connection: %+v", r)
+	}
+}
+
+// TestConnectionsWithoutReadSweepNarrowed: a content connection or an AI
+// integration whose own account no longer reads a number its key names,
+// while its person still does, was narrowed: by a grant.revoke or a PUT
+// on that account that a binary before F4 served. The check ends it
+// whole, access_lost, and names the number in Narrowed, for the log's
+// remedy (a new consent). One whose account still reads every number of
+// its key, or waits for a rotated number's new key as its person does,
+// is kept, and so is a metadata connection, which has no account.
+func TestConnectionsWithoutReadSweepNarrowed(t *testing.T) {
+	w := newOwnWorld(t)
+	person, _ := w.actor(t, "admin", "admin")
+	n := w.number(t, "Narrowed")
+	w.reads(t, w.owner, n)
+	w.reads(t, person, n)
+	w.reads(t, person, w.shared)
+	byRevoke, svcRevoke := w.connect(t, person, store.KindContent, n, w.shared)
+	byPut, svcPut := w.connect(t, person, store.KindAI, n, w.shared)
+	kept, _ := w.connect(t, person, store.KindContent, n, w.shared)
+	meta, _ := w.connect(t, person, store.KindMetadata, n, w.shared)
+	// An older binary's lone revoke of the account's grant on the shared
+	// number, and its PUT without Read there, which took the flag too.
+	w.execOne(t, `DELETE FROM device_key_grants WHERE device_id = $1 AND user_id = $2`, w.shared, svcRevoke)
+	w.execOne(t, `UPDATE device_permissions SET can_read = false WHERE device_id = $1 AND user_id = $2`, w.shared, svcPut)
+	w.execOne(t, `DELETE FROM device_key_grants WHERE device_id = $1 AND user_id = $2`, w.shared, svcPut)
+	// The shared number rotated: the person and kept's account hold epoch
+	// 1's key only, not retired, and wait.
+	w.epochKey(t, w.shared, 2)
+	w.grantAt(t, w.shared, w.owner, 2)
+
+	_, ended := sweep(t, w)
+	got := map[string]string{}
+	for _, e := range ended {
+		got[e.ID] = fmt.Sprint(e.Narrowed)
+		if e.Tenant != w.tenant || len(e.Keyless) != 0 || len(e.Orphan) != 0 {
+			t.Fatalf("ended %+v", e)
+		}
+	}
+	shared := fmt.Sprint([]uuid.UUID{w.shared})
+	if want := map[string]string{byRevoke: shared, byPut: shared}; !maps.Equal(got, want) {
+		t.Fatalf("ended %v, want %v", got, want)
+	}
+	for id, svc := range map[string]uuid.UUID{byRevoke: svcRevoke, byPut: svcPut} {
+		if r := w.row(t, id); r.status != "revoked" || r.reason != store.ReasonAccessLost || r.keyLive {
+			t.Fatalf("connection %s %+v", id, r)
+		}
+		if tr := w.trace(t, svc); tr != (serviceTrace{}) {
+			t.Fatalf("an ended connection's account remains: %+v", tr)
+		}
+	}
+	for _, id := range []string{kept, meta} {
+		if r := w.row(t, id); r.status != "active" || !r.keyLive {
+			t.Fatalf("connection %s %+v", id, r)
+		}
+	}
+	if got, _ := sweep(t, w); len(got) != 0 {
+		t.Fatalf("a second pass: %v", got)
 	}
 }
 
