@@ -318,7 +318,10 @@ func TestASnapshotOverALimitByItsTokensGoesWithoutThem(t *testing.T) {
 // nothing, so the snapshot that lists a token makes the next one due at
 // its expiry, far sooner than the hourly one, and that one leaves it out.
 // The token sends only: an expiry that drops an identity would wake the
-// sender through its grants.
+// sender through its grants. It is listed first with a day ahead, so a
+// loaded machine has all the time it needs; then the platform shortens it
+// to seconds ahead, which wakes one snapshot that lists it with its new
+// expiry. After that one only the expiry brings the next.
 func TestATokensExpiryMakesTheSnapshotDue(t *testing.T) {
 	w := newTokenWorld(t)
 	logs := &membershiptest.Logs{}
@@ -326,7 +329,7 @@ func TestATokensExpiryMakesTheSnapshotDue(t *testing.T) {
 	l.SnapshotEvery = time.Hour
 	run(t, l)
 	w.settle(t, w.home)
-	id, _, err := w.fake.AddToken(w.home.String(), w.sub.String(), "Nightly", time.Now().Add(15*time.Second))
+	id, _, err := w.fake.AddToken(w.home.String(), w.sub.String(), "Nightly", time.Now().Add(24*time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -342,5 +345,8 @@ func TestATokensExpiryMakesTheSnapshotDue(t *testing.T) {
 		}
 	}
 	eventually(t, soon, "a snapshot that lists the token", held(true))
+	if err := w.fake.ShortenToken(id, time.Now().Add(8*time.Second)); err != nil {
+		t.Fatal(err)
+	}
 	eventually(t, soon, "a snapshot after its expiry, without it", held(false))
 }
