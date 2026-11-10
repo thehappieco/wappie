@@ -2598,9 +2598,15 @@ waits and drops the pipeline built.
 
 Why a notice: it costs nothing in the steady state, and it ends the
 first case within the notice's delay, which no check at the next
-content key can. A message sealed before the reset's commit and stored
-just after it is still lost, in the reset that deletes the archive
-around it.
+content key can. The checks below need no notice, and the notice spares
+each number one refused write after a reset.
+
+A dropped pipeline seals nothing more (`Pipeline.drop`,
+`errPipelineDropped`). The history worker held one pipeline for a whole
+chunk, so after a notice it went on sealing under the deleted content
+key, and once that key was due every later message of the chunk was
+refused. Now each message of a chunk, each chat name and each contact
+name fetches the number's pipeline (`Router.ingest`, `Router.SealFor`).
 
 **(ii) The check before each content key.** Every sealer of the router,
 and `reproject`'s, makes its content keys through
@@ -2622,6 +2628,33 @@ third case with no notice heard, at the next content key, and the
 second with a clear error. It costs one indexed read per content key,
 at most one per 1000 seals or 15 minutes of a number.
 
+**The check at each write.** A value sealed before the reset's commit
+and written after it named a content key the reset had deleted. The
+write waited for the reset's lock on the workspace, then went in: a row
+in the new archive that nobody can open, holding its message's slot
+against a backfill. So every write of what ingest sealed names the
+archive key its content key was sealed to: `InsertMessage.ArchiveKey`
+(a message, and a placeholder it fills), `Messages.Reproject`,
+`ChatMeta.NameArchiveKey`, `ContactName.ArchiveKey` and
+`Contacts.SetAvatar`. The pipeline sets it, and `SealFor` returns it to
+the avatar worker. After the workspace's lock (`nextSeq`, or the
+write's own `storage_lock` trigger), the write reads whether that
+content key is still stored at an epoch whose key is that archive key
+(`contentKeyIsTx`), and refuses it with `ErrArchiveKeyChanged`
+otherwise. Naming the key and not only the id matters: after
+`device-key`, a new content key takes id 1 again, and a stale write
+naming id 1 would pass an id check. This also ends the first case with
+no notice heard, at the next write rather than the next content key. A
+write that names no key (a tool, a test, the demo seed) is not checked.
+It costs one primary key read per write.
+
+A message refused for a changed key, here or by the check before a
+content key, is tried once more with the pipeline built again
+(`Router.ingest`, and `SealFor` for a seal). After `device-key` it is
+stored under the new key. Between the reset and `device-key` the number
+has no key, and it is refused with `ErrNoArchiveKey`: not stored, and a
+later backfill can still bring it.
+
 **(iv) Every grant names its key.** `store.ArchiveKeyFingerprint`
 (`internal/store/archive_fingerprint.go`) is the one definition: the
 lowercase hex SHA-256 of the stored public key bytes
@@ -2629,9 +2662,13 @@ lowercase hex SHA-256 of the stored public key bytes
 characters, no prefix. `store.Grant.Fingerprint` is required.
 `PutGrant`, the one statement that writes a grant, compares it with the
 number's key at the grant's epoch, not retired, after the workspace's
-lock and in the same transaction. Another key or none is
-`ErrArchiveKeyChanged`. A number moved to Personal or deleted meanwhile
-is `ErrNumberGone`, as the insert's ownership trigger answered before.
+lock and in the same transaction (`archiveKeyIsTx`, in the same file,
+which step 7's token grant shares). Another key is
+`ErrArchiveKeyChanged`. No key is both `ErrArchiveKeyChanged` and
+`ErrNoArchiveKey`, so `grant.add` and `token.grant`, which test them in
+different orders, both answer `conflict`. A number moved to Personal or
+deleted meanwhile is `ErrNumberGone`, as the insert's ownership trigger
+answered before.
 A missing or malformed fingerprint is `ErrGrantFingerprint`. A reset
 takes the same lock first, so a grant whose context was read before
 the reset is refused after it. Why the fingerprint and not the epoch:
@@ -2640,8 +2677,8 @@ needs a migration.
 
 The writers:
 
-- `grant.add` echoes the fingerprint the caller's grant context gave.
-  It carries the permissions screen's grants and every grant to a
+- `grant.add` names the fingerprint of the key the client opened and
+  seals. It carries the permissions screen's grants and every grant to a
   connection's or an AI integration's account: the console's consent
   and renewal seal the key in the browser and send `grant.add`. The
   handler also compares early, with the key it reads for the epoch.
@@ -2654,7 +2691,13 @@ The writers:
 
 The grant context: every grant listed by `GET /v1/auth/me`,
 `grants.list` and `GET /v1/grants` carries `fingerprint`, computed from
-the key row at the grant's epoch.
+the key row at the grant's epoch: the number's key now, not the key
+sealed in that grant. So a client does not echo it. It computes the
+fingerprint of the key it opened (`seal.archiveKeyFingerprint` of its
+public half, the same SHA-256), refuses a grant whose key differs from
+the listed one with `no_grant`, and sends its own. An echo would let an
+old grant at a reused epoch, sealed with a key a reset deleted, be
+granted again: it is listed with the new key's fingerprint.
 
 **The wire.** Core and cloud ship together, since the cloud pins the
 core.
@@ -2668,18 +2711,23 @@ core.
   them as before.
 - `pair` does not change.
 - A web page loaded before the deploy gets `bad_request` on its next
-  grant or consent with message text, and a reload fixes it.
+  grant or consent with message text, and a reload fixes it. If the
+  core went out before the web, every `grant.add` would get it, so the
+  web goes out with the core or first; the R3 core ignores the field.
 
 The clients that send `grant.add`, changed with it: wappie-cloud's web
 (the permissions screen's `grantAccess`, the consent's `mcpSetup`, and
-the session's lender `createDeviceGrantLender`, which passes each key's
-fingerprint), `packages/client` (`withDeviceKey` and `withDeviceKeys`
-pass the fingerprint to `use`; the protocol types) and `packages/cli`
+the session's lender `createDeviceGrantLender`, which computes each
+key's fingerprint), `packages/client` (`withDeviceKey` and
+`withDeviceKeys` compute it and pass it to `use`;
+`seal.archiveKeyFingerprint`; the protocol types) and `packages/cli`
 (`wsctl grant`). The Go `wsctl` only pairs, and the enclave reader only
 reads grants.
 
-Step 7's `token.grant` uses `store.ArchiveKeyFingerprint` once step 7
-merges main.
+Step 7's `token.grant` uses this file once step 7 merges main: its own
+`internal/store/archive_fingerprint.go` goes, and its `archiveKeyIsTx`
+calls, `ErrArchiveKeyChanged` and `ArchiveKeyFingerprintLen` resolve
+to these.
 
 **The runbook** (docs/devices.md). A running `wappie-api` needs no
 restart after a reset or `device-key`. With `-keep-devices`: reset,
@@ -2690,9 +2738,12 @@ stops `wappie-api` first and starts it after. The reset's steps and
 `device-key`'s last lines say this. DS48's restart step is gone.
 
 Not here: (c), never reusing an epoch number, needs a migration.
-Nothing finds a grant recorded before this change with an old key at a
-reused epoch. One needs a `grant.add` sent between a reset with
-`-keep-devices`, `device-key` and the client's next read of its grants.
+Nothing finds or removes a grant recorded before this change with an
+old key at a reused epoch. One needs a `grant.add` sent between a reset
+with `-keep-devices`, `device-key` and the client's next read of its
+grants. Clients now refuse to grant from one (`no_grant`), but it still
+counts as Read. The listening connection can hang half open until TCP
+notices; the checks above hold meanwhile, as for deletions.
 
 Tests: `TestArchiveKeyFingerprint` (the format, two vectors),
 `TestCreateContentKeyForChecksTheKey`,
@@ -2700,16 +2751,25 @@ Tests: `TestArchiveKeyFingerprint` (the format, two vectors),
 `TestParseArchiveKeyNotice`, `TestPutGrantNamesItsKey` (a missing or
 malformed fingerprint, the old key after the reset and at the reused
 epoch refused, the new one taken, the context's fingerprint) and
-`TestPutGrantRacingReset` (store). `TestStaleSealerAfterNewKey`,
-`TestStaleSealerAfterReset` and `TestRouterForget` (ingest).
+`TestPutGrantRacingReset`, `TestCreateContentKeyForTwoNumbers` (no
+deadlock) and `TestSealedWritesNameTheirKey` (each write, with its own
+key, another key, a content key not stored, and no key named) (store).
+`TestStaleSealerAfterNewKey`, `TestStaleSealerAfterReset`,
+`TestStaleSealerBeforeItsKeyIsDue`, `TestStaleSealerAfterAnotherContentKey`
+(id 1 taken again by another process), `TestMessageSealedDuringReset`,
+`TestHistoryChunkAcrossReset` (notice heard and not),
+`TestRouterForget` and `TestADroppedPipelineSealsNothing` (ingest).
 `TestGrantAddNamesTheKey` (a client without the field, the old key from
 a context read before the reset, the new key) and
 `TestPairingGrantsNameTheirKey` (wsapi). `TestGrantsAreListedPerAccount`
 (authapi, `/v1/auth/me`) and `TestRestrictedServiceKeyGrantsAndRevocation`
 (restapi, `GET /v1/grants`) check the context's fingerprint.
-`TestResetThenDeviceKeyWhileServing` (listening, not listening, and
-started after both), `TestServeListensForArchiveKeys`,
+`TestResetThenDeviceKeyWhileServing` (listening; not listening, with a
+message between the reset and `device-key`, the stale content key not
+due, and due; and started after both), `TestServeListensForArchiveKeys`,
 `TestDeviceKeyGrantsNameTheKey` and `TestResetAndDeviceKeyTexts`
 (cmd/whatserverd). The web's `grantStepUp`, `deviceGrants`, `mcpSetup`
-and `mcpContent` tests check each `grant.add` echoes the fingerprint,
-and `packages/client`'s and `packages/cli`'s check it is passed on.
+and `mcpContent` tests check each `grant.add` names the key's
+fingerprint, and `deviceGrants` that a stale grant is refused.
+`packages/client`'s check the same, the Go vectors, and
+`packages/cli`'s that it is passed on.
