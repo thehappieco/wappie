@@ -798,7 +798,7 @@ func TestContractDocsMatchTheCode(t *testing.T) {
 		}
 		says("contract.md", "the advisory lock `"+membership.LockName+"`")
 		for _, limit := range []string{
-			fmt.Sprintf("At most %d items, %d people on an item", kc.MaxItems, kc.MaxPeople),
+			fmt.Sprintf("At most %d items, %d people on an item, %d tokens on an item", kc.MaxItems, kc.MaxPeople, kc.MaxItemTokens),
 		} {
 			says("contract.md", limit)
 		}

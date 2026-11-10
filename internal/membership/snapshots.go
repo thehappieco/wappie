@@ -107,10 +107,12 @@ func canOf(read, send, manage bool) []string {
 	return can
 }
 
-// checkSnapshot says why Wappie would not send snap, or "": more items or
-// people than README 8 allows, a snapshot the kit's Validate refuses (its
-// labels and hints included, as the platform's strict intake checks them),
-// or a body over the call's limit. Its words name a rule, never a value.
+// checkSnapshot says why Wappie would not send snap as it is, or "": more
+// items, people or tokens on an item than README 8 allows, a snapshot the
+// kit's Validate refuses (its labels and hints included, as the platform's
+// strict intake checks them), or a body over the call's limit. Its words
+// name a rule, never a value. The sender then sends one over a limit by
+// its tokens alone without them (sendable).
 func checkSnapshot(snap kc.Snapshot) string {
 	why, _ := snapshotRule(snap) //nolint:errcheck // the rule's words alone; send logs the kit's refusal
 	return why
@@ -126,6 +128,9 @@ func snapshotRule(snap kc.Snapshot) (string, error) {
 		if len(it.People) > kc.MaxPeople {
 			return "people", nil
 		}
+		if len(it.Tokens) > kc.MaxItemTokens {
+			return "tokens", nil
+		}
 	}
 	if err := snap.Validate(); err != nil {
 		return "invalid", err
@@ -138,6 +143,41 @@ func snapshotRule(snap kc.Snapshot) (string, error) {
 		return "too_large", nil
 	}
 	return "", nil
+}
+
+// sendable is the snapshot Wappie sends of snap, or why it sends none
+// (snapshotRule's words and the kit's refusal). One over the body's limit,
+// or an item's tokens', by its tokens alone goes without any item's tokens
+// (README 8: absent, the app does not report tokens), and left names the
+// limit: the platform allows more tokens than one snapshot can carry, and
+// the people, their protection and the numbers' states must not wait for
+// them (step 7's plan, 6.2).
+func sendable(snap kc.Snapshot) (out kc.Snapshot, why string, rule error, left string) {
+	why, rule = snapshotRule(snap)
+	if why != "too_large" && why != "tokens" {
+		return snap, why, rule, ""
+	}
+	bare, listed := withoutTokens(snap)
+	if !listed {
+		return snap, why, rule, ""
+	}
+	if w, r := snapshotRule(bare); w != "" {
+		return snap, w, r, ""
+	}
+	return bare, "", nil, why
+}
+
+// withoutTokens is snap with no item's tokens, and whether any item had a
+// list.
+func withoutTokens(snap kc.Snapshot) (kc.Snapshot, bool) {
+	out, listed := snap, false
+	out.Items = make([]kc.Item, len(snap.Items))
+	for i, it := range snap.Items {
+		listed = listed || it.Tokens != nil
+		it.Tokens = nil
+		out.Items[i] = it
+	}
+	return out, listed
 }
 
 // snapshotResult sorts a PutAccess's error into the outcome the store
@@ -215,6 +255,9 @@ type snapshotSender struct {
 	notices *notices
 	// logged is when each workspace's label counts were last logged.
 	logged map[uuid.UUID]time.Time
+	// bare are the workspaces whose snapshots go without their tokens, so
+	// their ERROR is logged once a run.
+	bare map[uuid.UUID]bool
 	// warned spaces the WARNs of failed sends.
 	warned time.Time
 }
@@ -323,8 +366,8 @@ func (s *snapshotSender) send(ctx context.Context, next store.ContractSnapshotDu
 		return true
 	}
 	seq := read.Seq
-	snap := SnapshotOf(read, seq)
-	if why, rule := snapshotRule(snap); why != "" {
+	snap, why, rule, left := sendable(SnapshotOf(read, seq))
+	if why != "" {
 		class := "local_invalid:" + why
 		rec, ok := s.record(ctx, ws, seq, read.MeasuredAt, nil, store.SnapshotFailed, class)
 		// Once per run, whichever leader, however many tries a document or
@@ -340,6 +383,18 @@ func (s *snapshotSender) send(ctx context.Context, next store.ContractSnapshotDu
 			}
 		}
 		return ok
+	}
+	switch {
+	case left == "":
+		delete(s.bare, ws)
+	case !s.bare[ws]:
+		// Once a run, per leader, while it goes without them.
+		s.bare[ws] = true
+		l.log().Error("contract: a workspace's snapshot goes without its tokens: with them it is over a limit",
+			"workspace", ws, "reason", left, "items", len(snap.Items))
+		if err := c.RecordError(ctx, store.ContractErrorSnapshotInvalid); err != nil && ctx.Err() == nil {
+			l.log().Warn("contract: could not record an ERROR", "error", err)
+		}
 	}
 	err = m.Client.PutAccess(ctx, ws.String(), snap)
 	if ctx.Err() != nil {

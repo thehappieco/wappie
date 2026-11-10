@@ -1264,7 +1264,7 @@ func TestSnapshotBeforeTheRenameIsSentAgain(t *testing.T) {
 func (w *snapshotWorld) snapshotSender(t *testing.T) *snapshotSender {
 	t.Helper()
 	return &snapshotSender{l: w.leader(w.members, &membershiptest.Logs{}, lockKey(t)), notices: newNotices(),
-		logged: map[uuid.UUID]time.Time{}}
+		logged: map[uuid.UUID]time.Time{}, bare: map[uuid.UUID]bool{}}
 }
 
 // waiter waits for a backend to wait on the lock pid holds, and returns

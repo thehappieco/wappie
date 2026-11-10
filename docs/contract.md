@@ -986,11 +986,20 @@ missing snapshot as unknown protection.
   is never a person: never in `people`, `protected` or `other_backups`.
   About 105 bytes a token: 100 tokens on each of about 97 numbers fill the
   1 MiB.
-- **Limits.** At most 1000 items, 5000 people on an item and a 1 MiB body,
-  and the kit's validation (labels and hints as the platform's strict
-  intake checks them). A snapshot past them is not sent (ERROR "contract: a
-  workspace's snapshot is not sent: Wappie would not send it"), recorded
-  `local_invalid:<rule>`, and retried with the backoff.
+- **Limits.** At most 1000 items, 5000 people on an item, 1000 tokens on
+  an item and a 1 MiB body, and the kit's validation (labels and hints as
+  the platform's strict intake checks them). A snapshot past them is not sent
+  (ERROR "contract: a workspace's snapshot is not sent: Wappie would not
+  send it"), recorded `local_invalid:<rule>`, and retried with the
+  backoff. One past the 1 MiB or an item's 1000 tokens by its tokens alone
+  goes without any item's `tokens` (the spec: absent, the app does not
+  report tokens), its ordinals kept, with one ERROR a run per leader
+  "contract: a workspace's snapshot goes without its tokens: with them it
+  is over a limit" (`reason` `too_large` or `tokens`, never a value;
+  recorded `snapshot_invalid`). The platform allows 100 live tokens a
+  workspace and 1000 numbers a token, more than one snapshot carries, and
+  the people, their protection and the numbers' states never wait for
+  them. The tokens go again once they fit.
 - **`snapshot_seq`** is the greater of the measurement's milliseconds and
   the last one numbered plus one (which may be one whose send failed), or
   the workspace's last section's plus one, stored before the send, so it
