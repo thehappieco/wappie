@@ -135,7 +135,8 @@ the replay keeps the ledger's id and time.
 
 ## Coalescing pauses
 
-One `item.sync_paused` per number, actor and hour (the spec's "Floods"):
+One `item.sync_paused` per number, actor and stop an hour (the spec's
+"Floods"; the stop is always `pause` here, so per number and actor):
 
 - When a queue's next event is a pause, every later unsent pause of the
   same number by the same actor under an hour after it is folded into it,
@@ -147,9 +148,12 @@ One `item.sync_paused` per number, actor and hour (the spec's "Floods"):
   have one, else by sub: a token's creator may have no local account
   here, and two such creators are two actors. With neither on both sides
   (a key with no creator, a person whose account is gone and who never
-  linked), only the same kind with neither is the same actor. The folded rows are settled
-  `coalesced` only in the transaction that records its own signed answer,
-  and parked with it when it is parked.
+  linked), only the same kind with neither is the same actor. This rule
+  holds with the token mode off too: two people whose accounts are gone
+  are told apart by the subs their rows kept, and a person's pause and
+  their key's fold once their account is gone. The folded rows are
+  settled `coalesced` only in the transaction that records its own signed
+  answer, and parked with it when it is parked.
 - A pause under an hour after one of the same number and actor that the
   platform already took is folded into that one and settled at once: no
   second mail.

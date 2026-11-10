@@ -343,6 +343,76 @@ func TestEventBatchFolds(t *testing.T) {
 	}
 }
 
+// The fold by sub with tokens off (step 7's plan, 6.3): the rule is not
+// behind the token mode. Pauses whose local accounts are gone (their
+// actor_user_id null) are compared by the sub each row kept: two people's
+// stay two events, where before they were folded into one and the second
+// was hidden; a person's pause and their key's fold into one, as README
+// 9's actor is the person behind the key. A delivered pause folds a later
+// one by the same sub too.
+func TestPauseFoldsBySubWithTokensOff(t *testing.T) {
+	pool := pgtest.Fresh(t, migrate.Run)
+	ctx := context.Background()
+	c := store.NewContract(pool)
+	team := uuid.MustParse(newTenant(t, pool, "Equipe"))
+	if _, err := c.SetMode(ctx, store.ContractObserve); err != nil {
+		t.Fatal(err)
+	}
+	if mode, err := store.NewTokens(pool).Mode(ctx); err != nil || mode != store.TokensOff {
+		t.Fatalf("the token mode: %q %v", mode, err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO contract_workspaces (workspace_id, kind, named_at)
+		VALUES ($1, 'team', clock_timestamp() - interval '1 minute')`, team); err != nil {
+		t.Fatal(err)
+	}
+	reader := uuid.New()
+	pause := func(item uuid.UUID, occurred, kind string, sub uuid.UUID, set string) uuid.UUID {
+		t.Helper()
+		return pastEvent(t, pool, team, "sync_paused", "0", occurred, fmt.Sprintf(
+			`item_id = '%s', actor_kind = '%s', actor_sub = '%s', actor_user_id = NULL, reader_subs = ARRAY['%s', '%s']::uuid[]%s`,
+			item, kind, sub, sub, reader, set))
+	}
+	two, own, delivered := uuid.New(), uuid.New(), uuid.New()
+	ana, bia, carla, dani := uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	anas := pause(two, "30 minutes", "person", ana, "")
+	bias := pause(two, "20 minutes", "person", bia, "")
+	carlas := pause(own, "30 minutes", "person", carla, "")
+	carlasKey := pause(own, "20 minutes", "key", carla, "")
+	pause(delivered, "40 minutes", "person", dani, ", settled_at = clock_timestamp(), outcome = 'accepted'")
+	danisKey := pause(delivered, "10 minutes", "key", dani, "")
+	batch, err := c.EventBatch(ctx, team, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var heads []uuid.UUID
+	for _, e := range batch.Events {
+		heads = append(heads, e.EventID)
+		if e.TokenMode {
+			t.Fatalf("%s goes with the token mode on", e.EventID)
+		}
+		if e.EventID == carlas && (e.Folded != 1 || e.ActorKind != "person" || e.ActorSub == nil || *e.ActorSub != carla) {
+			t.Fatalf("a person's pause and their key's: %+v", e)
+		}
+	}
+	if want := []uuid.UUID{anas, bias, carlas}; !slices.Equal(heads, want) {
+		t.Fatalf("heads %v, want %v (carla's key %s and dani's key %s folded)", heads, want, carlasKey, danisKey)
+	}
+	// Folded into the delivered pause, settled by the read; into an owed
+	// head, settled with its answer.
+	for id, want := range map[uuid.UUID]string{danisKey: "coalesced", carlasKey: "owed", anas: "owed", bias: "owed"} {
+		if got := eventState(t, pool, team, id); got != want {
+			t.Errorf("event %s after the read: %s, want %s", id, got, want)
+		}
+	}
+	var into *uuid.UUID
+	inTenantTx(ctx, t, pool, team, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `SELECT coalesced_into FROM item_events WHERE event_id = $1`, carlasKey).Scan(&into)
+	})
+	if into == nil || *into != carlas {
+		t.Fatalf("carla's key's pause folded into %v, want %s", into, carlas)
+	}
+}
+
 // TB50: the sender's settle against a purge of the same workspace, forced
 // into the purge's order (the workspace's row, then, once the settle waits
 // on it, the events' rows) and then raced with a real purge; and two
