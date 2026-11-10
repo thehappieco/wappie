@@ -171,6 +171,31 @@ func (a *APIKeys) KeysNarrowed(ctx context.Context) (bool, error) {
 	return narrowed, err
 }
 
+// KeyGate is what decides which keys are issued here: the contract's mode,
+// the token mode, and whether the keys were retired (key_retirements).
+type KeyGate struct {
+	Contract, Tokens string
+	Retired          bool
+}
+
+// Narrowed is KeysNarrowed's answer.
+func (g KeyGate) Narrowed() bool { return g.Tokens == TokensOn || g.Retired }
+
+// OffThePlatform is an installation the platform never reached or that
+// left it: the contract off, tokens off, and no retirement made. Only
+// there does whatserverd key -self-hosted issue (the plan's 7.3, L3).
+func (g KeyGate) OffThePlatform() bool {
+	return g.Contract == ContractOff && g.Tokens == TokensOff && !g.Retired
+}
+
+// Gate reads the KeyGate, in one statement.
+func (a *APIKeys) Gate(ctx context.Context) (KeyGate, error) {
+	var g KeyGate
+	err := a.pool.QueryRow(ctx, `SELECT c.mode, t.mode, EXISTS (SELECT 1 FROM key_retirements)
+		FROM contract_state c CROSS JOIN contract_token_state t`).Scan(&g.Contract, &g.Tokens, &g.Retired)
+	return g, err
+}
+
 // Argon2id parameters for verifying API keys.
 //
 // Much lighter than the parameters used for a user password, and on purpose:

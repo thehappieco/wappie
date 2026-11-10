@@ -45,6 +45,25 @@ func invitationsPausedTx(ctx context.Context, tx pgx.Tx, tenant uuid.UUID, role 
 	return nil
 }
 
+// standingServicePausedTx refuses a standing service account's invitation
+// (role service, not provisional) while keys are narrowed (KeysNarrowed),
+// issued or redeemed, with ErrTokensAreThePlatforms: such an account is
+// what a general key acts as, and the platform's tokens replace those
+// (the plan's 7.3). A provisional one, a content consent's, is not.
+func standingServicePausedTx(ctx context.Context, tx pgx.Tx, role string, provisional bool) error {
+	if role != RoleService || provisional {
+		return nil
+	}
+	narrowed, err := keysNarrowedTx(ctx, tx)
+	if err != nil {
+		return err
+	}
+	if narrowed {
+		return ErrTokensAreThePlatforms
+	}
+	return nil
+}
+
 type Invitation struct {
 	ID          uuid.UUID  `json:"id"`
 	Email       string     `json:"email"`
@@ -98,10 +117,14 @@ func (u *Users) createInviteTx(ctx context.Context, tx pgx.Tx, tenant uuid.UUID,
 // createInviteKindTx is createInviteTx for either kind of invitation;
 // provisional is the thirty-minute service invitation of a content consent.
 // It is the one writer of invites, so a person invitation into a recorded
-// team is refused here for every route: a member's, a regenerated one and
-// the operator's whatserverd invite.
+// team, and a standing service account's while keys are narrowed, are
+// refused here for every route: a member's, a regenerated one and the
+// operator's whatserverd invite.
 func (u *Users) createInviteKindTx(ctx context.Context, tx pgx.Tx, tenant uuid.UUID, role, email string, creator *uuid.UUID, ttl time.Duration, provisional bool) (string, Invitation, error) {
 	if err := invitationsPausedTx(ctx, tx, tenant, role); err != nil {
+		return "", Invitation{}, err
+	}
+	if err := standingServicePausedTx(ctx, tx, role, provisional); err != nil {
 		return "", Invitation{}, err
 	}
 	raw := make([]byte, 24)

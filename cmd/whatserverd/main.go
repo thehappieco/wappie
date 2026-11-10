@@ -1185,6 +1185,32 @@ func listTenants() error {
 	return w.Flush()
 }
 
+// errCLIKeysNarrowed is the command line's refusal of a general key while
+// keys are narrowed (step 7's plan, 7.3).
+var errCLIKeysNarrowed = errors.New("this installation takes The Happie Co's API tokens (tokens on, or Wappie's own keys " +
+	"were retired): make a token in the platform's console. An installation that leaves the platform for good runs " +
+	"0053's down-step first")
+
+// cliKeysGate refuses key and bootstrap while keys are narrowed: the
+// token mode on, or the keys retired (store.KeyGate). -self-hosted says
+// the operator means an installation off the platform, and is refused
+// unless it is one: the contract off, tokens off, and no retirement. It
+// never lets a key through that the narrowing refuses.
+func cliKeysGate(ctx context.Context, keys *store.APIKeys, selfHosted bool) error {
+	g, err := keys.Gate(ctx)
+	if err != nil {
+		return err
+	}
+	if selfHosted && !g.OffThePlatform() {
+		return fmt.Errorf("-self-hosted: this installation is connected to The Happie Co (contract mode %s, tokens %s, keys retired %t)",
+			g.Contract, g.Tokens, g.Retired)
+	}
+	if g.Narrowed() {
+		return errCLIKeysNarrowed
+	}
+	return nil
+}
+
 // issueKey issues an additional API key for an existing tenant.
 func issueKey(args []string) error {
 	fs := flag.NewFlagSet("key", flag.ContinueOnError)
@@ -1193,6 +1219,8 @@ func issueKey(args []string) error {
 	scopeArg := fs.String("scope", "full",
 		"what the key may do: read (the archive as ciphertext), send (plus outbound "+
 			"messages), full (plus pairing, stopping devices and backfill)")
+	selfHosted := fs.Bool("self-hosted", false, "refuse unless this installation is off The Happie Co's platform "+
+		"(the contract off, tokens off, keys never retired)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -1222,8 +1250,14 @@ func issueKey(args []string) error {
 	if !exists {
 		return fmt.Errorf("key: no tenant %s; run \"whatserverd tenants\" to list them", *tenant)
 	}
+	if err := cliKeysGate(ctx, a.apiKeys, *selfHosted); err != nil {
+		return fmt.Errorf("key: %w", err)
+	}
 
-	key, err := a.apiKeys.IssueScoped(ctx, *tenant, *name, scope, nil)
+	key, err := a.apiKeys.IssueAsked(ctx, *tenant, *name, scope, nil, nil, nil, nil)
+	if errors.Is(err, store.ErrTokensAreThePlatforms) {
+		return fmt.Errorf("key: %w", errCLIKeysNarrowed)
+	}
 	if err != nil {
 		return fmt.Errorf("key: %w", err)
 	}
@@ -1237,6 +1271,8 @@ func bootstrap(args []string) error {
 	name := fs.String("tenant", "", "tenant name (required)")
 	keyName := fs.String("key-name", "bootstrap", "label for the issued API key")
 	force := fs.Bool("force", false, "create the tenant even if one with this name exists")
+	selfHosted := fs.Bool("self-hosted", false, "refuse unless this installation is off The Happie Co's platform "+
+		"(the contract off, tokens off, keys never retired)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -1253,6 +1289,10 @@ func bootstrap(args []string) error {
 		return err
 	}
 	defer closeAll()
+	// Before the tenant: a refused bootstrap leaves nothing behind.
+	if err := cliKeysGate(ctx, a.apiKeys, *selfHosted); err != nil {
+		return fmt.Errorf("bootstrap: %w", err)
+	}
 
 	// Names are not unique — two real companies may share one — but creating a
 	// second tenant with the same name is almost always a mistake reaching for
@@ -1276,7 +1316,7 @@ func bootstrap(args []string) error {
 		`INSERT INTO tenants (name) VALUES ($1) RETURNING id::text`, *name).Scan(&tenantID); err != nil {
 		return fmt.Errorf("bootstrap: create tenant: %w", err)
 	}
-	key, err := a.apiKeys.Issue(ctx, tenantID, *keyName)
+	key, err := a.apiKeys.IssueAsked(ctx, tenantID, *keyName, store.ScopeFull, nil, nil, nil, nil)
 	if err != nil {
 		return fmt.Errorf("bootstrap: issue api key: %w", err)
 	}

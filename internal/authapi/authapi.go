@@ -458,6 +458,8 @@ func (h *Handler) signupError(w http.ResponseWriter, err error) bool {
 	switch {
 	case errors.Is(err, store.ErrInvitationsPaused):
 		invitationsPaused(w)
+	case errors.Is(err, store.ErrTokensAreThePlatforms):
+		tokensAreThePlatforms(w)
 	case errors.Is(err, store.ErrInviteEmailMismatch):
 		fail(w, http.StatusForbidden, "invite_email_mismatch", "this invitation belongs to another email address; the code remains valid")
 	case errors.Is(err, store.ErrInviteInvalid):
