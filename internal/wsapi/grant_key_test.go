@@ -12,10 +12,11 @@ import (
 )
 
 // TestGrantAddNamesTheKey: grant.add carries the fingerprint of the archive
-// key it seals, as the grant context gave it (grants.list here), and the
-// server compares it with the number's key (DS49). A client from before
-// DS49 sends none and is refused with bad_request. After reset-archive
-// -keep-devices and device-key the number has a new key at epoch 1 again:
+// key it seals, which the client computes from the key it opened (here it
+// equals the one grants.list gives), and the server compares it with the
+// number's key (DS49). A client from before DS49 sends none and is
+// refused with bad_request. After reset-archive -keep-devices and
+// device-key the number has a new key at epoch 1 again:
 // a grant sealed with the old key, from a context read before the reset,
 // is refused with conflict, and one with the new key's fingerprint is
 // taken.

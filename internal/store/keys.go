@@ -463,8 +463,10 @@ func numberGone(err error) error {
 //
 // The reply is what a browser turns into a set of readable accounts: no grant,
 // no key, and the archive stays closed however the server behaves. Each
-// grant carries its key's fingerprint, which a client echoes when it seals
-// the key to someone else (grant.add, DS49).
+// grant carries the fingerprint of the number's key at its epoch. A client
+// that seals the key to someone else (grant.add, DS49) sends the
+// fingerprint of the key it opened, and refuses a grant whose key differs
+// from this one.
 func (k *Keys) GrantsFor(ctx context.Context, tenant, user uuid.UUID) ([]Grant, error) {
 	var out []Grant
 	err := pg.InTenantTx(ctx, k.pool, tenant.String(), func(tx pgx.Tx) error {
