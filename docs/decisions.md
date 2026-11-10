@@ -2907,7 +2907,7 @@ What changes:
   client's version (`Opener.contactNames` reading the envelope,
   `contactKeyIDs`, `seal.contentKeyID`) and the MCP reader's
   `resolve_contact` prefetch of it wait for reader 0.6.1 on
-  `codex/reader-061`. Until then the attested reader and the local MCP
+  `codex/reader-061` (commit 09b1754; DS49 says where that branch is). Until then the attested reader and the local MCP
   reader open every name with `content_key_id`, as before.
 - The web and `packages/client` read the same vectors as the server:
   `internal/store/testdata/contact-name-key-ids.json` (sealed names and
@@ -2939,12 +2939,22 @@ contact, in its transaction, and one check per content key. With the
 pilot's counts (number A: 8106 names on at most 7038 contacts, 1068 of
 them with two; number B: 634 names on 633), a start makes 9 and 1
 content keys and 7038 and 633 writes, as before, 1068 and 1 fewer seal
-calls, and 7038 and 633 more reads. On the test database (Docker, 2
-CPUs) a contact write took 2.40 ms without the check and 2.87 ms with
-it, so A's import goes from about 17 s to 20 s and B's from 1.5 s to
-1.8 s; the grouping saves about 12 ms. An import used to leave about
-one contact a start with its two names under two keys; now none. Not
-done: the read could share the insert's round trip (a pipelined batch,
+calls, and 7038 and 633 more reads. The import runs one number after
+another, so a restart waits for A and B together. On the test database
+(Postgres 18 in Docker, 2 CPUs, on a Mac), seven interleaved runs of
+each tree, each a first import and then the timed one as at a restart,
+gave these medians for A plus B: main 16.8 s (A 15.2 s, B 1.5 s), (b)
+alone 19.3 s, and (b) with this change 20.3 s (A 18.4 s, B 1.6 s). The
+difference from main, paired by round, has a median of +2.6 s and ranged
+from -1.9 s to +8.0 s. The earlier figure of +6 s came from three noisy
+runs. The per-write timing agrees: a contact write took 2.40 ms without
+the check and 2.87 ms with it, and 7671 writes at +0.47 ms is +3.6 s. So
+expect about +3 s on the test database, up to +8 s on a loaded machine.
+`syncGroups`, which also runs before the API listens, pays the same check
+once per group. The pilot's own interval from start to listening, before
+and after the release, is the number that counts. The grouping saves
+about 12 ms. An import used to leave about one contact a start with its
+two names under two keys; now none. Not done: the read could share the insert's round trip (a pipelined batch,
 after the trigger's lock), or the import could write many contacts per
 transaction with one check per content key. Both change DS49's check
 and its lock order, so they wait for their own review.
@@ -2972,9 +2982,11 @@ reader that predates this change still does, and shows the older names
 as locked (not tampered). The web gets the fix with its own opener, in
 the cloud release that pins this core. The attested reader and the local
 MCP reader get it at reader 0.6.1, which this change does not make:
-nothing here moves the reader's measured client
-(`scripts/check-client-dist.sh` passes, and `packages/mcp`,
-`packages/mcp-http` and deploy/enclave are unchanged). In
+nothing here moves the reader's measured inputs.
+`scripts/check-client-dist.sh` finds the client equal to c9ec561's, the
+CI gate, and `scripts/check-reader-inputs.sh` finds `packages/mcp`,
+`packages/mcp-http` and the enclave's inputs equal to f7babbe's. DS49
+says why neither is the image the pilot runs. In
 `packages/client` only the declarations of the three new fields change.
 
 Rows already damaged. The names are intact; only the row's id was wrong.
