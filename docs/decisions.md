@@ -2935,9 +2935,9 @@ opens it with the id its envelope names. No repair write is needed, and
 none is made. A reader that predates this change still cannot open
 them. For those, each start of `wappie-api` runs `ImportContacts`, which
 reseals every name whatsmeow holds for a contact under one key; a name
-only the archive holds stays mixed until reader 0.6.1. A name sealed before DS49 by a stale
-pipeline, under a content key a reset deleted, cannot be opened by
-anyone. That is DS49's case, not this one. After `device-key`, content
+only the archive holds stays mixed until reader 0.6.1. A name sealed
+before DS49 by a stale pipeline, under a content key a reset deleted,
+cannot be opened by anyone. That is DS49's case, not this one. After `device-key`, content
 key ids start at 1 again. Once the new archive has a key with that
 name's id, a reader opens the name with it and gets "tampered" (the id
 matches and the decryption fails), where an older reader, on a mixed
