@@ -586,8 +586,24 @@ func TestATokenGrantNeedsItsConditions(t *testing.T) {
 		Now: w.now}); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("another workspace's token: %v", err)
 	}
-	// The signed GET: none recent, over a minute, then just now by
-	// ApplyTokenRecord's stamp.
+	// A live token with Read and no reading key yet has no identity: not
+	// found, as the grant page's context answers it, never
+	// reading_key_changed.
+	keyless := w.readingToken(device, nil)
+	w.fetched(keyless, w.now)
+	if err := put(keyless, device, w.owner, 1); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("a token with no reading key: %v", err)
+	}
+	if _, err := w.tokens.TokenGrantContext(ctx, w.tenant, keyless, []uuid.UUID{device}, w.now); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("the context of a token with no reading key: %v", err)
+	}
+	// The signed GET: stamped ahead of the clock (a clock stepped back),
+	// none recent, over a minute, then just now by ApplyTokenRecord's
+	// stamp.
+	w.fetched(token, w.now.Add(store.TokenFetchedAhead+time.Second))
+	if err := put(token, device, w.owner, 1); !errors.Is(err, store.ErrTokenStale) {
+		t.Fatalf("a GET stamped ahead of the clock: %v", err)
+	}
 	w.fetched(token, w.now.Add(-61*time.Second))
 	if err := put(token, device, w.owner, 1); !errors.Is(err, store.ErrTokenStale) {
 		t.Fatalf("a GET 61 s old: %v", err)

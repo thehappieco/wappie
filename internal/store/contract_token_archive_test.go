@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -192,6 +193,32 @@ func TestTheArchiveKeyFingerprint(t *testing.T) {
 	for _, bad := range []string{"", zero[:63], zero + "0", "66687AADF862BD776C8FC18B8E9F8E20089714856EE233B3902A591D0D5F2925", "g" + zero[1:]} {
 		if store.ValidArchiveKeyFingerprint(bad) {
 			t.Errorf("%q is valid", bad)
+		}
+	}
+}
+
+// TestTokenFetchedFresh: a signed GET counts for a minute after it was
+// sent, and a stamp at most TokenFetchedAhead after the clock is skew; one
+// further ahead, or none, is stale.
+func TestTokenFetchedFresh(t *testing.T) {
+	now := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+	at := func(d time.Duration) *time.Time {
+		v := now.Add(d)
+		return &v
+	}
+	for name, c := range map[string]struct {
+		at   *time.Time
+		want bool
+	}{
+		"never":                   {nil, false},
+		"just now":                {at(0), true},
+		"a minute ago":            {at(-store.TokenGrantFresh), true},
+		"a minute and a bit ago":  {at(-store.TokenGrantFresh - time.Millisecond), false},
+		"a little ahead":          {at(store.TokenFetchedAhead), true},
+		"further ahead than skew": {at(store.TokenFetchedAhead + time.Millisecond), false},
+	} {
+		if got := store.TokenFetchedFresh(c.at, now); got != c.want {
+			t.Errorf("%s: %v, want %v", name, got, c.want)
 		}
 	}
 }

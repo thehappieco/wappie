@@ -21,14 +21,35 @@ import (
 // for a grant to it (design 3.4): older, the page fetches it again first.
 const TokenGrantFresh = time.Minute
 
+// TokenFetchedAhead is how far after Wappie's clock a signed GET's stamp
+// may be and still count. A stamp further ahead means a clock that stepped
+// back, or skew between processes. It counts as stale, so no GET is
+// trusted for more than a minute. A later GET never lowers the stamp
+// (ApplyTokenRecord keeps the greater), so grants are refused until the
+// clock catches up: closed, not open.
+const TokenFetchedAhead = 5 * time.Second
+
+// TokenFetchedFresh reports whether a signed GET of a token's record,
+// stamped at, was sent at most TokenGrantFresh before now, and at most
+// TokenFetchedAhead after it. Never fetched is not fresh.
+func TokenFetchedFresh(at *time.Time, now time.Time) bool {
+	if at == nil {
+		return false
+	}
+	age := now.Sub(*at)
+	return age <= TokenGrantFresh && age >= -TokenFetchedAhead
+}
+
 // The refusals of a token grant. A token of another workspace answers
 // ErrNotFound, exactly as an unknown one.
 var (
 	// ErrTokenNotLive: the token is revoked, expired, stopped, suspended
 	// here, or tokens are off.
 	ErrTokenNotLive = errors.New("store: this token is not live here")
-	// ErrTokenKeyChanged: the token has no pinned reading key, its record
-	// brought another, or its identity's key is not the pin.
+	// ErrTokenKeyChanged: the token's record brought another reading key
+	// than the pin, or its identity's key is not the pin. A token with no
+	// reading key yet has no identity, and answers ErrNotFound, as
+	// TokenGrantContext does.
 	ErrTokenKeyChanged = errors.New("store: this token's reading key is not the one Wappie pinned")
 	// ErrTokenStale: the last signed GET of its record is over a minute old.
 	ErrTokenStale = errors.New("store: this token's record was not fetched in the last minute")
@@ -44,8 +65,11 @@ var (
 // TokenGrant is a grant of a number's key to a token's identity: the
 // number's key at its current epoch, sealed to the token's pinned key by
 // Sealer, an owner or admin who reads it. ArchiveKeyFingerprint names the
-// archive key whose private half was sealed (ArchiveKeyFingerprint), as
-// TokenGrantContext gave it. Now is Wappie's clock at the request's start.
+// archive key whose private half was sealed (ArchiveKeyFingerprint). The
+// client computes it from the key it sealed, and compares it with the one
+// TokenGrantContext gives; it never echoes the context's. Now is Wappie's
+// clock at the write: the token's liveness and its record's minute are
+// judged at it (0053: under a minute old when Wappie accepts the grant).
 type TokenGrant struct {
 	Workspace, Token, Device uuid.UUID
 	Epoch                    uint16
@@ -61,13 +85,16 @@ type TokenGrant struct {
 //     (DB25 steps 3 to 5), so a Read drop racing it waits for it and then
 //     deletes the grant it wrote;
 //  2. the token is live (tokenLiveSQL);
-//  3. its pin exists, equals its identity's key, and its key never changed;
-//  4. its record was fetched by a signed GET under a minute ago;
+//  3. it has an identity (ErrNotFound with none: no reading key yet), its
+//     pin equals the identity's key, and its key never changed;
+//  4. its record was fetched by a signed GET under a minute ago
+//     (TokenFetchedFresh);
 //  5. its Read on the number is applied;
 //  6. the number is live in the workspace, and the epoch its current one;
 //  7. the number's archive key at that epoch has the grant's fingerprint
-//     (ErrArchiveKeyChanged, or ErrNoArchiveKey with none): after an
-//     archive reset, a new key takes epoch 1 again;
+//     (archiveKeyIsTx, DS49's check, which grant.add shares:
+//     ErrArchiveKeyChanged, and also ErrNoArchiveKey with no key): after
+//     an archive reset, a new key takes epoch 1 again;
 //  8. the sealer is an owner or admin of the workspace who reads the number
 //     now;
 //  9. the grant, to the identity, sealed by the sealer.
@@ -83,13 +110,13 @@ func (t *Tokens) PutTokenGrant(ctx context.Context, g TokenGrant) error {
 			return err
 		}
 		var identity *uuid.UUID
-		var live, keyed bool
+		var live, keyed, changed bool
 		var fetched *time.Time
 		err := tx.QueryRow(ctx, `SELECT CASE WHEN t.identity_dropped_at IS NULL THEN t.identity_user_id END, `+tokenLiveSQL("$2")+`,
 				t.key_changed_at IS NULL AND EXISTS (SELECT 1 FROM contract_token_pins p JOIN users u ON u.id = t.identity_user_id
 				                                     WHERE p.token_id = t.id AND u.token_identity AND u.public_key = p.key),
-				t.fetched_at
-			FROM contract_tokens t WHERE t.id = $1 FOR SHARE OF t`, g.Token, g.Now).Scan(&identity, &live, &keyed, &fetched)
+				t.key_changed_at IS NOT NULL, t.fetched_at
+			FROM contract_tokens t WHERE t.id = $1 FOR SHARE OF t`, g.Token, g.Now).Scan(&identity, &live, &keyed, &changed, &fetched)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrNotFound
 		}
@@ -105,9 +132,12 @@ func (t *Tokens) PutTokenGrant(ctx context.Context, g TokenGrant) error {
 		switch {
 		case !live:
 			return ErrTokenNotLive
+		case identity == nil && !changed:
+			// No reading key yet, so no identity: what the context answers.
+			return ErrNotFound
 		case identity == nil || !keyed:
 			return ErrTokenKeyChanged
-		case fetched == nil || g.Now.Sub(*fetched) > TokenGrantFresh:
+		case !TokenFetchedFresh(fetched, g.Now):
 			return ErrTokenStale
 		case state != tokenApplied:
 			return ErrTokenNoRead
