@@ -14,7 +14,6 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"whatserver2/internal/access"
-	"whatserver2/internal/crypto/seal"
 	"whatserver2/internal/migrate"
 	"whatserver2/internal/pg"
 	"whatserver2/internal/store"
@@ -28,43 +27,14 @@ import (
 
 type contentFixture struct {
 	*mcpFixture
-	users  *store.Users
-	grants *store.Keys
 }
 
-// newContentFixture is the MCP fixture with an archive key on the device
-// and the owner holding its grant and read permission, as a workspace that
+// newContentFixture is the MCP fixture, whose device has an archive key and
+// whose owner holds its grant and read permission, as a workspace that
 // reads its archive does.
 func newContentFixture(t *testing.T) *contentFixture {
 	t.Helper()
-	ctx := context.Background()
-	f := &contentFixture{mcpFixture: newMCPFixture(t)}
-	f.users, f.grants = store.NewUsers(f.pool), store.NewKeys(f.pool)
-	f.archiveKey(ctx, t, f.device, 1)
-	f.ownerReads(ctx, t, f.owner, f.device)
-	return f
-}
-
-func (f *contentFixture) archiveKey(ctx context.Context, t *testing.T, device uuid.UUID, epoch uint16) {
-	t.Helper()
-	pub, _, err := seal.GenerateKeyPair()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := f.grants.CreateArchiveKey(ctx, f.tenant, device, epoch, pub); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// ownerReads gives a person the device's grant and read permission.
-func (f *contentFixture) ownerReads(ctx context.Context, t *testing.T, person, device uuid.UUID) {
-	t.Helper()
-	if err := f.grants.PutGrant(ctx, store.Grant{TenantID: f.tenant, DeviceID: device, UserID: person, Epoch: 1, SealedDSK: []byte("a person's grant")}, &f.owner); err != nil {
-		t.Fatal(err)
-	}
-	if err := f.users.SetDevicePermission(ctx, f.tenant, f.owner, store.DevicePermission{DeviceID: device, UserID: person, Read: true, Send: true}); err != nil {
-		t.Fatal(err)
-	}
+	return &contentFixture{mcpFixture: newMCPFixture(t)}
 }
 
 // contentConsent is what the console builds before it records a content

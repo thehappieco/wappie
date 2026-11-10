@@ -227,10 +227,10 @@ func (c *Contract) RunFlagsRaise(ctx context.Context, run ContractRun, item, use
 // are taken from the stored ones, so a flag raised since stays. When read
 // is among them, every grant of user on the number goes, at every epoch,
 // even when the flag was gone already (no dormant key, 0040), unless user
-// is its last reader (last_reader), and the number leaves user's own
-// connections and integrations (DS47). It runs as access_remove does
-// (tightenFlags). wrote reports a ran that wrote; ended the connections
-// it ended, for their readers to be told after the commit.
+// is its last reader (last_reader), and user's own connections and
+// integrations that held the number end whole (DS47). It runs as
+// access_remove does (tightenFlags). wrote reports a ran that wrote; ended
+// the connections it ended, for their readers to be told after the commit.
 func (c *Contract) RunFlagsDrop(ctx context.Context, run ContractRun, item, user uuid.UUID, before, after []string) (
 	act ContractAct, wrote bool, ended []EndedConnection, err error) {
 	was, errWas := flagsOf(before)
@@ -249,9 +249,9 @@ func (c *Contract) RunFlagsDrop(ctx context.Context, run ContractRun, item, user
 // tightening (DS20): all three flags false with the row kept, so a later
 // key share gives no read or send (0023's grant_initial_permissions), and
 // every grant of user on the number deleted, also for a key holder without
-// read, unless user is its last reader (last_reader); the number leaves
-// user's own connections and integrations (DS47). wrote and ended as
-// RunFlagsDrop's.
+// read, unless user is its last reader (last_reader); user's own
+// connections and integrations that held the number end whole (DS47).
+// wrote and ended as RunFlagsDrop's.
 func (c *Contract) RunAccessRemove(ctx context.Context, run ContractRun, item, user uuid.UUID) (ContractAct, bool, []EndedConnection, error) {
 	return c.tightenFlags(ctx, run, item, user, func(DevicePermission) (DevicePermission, bool) {
 		return DevicePermission{DeviceID: item, UserID: user}, true

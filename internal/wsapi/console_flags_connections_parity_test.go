@@ -26,11 +26,12 @@ import (
 // own screen and the console's runners: PUT …/permissions without read,
 // item.flags_drop of read and item.access_remove, each on its own number
 // with the same connections, by the same admin, must leave the same rows
-// and tell the readers of the same ended connections. One that reaches
-// another number keeps it; one left with none ends access_lost; another
-// person's connection and a workspace key keep the number. With Read
-// already gone, a raise of send takes nothing off on either side, and the
-// screen with no flag left takes the number off as a remove does.
+// and tell the readers of the same ended connections. Every one of the
+// person's that held the number ends access_lost whole, one that also
+// reaches another number too (the platform's 0061); another person's
+// connection and a workspace key keep the number. With Read already gone,
+// a raise of send ends nothing on either side, and the screen with no flag
+// left ends them as a remove does.
 
 // tells records the connections a route or a runner told readers about.
 type tells struct {
@@ -228,9 +229,9 @@ func TestConsoleParityOwnConnections(t *testing.T) {
 	shared := c.linkedDevice(t, "Shared")
 	c.reads(t, c.owner, shared)
 	want := left{
-		Both: "active  1 false", Only: "revoked access_lost 1 false", Meta: "revoked access_lost 1 false", Theirs: "active  1 true",
+		Both: "revoked access_lost 2 true", Only: "revoked access_lost 1 true", Meta: "revoked access_lost 1 true", Theirs: "active  1 true",
 		BothService: held{}, TheirsService: held{Read: true, Grants: 1},
-		Rest: true, Told: []string{"enclave/only", store.HostedReader + "/meta"},
+		Rest: true, Told: []string{"enclave/both", "enclave/only", store.HostedReader + "/meta"},
 	}
 
 	// A drop of send on the screen and in the console takes nothing off.

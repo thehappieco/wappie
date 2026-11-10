@@ -270,9 +270,9 @@ type CreateMCPConnection struct {
 // deadline the console issues before a consent. For a metadata connection it
 // carries no service account: anything else could reach more than metadata.
 // For a content connection it acts as the connection's own service account,
-// which checkContentServiceTx holds to the consent's shape, and the person
-// consenting must still read every number of the key (consenterReadsTx,
-// DS47); an AI authorization alike. Anything else is
+// which checkContentServiceTx holds to the consent's shape; an AI
+// authorization alike. Whatever the kind, the person consenting must read
+// every number of the key now (consenterReadsTx, DS47). Anything else is
 // a key another person issued for something else, or one that would outlive
 // the consent, and is refused. Only an owner or admin may consent, and the
 // check reads policy-protected tables, so the whole thing runs in a tenant
@@ -388,11 +388,15 @@ func (m *MCPConnections) Create(ctx context.Context, tenant, actor uuid.UUID, in
 			if err := checkContentServiceTx(ctx, tx, tenant, in.ServiceUserID, out.APIKeyID, in.ReaderPublicKey); err != nil {
 				return err
 			}
-			if err := consenterReadsTx(ctx, tx, tenant, actor, out.APIKeyID); err != nil {
-				return err
-			}
 		} else if actsAs != nil {
 			return ErrMCPKeyUnsuitable
+		}
+		// Every consent, metadata included, names only numbers its person
+		// reads now, as a token needs Read for metadata (0053): otherwise
+		// they could consent again at once what losing Read just ended
+		// (DS47, the platform's 0061).
+		if err := consenterReadsTx(ctx, tx, tenant, actor, out.APIKeyID); err != nil {
+			return err
 		}
 		var aiConfig *string
 		if ai {

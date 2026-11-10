@@ -146,8 +146,8 @@ func (u *Users) SetDevicePermission(ctx context.Context, tenant, actor uuid.UUID
 }
 
 // SetDevicePermissionEnded is SetDevicePermission, and the person's own
-// connections it ended (Read going, or no flag left, takes the number off
-// them, DS47), for their readers to be told after the commit.
+// connections it ended (Read going, or no flag left, ends those that held
+// the number, DS47), for their readers to be told after the commit.
 func (u *Users) SetDevicePermissionEnded(ctx context.Context, tenant, actor uuid.UUID, p DevicePermission) ([]EndedConnection, error) {
 	var ended []EndedConnection
 	err := pg.InTenantTx(ctx, u.pool, tenant.String(), func(tx pgx.Tx) error {
@@ -188,11 +188,12 @@ func (u *Users) SetDevicePermissionEnded(ctx context.Context, tenant, actor uuid
 // (contract_flags_acts.go): the row upserted to p's flags; with dropKeys,
 // first requireRemainingReader (ErrLastDeviceReader), then every grant of
 // p.UserID on the number deleted, at every epoch. When Read goes (the
-// stored row had it) or no flag is left (the access removed), the number
-// is also taken off p.UserID's own connections and integrations
-// (leaveOwnConnectionsTx, DS47), which come back when it ended them; a
-// change with Read already gone that keeps send or manage (a raise, a drop
-// of the other) takes nothing off them, on the screen as in the acts. The
+// stored row had it) or no flag is left (the access removed), every one of
+// p.UserID's own connections and integrations that holds the number ends
+// whole, access_lost (leaveOwnConnectionsTx, DS47, the platform's 0061),
+// and they come back for their readers to be told; a change with Read
+// already gone that keeps send or manage (a raise, a drop of the other)
+// ends none, on the screen as in the acts. The
 // caller holds the workspace's lock (the tenants row) and has checked the
 // number and the person. A deleted number's row is written only inside
 // withQuarantine: 0036's archive_device_owner refuses it otherwise (WS002).
@@ -216,7 +217,7 @@ func setDevicePermissionTx(ctx context.Context, tx pgx.Tx, tenant uuid.UUID, p D
 	if _, err := tx.Exec(ctx, `DELETE FROM device_key_grants WHERE tenant_id=$1 AND device_id=$2 AND user_id=$3`, tenant, p.DeviceID, p.UserID); err != nil {
 		return nil, err
 	}
-	// Read did not go and a flag is left: the connections keep the number.
+	// Read did not go and a flag is left: the connections stay.
 	if p.Read || !hadRead && (p.Send || p.Manage) {
 		return nil, nil
 	}

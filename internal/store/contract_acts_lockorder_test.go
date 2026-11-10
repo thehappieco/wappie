@@ -85,8 +85,8 @@ func TestActsLockOrder(t *testing.T) {
 		w.docRole(t, readerSub, "member", "active")
 		rename := w.command(t, kc.OpItemRename, admin, adminSub)
 		// The consenter reads the number again, with a connection on it
-		// alone, which the drop ends, and an integration on it and
-		// another, which it narrows.
+		// alone and an integration on it and another, which the drop
+		// ends whole, both (DS47).
 		w.reads(t, consenter, dropped)
 		own.connect(t, consenter, store.KindContent, dropped)
 		own.connect(t, consenter, store.KindAI, dropped, framed)
@@ -442,16 +442,19 @@ func TestFlagsActsLockOrder(t *testing.T) {
 	}
 }
 
-// TestOwnConnectionsLockOrder (the plan's 3.2 and 5.4, DS47): a drop of
-// read and a remove whose people have connections and integrations (a
-// media one among them, which ends whole), and Wappie's own screen without
+// TestOwnConnectionsLockOrder (the plan's 3.2 and 5.4, DS47, the
+// platform's 0061): a drop of read and a remove whose people have
+// connections and integrations of every kind on the number and another (a
+// media one among them), which end whole, and Wappie's own screen without
 // Read, at the same time as every writer of those connections' rows (a
 // revoke, an integration paused and one revoked, a reader's question, a
 // notice raised, the person disabled, another removed, the number deleted,
-// a key shared, a consent prepared before the drop recorded), the account
-// follower's apply, a reset, a numbers read and a numbered snapshot, many
-// rounds: nothing deadlocks (no 40P01, not even one retried), and every
-// call ends without an error but the answers a race may give.
+// a key shared, a content and a metadata consent prepared before the drop
+// recorded), the account follower's apply, a reset, a numbers read and a
+// numbered snapshot, many rounds: nothing deadlocks (no 40P01, not even
+// one retried), every call ends without an error but the answers a race
+// may give, and none of the people's connections made before the round
+// is left live.
 func TestOwnConnectionsLockOrder(t *testing.T) {
 	ctx := context.Background()
 	w := newOwnWorld(t)
@@ -492,12 +495,17 @@ func TestOwnConnectionsLockOrder(t *testing.T) {
 			var m made
 			m.both, _ = w.connect(t, p, store.KindContent, device, w.shared)
 			m.ai, _ = w.connect(t, p, store.KindAI, device, w.shared)
-			m.meta, _ = w.connect(t, p, store.KindMetadata, device)
+			m.meta, _ = w.connect(t, p, store.KindMetadata, device, w.shared)
 			mine[p] = m
 		}
 		theirs, _ := w.connect(t, w.owner, store.KindContent, device)
-		w.connectMedia(t, removed, device, w.shared)
+		media := w.connectMedia(t, removed, device, w.shared)
+		before := []string{media.ID}
+		for _, m := range mine {
+			before = append(before, m.both, m.ai, m.meta)
+		}
 		prepared := w.prepare(t, dropped, store.KindContent, device)
+		preparedMeta := w.prepare(t, screened, store.KindMetadata, device, w.shared)
 		var everyone []uuid.UUID
 		w.scoped(t, func(tx pgx.Tx) error {
 			rows, err := tx.Query(ctx, `SELECT user_id FROM workspace_memberships WHERE tenant_id = $1`, w.tenant)
@@ -566,6 +574,16 @@ func TestOwnConnectionsLockOrder(t *testing.T) {
 				}
 				return err
 			},
+			"a metadata consent recorded": func() error {
+				// Refused once the screen took Read first (the platform's
+				// 0061); after the deletion it names the shared number
+				// alone, which the person still reads.
+				_, err := w.conns.Create(lctx, w.tenant, screened, preparedMeta)
+				if errors.Is(err, store.ErrMCPKeyUnsuitable) {
+					return nil
+				}
+				return err
+			},
 			"a key shared": func() error {
 				return raced(w.keys.PutGrant(lctx, store.Grant{TenantID: w.tenant, DeviceID: device, UserID: screened, Epoch: 1,
 					SealedDSK: []byte("grant")}, &w.owner))
@@ -624,6 +642,10 @@ func TestOwnConnectionsLockOrder(t *testing.T) {
 		if n := w.count(t, `SELECT count(*) FROM mcp_connections c JOIN api_key_devices x ON x.api_key_id = c.api_key_id
 			WHERE x.device_id = $1 AND c.status IN ('pending', 'active', 'reseal')`, device); n != 0 {
 			t.Fatalf("round %d: %d live connections still reach the deleted number", round, n)
+		}
+		if n := w.count(t, `SELECT count(*) FROM mcp_connections WHERE id::text = ANY($1) AND status IN ('pending', 'active', 'reseal')`,
+			before); n != 0 {
+			t.Fatalf("round %d: %d of the people's connections made before it are live", round, n)
 		}
 		w.endAll(t)
 	}

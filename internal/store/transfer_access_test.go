@@ -82,9 +82,9 @@ func (w *transferWorld) grant(t *testing.T, user uuid.UUID, epoch uint16) {
 }
 
 // stripSelf takes away a person's own access, leaving what they created,
-// as Wappie's screen did before DS47: since then it takes the number off
-// their own connections too (TestOwnConnectionsLeaveWithRead), so these
-// rows are what a connection made before it keeps.
+// as Wappie's screen did before DS47: since then it ends their own
+// connections that held the number (TestOwnConnectionsLeaveWithRead), so
+// these rows are what a connection made before it keeps.
 func (w *transferWorld) stripSelf(t *testing.T, user uuid.UUID) {
 	t.Helper()
 	w.inTenantSQL(t, `INSERT INTO device_permissions (tenant_id, device_id, user_id) VALUES ($1, $2, $3)

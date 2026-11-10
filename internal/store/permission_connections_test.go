@@ -18,11 +18,13 @@ import (
 	"whatserver2/internal/store"
 )
 
-// A person's own MCP connections and AI integrations lose a number with
-// their Read on it (the owner's Q8, DS47), on Wappie's own screen and in
-// the console's drop of read and remove alike: one with other numbers
-// keeps them, one left with none ends access_lost, and nobody else's
-// connection, no workspace key and no legacy token loses anything.
+// A person's lost Read on a number ends their own MCP connections and AI
+// integrations that held it, whole (the owner's Q8 and the platform's
+// 0061, DS47), on Wappie's own screen and in the console's drop of read
+// and remove alike: one that also holds other numbers ends access_lost as
+// one with this number alone does, and nobody else's connection, no
+// workspace key and no legacy token loses anything. Every consent,
+// metadata included, and every renewal needs Read on every number.
 
 // ownWorld is the acts' world with connections and integrations made in it.
 type ownWorld struct {
@@ -216,10 +218,10 @@ func (w *ownWorld) draft(t *testing.T, connection string, device uuid.UUID) uuid
 // goes, and on the shared one.
 type ownSet struct {
 	person, number uuid.UUID
-	// both and aiBoth reach number and shared; only, aiOnly and meta
-	// number alone; theirs is the owner's, on number.
-	both, aiBoth, only, aiOnly, meta, theirs string
-	services                                 map[string]uuid.UUID
+	// both, aiBoth and metaBoth reach number and shared; only, aiOnly and
+	// meta number alone; theirs is the owner's, on number.
+	both, aiBoth, metaBoth, only, aiOnly, meta, theirs string
+	services                                           map[string]uuid.UUID
 	// rest is the person's workspace key on both numbers, legacy their
 	// legacy MCP token on number, acting as its standing account.
 	rest, legacy, standing uuid.UUID
@@ -244,6 +246,7 @@ func (w *ownWorld) own(t *testing.T, person uuid.UUID, label string) ownSet {
 	s.aiOnly, svc = w.connect(t, person, store.KindAI, s.number)
 	s.services[s.aiOnly] = svc
 	s.meta, _ = w.connect(t, person, store.KindMetadata, s.number)
+	s.metaBoth, _ = w.connect(t, person, store.KindMetadata, s.number, w.shared)
 	s.theirs, svc = w.connect(t, w.owner, store.KindContent, s.number)
 	s.services[s.theirs] = svc
 	s.drafted, s.draftedShared = w.draft(t, s.both, s.number), w.draft(t, s.both, w.shared)
@@ -274,11 +277,13 @@ func (w *ownWorld) own(t *testing.T, person uuid.UUID, label string) ownSet {
 	return s
 }
 
-// ownRow is one connection's standing after a path.
+// ownRow is one connection's standing after a path: keyLive is its key
+// not revoked.
 type ownRow struct {
 	status, reason string
 	devices        []uuid.UUID
 	count          int
+	keyLive        bool
 }
 
 func (w *ownWorld) row(t *testing.T, id string) ownRow {
@@ -286,8 +291,9 @@ func (w *ownWorld) row(t *testing.T, id string) ownRow {
 	ctx := context.Background()
 	var r ownRow
 	w.scoped(t, func(tx pgx.Tx) error {
-		if err := tx.QueryRow(ctx, `SELECT status, coalesce(revoke_reason, ''), device_count FROM mcp_connections WHERE id = $1`, id).
-			Scan(&r.status, &r.reason, &r.count); err != nil {
+		if err := tx.QueryRow(ctx, `SELECT c.status, coalesce(c.revoke_reason, ''), c.device_count, k.revoked_at IS NULL
+			FROM mcp_connections c JOIN api_keys k ON k.id = c.api_key_id WHERE c.id = $1`, id).
+			Scan(&r.status, &r.reason, &r.count, &r.keyLive); err != nil {
 			return err
 		}
 		rows, err := tx.Query(ctx, `SELECT x.device_id FROM mcp_connections c JOIN api_key_devices x ON x.api_key_id = c.api_key_id
@@ -326,11 +332,11 @@ func (w *ownWorld) draftStatus(t *testing.T, id uuid.UUID) (status string, seale
 }
 
 // untouched checks that nothing of s changed: every connection live with
-// both its numbers, every account holding what it held.
+// its numbers and its key, every account holding what it held.
 func (w *ownWorld) untouched(t *testing.T, what string, s ownSet) {
 	t.Helper()
-	for _, id := range []string{s.both, s.aiBoth, s.only, s.aiOnly, s.meta, s.theirs} {
-		if r := w.row(t, id); r.status != "active" || !slices.Contains(r.devices, s.number) {
+	for _, id := range []string{s.both, s.aiBoth, s.metaBoth, s.only, s.aiOnly, s.meta, s.theirs} {
+		if r := w.row(t, id); r.status != "active" || !r.keyLive || !slices.Contains(r.devices, s.number) {
 			t.Fatalf("%s: connection %s %+v", what, id, r)
 		}
 	}
@@ -345,7 +351,8 @@ func (w *ownWorld) untouched(t *testing.T, what string, s ownSet) {
 }
 
 // left checks what a path that took Read off s.person leaves, and the
-// connections it says it ended.
+// connections it says it ended: every one of the person's that held the
+// number, ended whole, those that also held the shared one too.
 func (w *ownWorld) left(t *testing.T, what string, s ownSet, ended []store.EndedConnection) {
 	t.Helper()
 	ctx := context.Background()
@@ -353,12 +360,15 @@ func (w *ownWorld) left(t *testing.T, what string, s ownSet, ended []store.Ended
 	for _, e := range ended {
 		got[e.ID] = e.Reader
 	}
-	if want := map[string]string{s.only: "enclave", s.aiOnly: "enclave", s.meta: store.HostedReader}; len(ended) != 3 || !maps.Equal(got, want) {
+	want := map[string]string{s.both: "enclave", s.aiBoth: "enclave", s.only: "enclave", s.aiOnly: "enclave",
+		s.meta: store.HostedReader, s.metaBoth: store.HostedReader}
+	if len(ended) != len(want) || !maps.Equal(got, want) {
 		t.Fatalf("%s: ended %+v, want %v", what, ended, want)
 	}
-	// Left with no number: ended access_lost, its account gone.
-	for _, id := range []string{s.only, s.aiOnly, s.meta} {
-		if r := w.row(t, id); r.status != "revoked" || r.reason != store.ReasonAccessLost {
+	// Ended access_lost whole, the shared number with it: its key revoked,
+	// its account gone on both numbers.
+	for id := range want {
+		if r := w.row(t, id); r.status != "revoked" || r.reason != store.ReasonAccessLost || r.keyLive {
 			t.Fatalf("%s: connection %s %+v", what, id, r)
 		}
 		if svc, ok := s.services[id]; ok {
@@ -367,29 +377,14 @@ func (w *ownWorld) left(t *testing.T, what string, s ownSet, ended []store.Ended
 			}
 		}
 	}
-	// With another number: live, the number off its key and its account,
-	// the shared one kept.
-	for _, id := range []string{s.both, s.aiBoth} {
-		r := w.row(t, id)
-		if r.status != "active" || !slices.Equal(r.devices, []uuid.UUID{w.shared}) || r.count != 1 {
-			t.Fatalf("%s: connection %s %+v", what, id, r)
+	// Its drafts go with it, the shared number's too.
+	for _, draft := range []uuid.UUID{s.drafted, s.draftedShared} {
+		if status, sealed := w.draftStatus(t, draft); status != "revoked" || sealed {
+			t.Fatalf("%s: a draft is %s, sealed %v", what, status, sealed)
 		}
-		svc := s.services[id]
-		if p, g := w.holds(t, svc, s.number); p != 0 || g != 0 {
-			t.Fatalf("%s: connection %s's account keeps %d permissions and %d grants on the number", what, id, p, g)
-		}
-		if p, g := w.holds(t, svc, w.shared); p != 1 || g != 1 {
-			t.Fatalf("%s: connection %s's account lost the shared number: %d %d", what, id, p, g)
-		}
-	}
-	if status, sealed := w.draftStatus(t, s.drafted); status != "revoked" || sealed {
-		t.Fatalf("%s: the draft on the number is %s, sealed %v", what, status, sealed)
-	}
-	if status, _ := w.draftStatus(t, s.draftedShared); status != "pending" {
-		t.Fatalf("%s: the draft on the shared number is %s", what, status)
 	}
 	// Nobody else's, and no key behind no connection.
-	if r := w.row(t, s.theirs); r.status != "active" || !slices.Contains(r.devices, s.number) {
+	if r := w.row(t, s.theirs); r.status != "active" || !r.keyLive || !slices.Contains(r.devices, s.number) {
 		t.Fatalf("%s: the owner's connection %+v", what, r)
 	}
 	if p, g := w.holds(t, s.services[s.theirs], s.number); p != 1 || g != 1 {
@@ -401,19 +396,19 @@ func (w *ownWorld) left(t *testing.T, what string, s ownSet, ended []store.Ended
 	if p, g := w.holds(t, s.standing, s.number); p != 1 || g != 1 {
 		t.Fatalf("%s: the legacy token's account lost the number: %d %d", what, p, g)
 	}
-	// The person: no grant left on the number.
+	// The person: no grant left on the number, the shared one still read.
 	if g := w.grantsOf(t, s.number, s.person); g != 0 {
 		t.Fatalf("%s: the person keeps %d grants", what, g)
 	}
-	// No integration answers for the number any more; the narrowed one
-	// still does for the shared one.
-	policy := store.AIPolicy{Allowed: true}
-	if _, err := w.conns.PickAIAuthorization(ctx, w.tenant, s.person, s.number, "audio", store.AIOriginConsole, policy); !errors.Is(err, store.ErrAINotEnabled) {
-		t.Fatalf("%s: an integration still answers for the number: %v", what, err)
+	if g := w.grantsOf(t, w.shared, s.person); g != 1 {
+		t.Fatalf("%s: the person's grant on the shared number: %d", what, g)
 	}
-	pick, err := w.conns.PickAIAuthorization(ctx, w.tenant, s.person, w.shared, "audio", store.AIOriginConsole, policy)
-	if err != nil || pick.AuthorizationID != s.aiBoth {
-		t.Fatalf("%s: the shared number's pick %+v %v, want %s", what, pick, err, s.aiBoth)
+	// No integration of theirs answers for either number any more.
+	policy := store.AIPolicy{Allowed: true}
+	for _, device := range []uuid.UUID{s.number, w.shared} {
+		if _, err := w.conns.PickAIAuthorization(ctx, w.tenant, s.person, device, "audio", store.AIOriginConsole, policy); !errors.Is(err, store.ErrAINotEnabled) {
+			t.Fatalf("%s: an integration still answers for %s: %v", what, device, err)
+		}
 	}
 }
 
@@ -433,7 +428,9 @@ func (w *ownWorld) trace(t *testing.T, user uuid.UUID) serviceTrace {
 
 // TestOwnConnectionsLeaveWithRead: Wappie's screen without Read, the
 // console's drop of read and its remove, each on its own number, leave
-// the same rows; a raise and a drop of send leave everything as it was.
+// the same rows: every connection and integration of the person that held
+// the number ended whole, those holding the shared number too (the
+// platform's 0061); a raise and a drop of send leave everything as it was.
 func TestOwnConnectionsLeaveWithRead(t *testing.T) {
 	ctx := context.Background()
 	w := newOwnWorld(t)
@@ -536,11 +533,12 @@ func TestOwnConnectionsKeptByRefusals(t *testing.T) {
 	w.untouched(t, "an admin on an owner", o)
 }
 
-// TestOwnConnectionsConsentAfterDrop: a content or AI consent the console
-// prepared while the person read the number, and recorded after their Read
-// went (the screen, a drop of read or a remove), is refused, so no live
-// connection of theirs reaches the number (DS47). One on a number they
-// still read is recorded.
+// TestOwnConnectionsConsentAfterDrop: a content, AI or metadata consent
+// the console prepared while the person read the number, and recorded
+// after their Read went (the screen, a drop of read or a remove), is
+// refused, so no live connection of theirs reaches the number (DS47, the
+// platform's 0061). One on a number they still read is recorded, of
+// either kind.
 func TestOwnConnectionsConsentAfterDrop(t *testing.T) {
 	ctx := context.Background()
 	w := newOwnWorld(t)
@@ -552,10 +550,14 @@ func TestOwnConnectionsConsentAfterDrop(t *testing.T) {
 		w.reads(t, person, number)
 		w.reads(t, person, w.shared)
 		prepared := map[string]store.CreateMCPConnection{
-			"content": w.prepare(t, person, store.KindContent, number, w.shared),
-			"ai":      w.prepare(t, person, store.KindAI, number),
+			"content":  w.prepare(t, person, store.KindContent, number, w.shared),
+			"ai":       w.prepare(t, person, store.KindAI, number),
+			"metadata": w.prepare(t, person, store.KindMetadata, number, w.shared),
 		}
-		still := w.prepare(t, person, store.KindContent, w.shared)
+		still := map[string]store.CreateMCPConnection{
+			"content":  w.prepare(t, person, store.KindContent, w.shared),
+			"metadata": w.prepare(t, person, store.KindMetadata, w.shared),
+		}
 		switch name {
 		case "the screen":
 			if _, err := w.users.SetDevicePermissionEnded(ctx, w.tenant, admin, store.DevicePermission{DeviceID: number, UserID: person, Send: true}); err != nil {
@@ -576,8 +578,10 @@ func TestOwnConnectionsConsentAfterDrop(t *testing.T) {
 		if t.Failed() {
 			return
 		}
-		if _, err := w.conns.Create(ctx, w.tenant, person, still); err != nil {
-			t.Fatalf("%s: a consent on a number still read: %v", name, err)
+		for kind, in := range still {
+			if _, err := w.conns.Create(ctx, w.tenant, person, in); err != nil {
+				t.Fatalf("%s: a %s consent on a number still read: %v", name, kind, err)
+			}
 		}
 		if n := w.count(t, `SELECT count(*) FROM mcp_connections c JOIN api_key_devices x ON x.api_key_id = c.api_key_id
 			WHERE c.created_by = $1 AND x.device_id = $2 AND c.status IN ('pending', 'active', 'reseal')`, person, number); n != 0 {
@@ -616,9 +620,9 @@ func TestOwnConnectionsRenewNeedsRead(t *testing.T) {
 
 // TestOwnConnectionsReadAlreadyGone: with the person's Read already gone
 // and a connection left on the number from before DS47, a change that
-// keeps send or manage (a raise, a drop of the other) takes nothing off
-// it, on the screen as in the acts; one that leaves no flag takes the
-// number off, as a remove does.
+// keeps send or manage (a raise, a drop of the other) ends nothing, on the
+// screen as in the acts; one that leaves no flag ends them, as a remove
+// does.
 func TestOwnConnectionsReadAlreadyGone(t *testing.T) {
 	ctx := context.Background()
 	w := newOwnWorld(t)
@@ -686,36 +690,128 @@ func TestOwnConnectionsReadAlreadyGone(t *testing.T) {
 	lost("a remove", ended, only, meta)
 }
 
-// TestOwnConnectionsMediaEndsWhole: a media connection that loses a number
-// ends whole, though it reaches another: the enclave keeps attachment
-// results and text by the numbers its sealed record names, and only an end
-// wipes them (docs/mcp-enclave.md 16.9). A connection without media keeps
-// the other number.
-func TestOwnConnectionsMediaEndsWhole(t *testing.T) {
+// TestOwnConnectionsEndWhole: every connection and integration of the
+// person that held the number ends whole when their Read on it goes,
+// whatever other number it holds and whatever it is (media, content, AI,
+// metadata): narrowed, it could never renew (the platform's 0061). One that
+// never held the number keeps going, and the person consents again for the
+// number they still read, never for the one they lost.
+func TestOwnConnectionsEndWhole(t *testing.T) {
 	ctx := context.Background()
 	w := newOwnWorld(t)
 	admin, _ := w.actor(t, "admin", "admin")
 	person, _ := w.actor(t, "admin", "admin")
-	number := w.number(t, "Media")
+	number := w.number(t, "Whole")
 	w.reads(t, w.owner, number)
 	w.reads(t, person, number)
 	w.reads(t, person, w.shared)
 	media := w.connectMedia(t, person, number, w.shared)
-	plain, _ := w.connect(t, person, store.KindContent, number, w.shared)
-	ended, err := w.users.SetDevicePermissionEnded(ctx, w.tenant, admin, store.DevicePermission{DeviceID: number, UserID: person})
+	plain, plainService := w.connect(t, person, store.KindContent, number, w.shared)
+	ai, aiService := w.connect(t, person, store.KindAI, number, w.shared)
+	meta, _ := w.connect(t, person, store.KindMetadata, number, w.shared)
+	elsewhere, elsewhereService := w.connect(t, person, store.KindContent, w.shared)
+	ended, err := w.users.SetDevicePermissionEnded(ctx, w.tenant, admin, store.DevicePermission{DeviceID: number, UserID: person, Send: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(ended) != 1 || ended[0].ID != media.ID || ended[0].Reader != "enclave" {
-		t.Fatalf("ended %+v, want the media connection", ended)
+	got := map[string]string{}
+	for _, e := range ended {
+		got[e.ID] = e.Reader
 	}
-	if r := w.row(t, media.ID); r.status != "revoked" || r.reason != store.ReasonAccessLost {
-		t.Fatalf("the media connection %+v", r)
+	want := map[string]string{media.ID: "enclave", plain: "enclave", ai: "enclave", meta: store.HostedReader}
+	if len(ended) != len(want) || !maps.Equal(got, want) {
+		t.Fatalf("ended %+v, want %v", ended, want)
 	}
-	if tr := w.trace(t, *media.ServiceUserID); tr != (serviceTrace{}) {
-		t.Fatalf("the media connection's account remains: %+v", tr)
+	for id := range want {
+		if r := w.row(t, id); r.status != "revoked" || r.reason != store.ReasonAccessLost || r.keyLive {
+			t.Fatalf("connection %s %+v", id, r)
+		}
 	}
-	if r := w.row(t, plain); r.status != "active" || !slices.Equal(r.devices, []uuid.UUID{w.shared}) {
-		t.Fatalf("the connection without media %+v", r)
+	for _, svc := range []uuid.UUID{*media.ServiceUserID, plainService, aiService} {
+		if tr := w.trace(t, svc); tr != (serviceTrace{}) {
+			t.Fatalf("an ended connection's account remains: %+v", tr)
+		}
+	}
+	if r := w.row(t, elsewhere); r.status != "active" || !r.keyLive || !slices.Equal(r.devices, []uuid.UUID{w.shared}) {
+		t.Fatalf("the connection that never held the number %+v", r)
+	}
+	if p, g := w.holds(t, elsewhereService, w.shared); p != 1 || g != 1 {
+		t.Fatalf("its account on the shared number: %d %d", p, g)
+	}
+	// Consenting again: the shared number, of every kind; never the one
+	// lost.
+	w.connect(t, person, store.KindContent, w.shared)
+	w.connect(t, person, store.KindAI, w.shared)
+	w.connect(t, person, store.KindMetadata, w.shared)
+	for _, kind := range []string{store.KindContent, store.KindAI, store.KindMetadata} {
+		if _, err := w.conns.Create(ctx, w.tenant, person, w.prepare(t, person, kind, number, w.shared)); !errors.Is(err, store.ErrMCPKeyUnsuitable) {
+			t.Fatalf("a %s consent again on the number lost: %v", kind, err)
+		}
+	}
+}
+
+// TestOwnConnectionsMetadataNeedsRead: a metadata consent, as a content
+// one, names only numbers its person reads now: the Read flag and a grant
+// at the number's current epoch (the platform's 0061, as a token needs
+// Read for metadata, 0053). The flag alone, a grant alone, a grant of an
+// epoch the number left, or one number of two not read is refused
+// (key_unsuitable) and records nothing. A metadata connection has no
+// renewal of its own: a reconnection that replaces it is a new consent,
+// held to the same rule.
+func TestOwnConnectionsMetadataNeedsRead(t *testing.T) {
+	ctx := context.Background()
+	w := newOwnWorld(t)
+	person, _ := w.actor(t, "admin", "admin")
+	number := w.number(t, "Metadata")
+	rotated := w.number(t, "Rotated")
+	for _, d := range []uuid.UUID{number, rotated} {
+		w.reads(t, w.owner, d)
+	}
+	w.reads(t, person, w.shared)
+	refused := func(what string, in store.CreateMCPConnection) {
+		t.Helper()
+		if _, err := w.conns.Create(ctx, w.tenant, person, in); !errors.Is(err, store.ErrMCPKeyUnsuitable) {
+			t.Fatalf("%s: %v", what, err)
+		}
+	}
+	refused("no Read at all", w.prepare(t, person, store.KindMetadata, number))
+	// Send alone, then the key shared: the row keeps Read off.
+	w.set(t, number, person, false, true, false)
+	w.grantAt(t, number, person, 1)
+	refused("a grant without the flag", w.prepare(t, person, store.KindMetadata, number))
+	w.execOne(t, `DELETE FROM device_key_grants WHERE device_id = $1 AND user_id = $2`, number, person)
+	w.set(t, number, person, true, false, false)
+	refused("the flag without a grant", w.prepare(t, person, store.KindMetadata, number))
+	// A grant of epoch 1 on a number now at epoch 2.
+	w.reads(t, person, rotated)
+	w.epochKey(t, rotated, 2)
+	refused("a grant of an epoch the number left", w.prepare(t, person, store.KindMetadata, rotated))
+	w.grantAt(t, number, person, 1)
+	refused("one number of two not read", w.prepare(t, person, store.KindMetadata, w.shared, rotated))
+	if n := w.count(t, `SELECT count(*) FROM mcp_connections WHERE created_by = $1`, person); n != 0 {
+		t.Fatalf("the refused consents left %d rows", n)
+	}
+
+	// Read on every number: recorded.
+	w.grantAt(t, rotated, person, 2)
+	id, _ := w.connect(t, person, store.KindMetadata, number, w.shared, rotated)
+	if _, err := w.conns.Renewable(ctx, w.tenant, person, id); !errors.Is(err, store.ErrMCPConnectionNotFound) {
+		t.Fatalf("a metadata connection renewable: %v", err)
+	}
+	// Read gone the way the screen took it before DS47: the flag off, the
+	// grants deleted, the connection left as it was. A reconnection that
+	// would replace it is refused; with Read back, recorded.
+	w.execOne(t, `UPDATE device_permissions SET can_read = false WHERE device_id = $1 AND user_id = $2`, number, person)
+	w.execOne(t, `DELETE FROM device_key_grants WHERE device_id = $1 AND user_id = $2`, number, person)
+	again := func() store.CreateMCPConnection {
+		in := w.prepare(t, person, store.KindMetadata, number, w.shared)
+		in = clientConsent(in, store.ClientCIMD, store.TrustTested)
+		in.Replaces = true
+		return in
+	}
+	refused("a reconnection without Read", again())
+	w.reads(t, person, number)
+	if _, err := w.conns.Create(ctx, w.tenant, person, again()); err != nil {
+		t.Fatalf("a reconnection with Read back: %v", err)
 	}
 }

@@ -194,10 +194,11 @@ type AIPick struct {
 // PickAIAuthorization decides which authorization answers a requester's
 // request for a function on a number (docs/mcp-enclave.md §18.10). The
 // candidates are the workspace's AI rows that are active, unexpired, not
-// paused, cover the function on that number, whose key still names it (a
-// creator's Read taken off it takes it off their integrations, DS47, while
-// ai_config keeps the number its tags were sealed over), and whose function
-// and provider are not off, while policy.Allowed holds. The requester's own come first,
+// paused, cover the function on that number, whose key still names it
+// (ai_config keeps every number its tags were sealed over, while the key is
+// what Wappie's access follows; a creator's Read taken off a number ends
+// their integrations that held it, DS47), and whose function and provider
+// are not off, while policy.Allowed holds. The requester's own come first,
 // newest first, unless their requesters are "console" and the origin is not;
 // then another person's whose requesters are "readers", when the requester
 // reads the number, oldest first. With none admitted, the requester's own

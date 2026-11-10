@@ -41,8 +41,8 @@ func (h *Handler) permissions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.accessChanged()
-	// Read going, or no flag left, takes the number off the person's own
-	// connections; the ones it ended are told now, as a revoke is (DS47).
+	// Read going, or no flag left, ends the person's own connections that
+	// held the number; they are told now, as a revoke is (DS47).
 	for _, e := range ended {
 		if h.Readers != nil {
 			h.Readers.TellRevoked(r.Context(), e.Reader, e.ID)

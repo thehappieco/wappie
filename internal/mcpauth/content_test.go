@@ -34,7 +34,7 @@ func randomKey(t *testing.T) []byte {
 }
 
 // archiveKey gives the harness's device an archive key at epoch 1, once.
-func (h *attestedHarness) archiveKey(t *testing.T) {
+func (h *harness) archiveKey(t *testing.T) {
 	t.Helper()
 	keys := store.NewKeys(h.pool)
 	if ok, err := keys.HasArchiveKey(context.Background(), h.tenant, h.device); err != nil || ok {
@@ -86,8 +86,9 @@ func (h *attestedHarness) serviceFor(t *testing.T, actor uuid.UUID, pub []byte) 
 }
 
 // consenterReads gives actor Read and the device's key, keeping their
-// other flags: a content or AI consent needs both (DS47).
-func (h *attestedHarness) consenterReads(t *testing.T, actor uuid.UUID) {
+// other flags: every consent, metadata included, needs both (DS47, the
+// platform's 0061).
+func (h *harness) consenterReads(t *testing.T, actor uuid.UUID) {
 	t.Helper()
 	ctx := context.Background()
 	p, err := h.users.StoredDevicePermission(ctx, h.tenant, actor, h.device)
