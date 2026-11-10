@@ -153,7 +153,13 @@
 --                          with its token), and any with the token's
 --                          selector.
 --   key_retirements        the operator's record of tokens retire-keys:
---                          counts and key prefixes.
+--                          its counts, who ran it, and a report. The
+--                          report names each key it revoked (workspace,
+--                          prefix, name, class, the creator's sub or
+--                          address, the service it acted as) until 13
+--                          months after the run (RetainAPIKeys). It also
+--                          names, by user id, each service account it
+--                          kept; those stay, so a later run finds them.
 --   users.token_identity   the hidden identity a live token's grants are
 --                          sealed to (its public_key is the token's pinned
 --                          reading key): a service-shaped row with no

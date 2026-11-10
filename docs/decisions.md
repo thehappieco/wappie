@@ -2259,15 +2259,19 @@ installation ships with them off.
 1. `contract_state` FOR UPDATE: the account side (`CommitPage`,
    `StoreDocuments`, `SetMode`) and the resets (`Restart`,
    `RestartFromTokens`). A token commit never locks it: it reads the
-   generation, with no lock, after step 2.
+   generation, with no lock, after step 2. The keys' retirement takes it
+   FOR SHARE.
 2. `contract_token_state` FOR UPDATE: a token page's commit,
    `ApplyTokenRecord` (a by-id GET), `FinishTokenPass`, the token mode,
    an accepted acknowledgement's record (before its queues' rows, and only
    while its generation is still Wappie's), and the resets right after
-   step 1, before DB23's workspace rows.
+   step 1, before DB23's workspace rows. The keys' retirement takes it
+   FOR SHARE.
 3. `tenants` rows, in workspace id order: FOR UPDATE
    (`lockWorkspaceAccess`) by the token grant write, a number's quarantine
-   and move-out, and the keys' retirement; by a token page's commit and
+   and move-out, and the keys' retirement (every workspace in one
+   transaction, each row before that workspace's keys, grants and
+   memberships); by a token page's commit and
    `ApplyTokenRecord`, for every workspace the page applies, in one pass
    before any record is judged, FOR UPDATE or FOR KEY SHARE (below),
    followed in each workspace by the live numbers its records name, FOR
@@ -2415,39 +2419,66 @@ from the command feed also wakes the token follower, which no notice
 reaches from there: its long-poll in flight would otherwise ask from the
 old cursor for up to its 25 seconds.
 
-**Wappie's own keys give way to the platform's tokens.** While the token
-mode is on, or once `whatserverd tokens retire-keys -apply` has run (a
-`key_retirements` row, which stays), Wappie issues no general key: socket
-`apikeys.create` issues only an MCP setup's key (read, numbers, at most 31
-minutes, "MCP · …", a provisional service or none) and refuses every other
-shape with `tokens_are_the_platforms`; the command line's `key` and
-`bootstrap` refuse, and `-self-hosted` only says the installation is off the
-platform (the contract off, tokens off, no retirement), so it never lets
-through what the narrowing refuses; a standing service account's
-invitation gets 409 `tokens_are_the_platforms`, issued or redeemed; a
-setup's key that acts as no account and that no connection names is
-refused on REST, media and the socket's hello, as an unknown key; and
-discovery says `tokens.platform.v1`. A setup's key that acts as a
-provisional service account works unbound: a content or AI renewal's new
-key is one, and the enclave's reader lists its grants with it (`GET
-/v1/grants`) before the renewal is recorded and the ledger names it (a
-consent records its connection first, a renewal relays its bundle first).
-That is the limit of the plan's L8 guard: an admin who reads a number can
-still mint a 30-minute read key acting as a provisional account of their
-own, and use it on REST. It opens only what they sealed to that account
-themselves, each one needs a provisional invitation from the setups'
-budget, and it dies with the account's 30 minutes. A self-hosted installation never turns tokens on, so
-nothing changes there. The retirement revokes the live keys of class `rest`
-and `cli` (0053's `api_key_class`), and removes a standing service account
-a retired key acted as only where no spared key acts as it and every number
-it holds a key of, at an epoch not retired, keeps another holder who is
-human: a person (user and membership not of role service), active, with
-Read, and no deadline. That is stricter than `sole_key_holders`, where two
-standing services shield each other (`everyGrantKeepsAHumanHolderTx`,
-which 12b's M2L reuses). A service kept
-for want of such a holder is listed in the retirement's report, so a later
-run removes it once one exists, even after the keys are deleted. Nothing
+**Wappie's own keys give way to the platform's tokens.** Keys are narrowed
+while the token mode is on, or once `whatserverd tokens retire-keys -apply`
+has run (a `key_retirements` row, which stays). Then Wappie issues no
+general key:
+
+- Socket `apikeys.create` issues only an MCP setup's key: read, numbers,
+  at most 30 minutes out (what a consent binds), named "MCP · …", acting as
+  no account or as a fresh provisional one (a 30-minute deadline, and no
+  connection names it). Every other shape gets `tokens_are_the_platforms`.
+- The command line's `key` and `bootstrap` refuse. `-self-hosted` only
+  says the installation is off the platform (the contract off, tokens off,
+  no retirement), so it never lets through what the narrowing refuses.
+- A standing service account's invitation gets 409
+  `tokens_are_the_platforms`, issued or redeemed.
+- Discovery says `tokens.platform.v1`.
+
+A setup's key works on REST, media and the socket's hello only once a
+connection names it; before, it is refused as an unknown key. A consent
+records its connection first. One exception: a key that acts as a
+provisional account that no connection names yet. That is a content or AI
+renewal's new key: the enclave's reader lists its grants with it (`GET
+/v1/grants`) before the renewal is recorded and the ledger names the key.
+A key that acts as an account a connection names is refused too, and
+while keys are narrowed no such key is issued.
+
+That is the limit of the plan's L8 guard. An admin can still mint a
+30-minute read key acting as a provisional account of their own, and use
+it on REST. It reads only the numbers they gave that account Read on, and
+opens only the keys they sealed to it. Each one needs a provisional
+invitation from the setups' budget, and it dies with the account's 30
+minutes. A self-hosted installation never turns tokens on, so nothing
+changes there.
+
+The retirement revokes the live keys of class `rest` and `cli` (0053's
+`api_key_class`). It also revokes a key in an MCP setup's or an old local
+token's shape whose origin is `rest` or `cli`: no consent issued it, and
+MCPPanel and 12b's M2L list only origin `legacy_mcp`, which the backfill
+alone writes. A connection's key is always spared.
+
+It removes a standing service account only where no spared key acts as
+it, and where every number it holds a key of, at an epoch not retired,
+keeps another holder who is human: a person (user and membership not of
+role service), active, with Read, and no deadline
+(`everyGrantKeepsAHumanHolderTx`, which M2L reuses). That is stricter than
+`sole_key_holders`, where two standing services shield each other. The
+candidates are the accounts a retired key acted as, those an earlier
+report kept, and those a revoked old local token acted as (M2L revokes
+one and keeps its account while a number has no other human holder). A
+service kept for want of a holder is listed in the report, so a later run
+removes it once one exists, even after the keys are deleted. A revoked old
+token's account is found by the token itself only until the token is
+deleted, 13 months after its revoke; a run in that time lists it. Nothing
 is stranded and no notice is raised.
+
+The apply is one transaction. It holds `contract_state` and
+`contract_token_state` FOR SHARE (DB25 steps 1 and 2), so neither mode
+turns off under it. Then it takes each workspace's row FOR UPDATE, in id
+order (step 3), and holds them to the commit. Inserts with a foreign key
+to those workspaces, a capture's included, wait that fraction of a second.
+One transaction checks `-confirm` once and writes one row per apply.
 
 **Ended API keys go 13 months after their end** (the owner's yes of
 2026-11-04), on every installation: an ended key serves nothing after
