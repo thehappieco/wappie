@@ -298,7 +298,10 @@ func TestEventBatchFolds(t *testing.T) {
 	// item's under the hour (folded, its readers joining), 61 minutes on
 	// (its own), by the actor's key (folded: README 9's actor is the
 	// person behind the act, a key's creator for a key), and by a key with
-	// no creator (its own: nobody's is never a person's).
+	// no creator (its own: nobody's is never a person's). A key with no
+	// creator has no sub either, as Devices.Pause writes it: two acts with
+	// no local account on one side are compared by sub (a token's creator,
+	// step 7).
 	owner, _, _ := heldPerson(t, pool)
 	other := uuid.New()
 	pause := func(occurred, kind string, user *uuid.UUID, readers ...uuid.UUID) uuid.UUID {
@@ -307,13 +310,13 @@ func TestEventBatchFolds(t *testing.T) {
 		for i, r := range readers {
 			list[i] = "'" + r.String() + "'"
 		}
-		by := "NULL"
+		by, sub := "NULL", "NULL"
 		if user != nil {
-			by = "'" + user.String() + "'"
+			by, sub = "'"+user.String()+"'", "'"+actor.String()+"'"
 		}
 		return pastEvent(t, pool, team, "sync_paused", "0", occurred, fmt.Sprintf(
-			`item_id = '%s', actor_kind = '%s', actor_sub = '%s', actor_user_id = %s, reader_subs = ARRAY[%s]::uuid[]`,
-			other, kind, actor, by, strings.Join(list, ", ")))
+			`item_id = '%s', actor_kind = '%s', actor_sub = %s, actor_user_id = %s, reader_subs = ARRAY[%s]::uuid[]`,
+			other, kind, sub, by, strings.Join(list, ", ")))
 	}
 	third, fourth := uuid.New(), uuid.New()
 	first := pause("90 minutes", "person", &owner, actor, reader)
