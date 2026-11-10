@@ -184,6 +184,11 @@ type Token struct {
 	Key      *kc.ReadingKey
 	Version  int64
 	Perms    []Perm
+	// Created is the record's created_at and its grants' granted_at, set
+	// by its first Record and kept by every later version, as the
+	// platform keeps them: a grant whose granted_at moved would be another
+	// instance, a Read given again (design 3.5).
+	Created time.Time
 }
 
 // Token mints a token with perms, given by the owner, and makes it live:
@@ -223,9 +228,13 @@ func (w *World) Epoch(device uuid.UUID) uint16 {
 }
 
 // Record is tok's record at its version, with its perms, created by the
-// owner a day ago and expiring in 30 days; each opt changes it.
+// owner a day before its first record and expiring 30 days after that;
+// each opt changes it.
 func (w *World) Record(tok *Token, opts ...func(*kc.TokenRecord)) kc.TokenRecord {
-	created := time.Now().UTC().Truncate(time.Second).Add(-24 * time.Hour)
+	if tok.Created.IsZero() {
+		tok.Created = time.Now().UTC().Truncate(time.Second).Add(-24 * time.Hour)
+	}
+	created := tok.Created
 	if tok.Version == 0 {
 		tok.Version = 1
 	}
