@@ -77,7 +77,8 @@ func TestATokenGrantNamesItsArchiveKey(t *testing.T) {
 	if n := numberOf(); n.CurrentEpoch != 0 || n.ArchiveKeyFingerprint != "" || n.Read != store.TokenReadApplied {
 		t.Fatalf("between the reset and the new key: %+v", n)
 	}
-	if err := put(0, old); !errors.Is(err, store.ErrNoArchiveKey) {
+	// Both errors, as DS49's check answers grant.add's no key.
+	if err := put(0, old); !errors.Is(err, store.ErrNoArchiveKey) || !errors.Is(err, store.ErrArchiveKeyChanged) {
 		t.Fatalf("a grant with no key: %v", err)
 	}
 
