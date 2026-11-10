@@ -155,6 +155,10 @@ Create an account and run this again for the next device, and there will be
 nothing to save by hand.
 `, base64.RawURLEncoding.EncodeToString(raw))
 	}
+	fmt.Print(`
+Restart wappie-api now if it is running. A running server keeps sealing to the
+old key until it restarts.
+`)
 	return nil
 }
 
