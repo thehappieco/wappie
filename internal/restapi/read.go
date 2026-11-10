@@ -374,6 +374,10 @@ func (h *Handler) grants(q *request) {
 	if _, ok := q.query(); !ok {
 		return
 	}
+	if q.actor.IsToken() {
+		h.tokenGrants(q)
+		return
+	}
 	if q.actor.User == uuid.Nil {
 		fail(q.w, http.StatusForbidden, "not_authorized", "grants require a session or an API key acting as a service account")
 		return
@@ -401,4 +405,52 @@ func (h *Handler) grants(q *request) {
 		out = append(out, wsapi.GrantEntry{ArchiveTenantID: row.ArchiveTenantID.String(), DeviceID: row.DeviceID.String(), Label: device.Label, Epoch: int(row.Epoch), SealedDSK: row.SealedDSK})
 	}
 	q.finish(Grants{q.actor.Tenant.String(), wsapi.Grants{UserID: q.actor.User.String(), Grants: out}})
+}
+
+// tokenGrants is GET /v1/grants for a token (the plan's 5.4): its
+// identity's grants at each number's current epoch, on the numbers it
+// reads now, with user_id its identity; finish checks each number again. A
+// token with no reading key yet has no identity, and holds none. Nothing
+// here is counted as a use or a refusal.
+func (h *Handler) tokenGrants(q *request) {
+	ctx := q.r.Context()
+	tokens := h.checker().Tokens
+	if tokens == nil {
+		q.internal(errors.New("restapi: a token's request with no token store"))
+		return
+	}
+	out := make([]wsapi.GrantEntry, 0)
+	identity, err := tokens.Identity(ctx, q.actor.Token)
+	if errors.Is(err, store.ErrNotFound) {
+		q.finish(Grants{q.actor.Tenant.String(), wsapi.Grants{Grants: out}})
+		return
+	}
+	if err != nil {
+		q.internal(err)
+		return
+	}
+	live, err := h.checker().TokenSets(ctx, q.actor)
+	if err != nil {
+		q.internal(err)
+		return
+	}
+	rows, err := h.Keys.GrantsFor(ctx, q.actor.Tenant, identity)
+	if err != nil {
+		q.internal(err)
+		return
+	}
+	for _, row := range rows {
+		if _, ok := live.Reads[row.DeviceID]; !ok {
+			continue
+		}
+		q.checks[row.DeviceID] = store.ActionRead
+		device, err := h.Devices.Get(ctx, q.actor.Tenant.String(), row.DeviceID.String())
+		if err != nil {
+			q.storeError(err)
+			return
+		}
+		out = append(out, wsapi.GrantEntry{ArchiveTenantID: row.ArchiveTenantID.String(), DeviceID: row.DeviceID.String(), Label: device.Label,
+			Epoch: int(row.Epoch), SealedDSK: row.SealedDSK})
+	}
+	q.finish(Grants{q.actor.Tenant.String(), wsapi.Grants{UserID: identity.String(), Grants: out}})
 }
