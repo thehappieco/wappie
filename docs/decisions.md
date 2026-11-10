@@ -2844,7 +2844,10 @@ and the MCP readers through `Opener.contactNames`, `wsctl` itself. A
 reader that predates the new fields still does, and shows the older names
 as locked (not tampered). The web gets the fix with the core its cloud
 pins. The attested reader gets it at its next release, which this change
-does not make.
+does not make. The change to `packages/client` moves the reader's
+measured client (`scripts/check-client-dist.sh`, CI's "The reader's
+measured client is release A's"), as (b)'s own client change already
+does: that check fails on (b) and here alike.
 
 Rows already damaged. The names are intact; only the row's id was wrong.
 Since 0009, nothing deletes a content key short of a reset or a number's
