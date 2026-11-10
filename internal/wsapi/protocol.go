@@ -1433,9 +1433,10 @@ type ContactSummary struct {
 	// ContentKeyID is the content key of the names written last. The
 	// names are written one at a time and a content key is replaced after
 	// 1000 seals or 15 minutes, so two names of one contact can be under
-	// different keys. Each name's own key is in the *_key_id fields below,
-	// and a reader opens each name with it. ContentKeyID stays for readers
-	// that predate them (DS50).
+	// different keys. A name under another key than this one has it in its
+	// *_key_id field below, and a reader opens the name with it. A name
+	// without one is under ContentKeyID: it is the row's key, or the
+	// server predates these fields (DS50).
 	ContentKeyID       uint32 `json:"content_key_id,omitempty"`
 	PushNameSealed     []byte `json:"push_name_sealed,omitempty"`
 	FullNameSealed     []byte `json:"full_name_sealed,omitempty"`

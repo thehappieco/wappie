@@ -90,13 +90,23 @@ func contactSummary(c store.ContactRow) ContactSummary {
 		PushNameSealed:     c.PushNameSealed,
 		FullNameSealed:     c.FullNameSealed,
 		BusinessNameSealed: c.BusinessNameSealed,
-		PushNameKeyID:      c.PushNameKeyID,
-		FullNameKeyID:      c.FullNameKeyID,
-		BusinessNameKeyID:  c.BusinessNameKeyID,
+		PushNameKeyID:      ownKeyID(c.PushNameKeyID, c.ContentKeyID),
+		FullNameKeyID:      ownKeyID(c.FullNameKeyID, c.ContentKeyID),
+		BusinessNameKeyID:  ownKeyID(c.BusinessNameKeyID, c.ContentKeyID),
 		HasAvatar:          c.HasAvatar,
 		AvatarID:           c.AvatarID,
 		AvatarKeyID:        c.AvatarKeyID,
 	}
+}
+
+// ownKeyID is a name's content key for the wire: zero, so left out, when
+// it is the row's. That is the usual case, and a list can hold thousands
+// of contacts. A reader then opens the name with content_key_id (DS50).
+func ownKeyID(name, row uint32) uint32 {
+	if name == row {
+		return 0
+	}
+	return name
 }
 
 // resolveLimit bounds one contacts.resolve request.

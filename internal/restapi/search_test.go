@@ -56,9 +56,26 @@ func TestRESTContactsPageIsSealedAndComplete(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		if err := contacts.Upsert(ctx, store.ContactName{TenantID: f.tenant, DeviceID: f.device, ContactKey: key, FullNameSealed: sealed, ContentKeyID: 1, IsGroup: i == 2}); err != nil {
+		if err := contacts.Upsert(ctx, store.ContactName{TenantID: f.tenant, DeviceID: f.device, ContactKey: key, FullNameSealed: sealed, ContentKeyID: f.key.ID, IsGroup: i == 2}); err != nil {
 			t.Fatal(err)
 		}
+	}
+	// A later push name of the first contact, under the next content key.
+	// The row then names that key, and the full name keeps its own (DS50).
+	laterPub, _, err := seal.GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	later, err := seal.NewContentKey(laterPub, f.tenant, f.device, 1, f.key.ID+1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	push, err := later.Seal(seal.KindPushName, f.tenant, store.ContactUID(f.device, "100@s.whatsapp.net"), []byte("Private push"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := contacts.Upsert(ctx, store.ContactName{TenantID: f.tenant, DeviceID: f.device, ContactKey: "100@s.whatsapp.net", PushNameSealed: push, ContentKeyID: later.ID}); err != nil {
+		t.Fatal(err)
 	}
 	base := "/v1/devices/" + f.device.String() + "/contacts?limit=2"
 	var page contactPage
@@ -77,11 +94,19 @@ func TestRESTContactsPageIsSealedAndComplete(t *testing.T) {
 		if opened, err := f.key.Open(seal.KindFullName, f.tenant, stored[i].UID, c.FullNameSealed); err != nil || string(opened) != "Private contact" {
 			t.Fatal("contact cannot be opened")
 		}
-		// Each name names its own content key (DS50).
-		if c.FullNameKeyID != f.key.ID || c.PushNameKeyID != 0 || c.BusinessNameKeyID != 0 {
-			t.Fatalf("name key ids %d, %d, %d; want the full name's %d alone",
-				c.FullNameKeyID, c.PushNameKeyID, c.BusinessNameKeyID, f.key.ID)
+		// A name has its own key id on the wire only when it is under
+		// another key than the row's (DS50).
+		row, full := f.key.ID, uint32(0)
+		if i == 0 {
+			row, full = later.ID, f.key.ID
 		}
+		if c.ContentKeyID != row || c.FullNameKeyID != full || c.PushNameKeyID != 0 || c.BusinessNameKeyID != 0 {
+			t.Fatalf("contact %d: row key %d, name key ids %d, %d, %d; want %d, then %d, 0, 0",
+				i, c.ContentKeyID, c.FullNameKeyID, c.PushNameKeyID, c.BusinessNameKeyID, row, full)
+		}
+	}
+	if strings.Count(raw, `"full_name_key_id"`) != 1 || strings.Contains(raw, `"push_name_key_id"`) {
+		t.Fatalf("name key ids not sent only where they differ from the row's: %s", raw)
 	}
 	page = contactPage{}
 	f.get(t, base+"&after_key=200%40lid", token, 200, &page)

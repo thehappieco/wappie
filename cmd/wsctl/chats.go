@@ -162,8 +162,9 @@ func contactNames(ctx context.Context, c *client, device string, o *opener) map[
 	}
 	for _, ct := range list.Contacts {
 		// Each name with its own content key: they are written one at a
-		// time and need not share the row's (DS50). A server that predates
-		// the per-name ids sends only the row's.
+		// time and need not share the row's (DS50). A name without an id
+		// of its own is under the row's key, or the server predates the
+		// per-name ids.
 		for _, candidate := range []struct {
 			kind   seal.Kind
 			keyID  uint32
