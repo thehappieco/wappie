@@ -278,8 +278,9 @@ export interface GrantRequest {
   /** base64 */
   sealed_dsk: string
   /**
-   * The fingerprint of the archive key sealed (seal.archiveKeyFingerprint of
-   * its public half): lowercase hex SHA-256 of the key's public bytes.
+   * The fingerprint of the archive key sealed: the lowercase hex SHA-256 of
+   * its public half's 32 bytes (the server's store.ArchiveKeyFingerprint),
+   * computed from the key the client opened, never echoed from a listing.
    * Required. The server refuses a grant of a key the number no longer has
    * with conflict: after a reset a number has a new key at epoch 1 again, so
    * the epoch alone does not name it (wappie DS49).
