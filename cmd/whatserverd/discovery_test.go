@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http/httptest"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -334,8 +335,92 @@ func TestDiscoveryAdvertisesPlatformTokens(t *testing.T) {
 	if slices.Contains(before, "tokens.platform.v1") || !slices.Equal(before, advertised("/v1/discovery")[:len(before)]) {
 		t.Fatalf("the list served before changed: %v", before)
 	}
-	// A failed read keeps the last answer.
-	tokens.read = func(context.Context) (bool, error) { return false, errors.New("down") }
+	// A failed read keeps the last answer, for a cache period: the two
+	// routes' requests read once.
+	failed := 0
+	tokens.read = func(context.Context) (bool, error) { failed++; return false, errors.New("down") }
 	now = now.Add(platformTokensFor)
 	says("a failed read", true)
+	if failed != 1 {
+		t.Fatalf("%d reads after a failed one, want 1 per cache period", failed)
+	}
+}
+
+// TestDiscoveryNeverWaitsOnASlowRead (the plan's 7.4): discovery answers
+// without signing in, so a slow database never holds its requests. One
+// request reads, bounded by platformTokensRead and not cut by its client
+// leaving; the others answer the last answer at once, and wait only for
+// the very first read. A read that runs out of time keeps the last answer
+// for a cache period.
+func TestDiscoveryNeverWaitsOnASlowRead(t *testing.T) {
+	now := time.Now()
+	var mu sync.Mutex
+	reads := 0
+	entered := make(chan struct{}, 4)
+	release := make(chan bool)
+	tokens := &platformTokens{now: func() time.Time { mu.Lock(); defer mu.Unlock(); return now }, readFor: 300 * time.Millisecond}
+	tokens.read = func(ctx context.Context) (bool, error) {
+		mu.Lock()
+		reads++
+		mu.Unlock()
+		if _, ok := ctx.Deadline(); !ok {
+			t.Error("a read with no deadline")
+		}
+		entered <- struct{}{}
+		select {
+		case on := <-release:
+			return on, nil
+		case <-ctx.Done():
+			return false, ctx.Err()
+		}
+	}
+	advance := func() { mu.Lock(); now = now.Add(platformTokensFor); mu.Unlock() }
+	on := func(ctx context.Context) <-chan bool {
+		got := make(chan bool, 1)
+		go func() { got <- tokens.On(ctx) }()
+		return got
+	}
+	answer := func(name string, got <-chan bool, want bool) {
+		t.Helper()
+		select {
+		case v := <-got:
+			if v != want {
+				t.Fatalf("%s: %t, want %t", name, v, want)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("%s: no answer", name)
+		}
+	}
+
+	// The first read: a second request waits for it, and a first one
+	// whose client leaves does not cut it.
+	leaving, leave := context.WithCancel(context.Background())
+	first := on(leaving)
+	<-entered
+	waiter := on(context.Background())
+	leave()
+	select {
+	case <-waiter:
+		t.Fatal("a request answered before the first read ended")
+	case <-time.After(50 * time.Millisecond):
+	}
+	release <- true
+	answer("the first read", first, true)
+	answer("a request waiting on it", waiter, true)
+
+	// A slow read: the others answer the last answer at once, with no
+	// read of their own.
+	advance()
+	slow := on(context.Background())
+	<-entered
+	answer("a request beside a slow read", on(context.Background()), true)
+	answer("another", on(context.Background()), true)
+	// It runs out of its time, and the last answer stands.
+	answer("the slow read", slow, true)
+	answer("just after", on(context.Background()), true)
+	mu.Lock()
+	defer mu.Unlock()
+	if reads != 2 {
+		t.Fatalf("%d reads, want 2: one per cache period, a failed one included", reads)
+	}
 }

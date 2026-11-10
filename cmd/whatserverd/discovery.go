@@ -58,25 +58,38 @@ type mcpEndpoints struct {
 func discoveryFor(mcp mcpEndpoints) http.HandlerFunc { return discoveryWith(mcp, nil, nil) }
 
 // platformTokensFor is how long discovery trusts what it read of the
-// narrowing: contract.md's mode cache, 5 seconds (the plan's 7.4).
+// narrowing: contract.md's mode cache, 5 seconds (the plan's 7.4). A
+// failed read is trusted as long: the last answer stands until then.
 const platformTokensFor = 5 * time.Second
+
+// platformTokensRead bounds one read of the narrowing. Discovery answers
+// without signing in, so a slow database must not hold its requests.
+const platformTokensRead = time.Second
 
 // platformTokens is whether this installation takes The Happie Co's API
 // tokens in place of its own keys (store.APIKeys.KeysNarrowed: the token
-// mode on, or the keys retired), read at most once per platformTokensFor,
-// for discovery's tokens.platform.v1. A console then sends its people to
-// the platform's API keys page; an installation that never says so keeps
-// its own keys and TokenPanel. A failed read keeps the last answer, and the
-// next request reads again. A nil one is never on.
+// mode on, or the keys retired), for discovery's tokens.platform.v1. A
+// console then sends its people to the platform's API keys page; an
+// installation that never says so keeps its own keys and TokenPanel.
+//
+// One request at a time reads it, at most once per platformTokensFor, for
+// at most platformTokensRead, with no lock held over the read. The others
+// answer the last read's answer at once. Only before the first read has
+// ended do they wait for it, within their own context. A failed read keeps
+// the last answer for platformTokensFor. A nil one is never on.
 type platformTokens struct {
 	read func(context.Context) (bool, error)
 	log  *slog.Logger
 	// now is the clock; nil is time.Now.
 	now func() time.Time
+	// readFor bounds a read; zero is platformTokensRead.
+	readFor time.Duration
 
 	mu sync.Mutex
 	at time.Time
 	on bool
+	// reading is closed when the read in flight ends; nil for none.
+	reading chan struct{}
 }
 
 // On reports the narrowing as read within platformTokensFor.
@@ -89,19 +102,50 @@ func (p *platformTokens) On(ctx context.Context) bool {
 		now = p.now()
 	}
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	if !p.at.IsZero() && now.Sub(p.at) < platformTokensFor {
-		return p.on
+		on := p.on
+		p.mu.Unlock()
+		return on
 	}
-	on, err := p.read(ctx)
-	if err != nil {
-		if p.log != nil {
-			p.log.Warn("discovery could not read whether the platform's tokens are on", "error", err)
+	if wait := p.reading; wait != nil {
+		on, first := p.on, p.at.IsZero()
+		p.mu.Unlock()
+		if !first {
+			return on
 		}
+		select {
+		case <-wait:
+		case <-ctx.Done():
+		}
+		p.mu.Lock()
+		defer p.mu.Unlock()
 		return p.on
 	}
-	p.on, p.at = on, now
-	return on
+	done := make(chan struct{})
+	p.reading = done
+	p.mu.Unlock()
+
+	limit := p.readFor
+	if limit <= 0 {
+		limit = platformTokensRead
+	}
+	// Not the request's context: a client that leaves must not cut the
+	// read the others wait on.
+	readCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), limit)
+	on, err := p.read(readCtx)
+	cancel()
+	if err != nil && p.log != nil {
+		p.log.Warn("discovery could not read whether the platform's tokens are on", "error", err)
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if err == nil {
+		p.on = on
+	}
+	p.at, p.reading = now, nil
+	close(done)
+	return p.on
 }
 
 // discoveryWith is discoveryFor and, when sign-in through an identity
