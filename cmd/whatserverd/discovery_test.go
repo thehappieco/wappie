@@ -1,12 +1,18 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http/httptest"
 	"slices"
 	"testing"
+	"time"
 
 	"whatserver2/internal/authapi"
+	"whatserver2/internal/migrate"
+	"whatserver2/internal/pgtest"
+	"whatserver2/internal/store"
 )
 
 func TestDiscoveryDescribesProtocolWithoutWorkspaceData(t *testing.T) {
@@ -237,7 +243,7 @@ func TestDiscoveryAdvertisesPlatformLogin(t *testing.T) {
 	read := func(t *testing.T, p *authapi.PlatformDiscovery) doc {
 		t.Helper()
 		w := httptest.NewRecorder()
-		discoveryWith(mcpEndpoints{}, p)(w, httptest.NewRequest("GET", "/.well-known/wappie", nil))
+		discoveryWith(mcpEndpoints{}, p, nil)(w, httptest.NewRequest("GET", "/.well-known/wappie", nil))
 		var d doc
 		if err := json.Unmarshal(w.Body.Bytes(), &d); err != nil {
 			t.Fatal(err)
@@ -272,4 +278,64 @@ func TestDiscoveryAdvertisesPlatformLogin(t *testing.T) {
 	if d.PlatformLogin == nil || d.PlatformLogin.ConsoleOrigin != "https://console.thehappie.co" {
 		t.Fatalf("console origin: %+v", d.PlatformLogin)
 	}
+}
+
+// TestDiscoveryAdvertisesPlatformTokens (step 7's plan, 7.4 and 10.7):
+// tokens.platform.v1 follows the narrowing (tokens on, or the keys
+// retired) per request, within the 5-second cache and with no restart;
+// both discovery routes answer alike, and a capability list served before
+// is never changed by one served after.
+func TestDiscoveryAdvertisesPlatformTokens(t *testing.T) {
+	pool := pgtest.Fresh(t, migrate.Run)
+	keys := store.NewAPIKeys(pool)
+	now := time.Now()
+	reads := 0
+	tokens := &platformTokens{read: func(ctx context.Context) (bool, error) {
+		reads++
+		return keys.KeysNarrowed(ctx)
+	}, now: func() time.Time { return now }}
+	handler := discoveryWith(mcpEndpoints{}, nil, tokens)
+	advertised := func(path string) []string {
+		t.Helper()
+		w := httptest.NewRecorder()
+		handler(w, httptest.NewRequest("GET", path, nil))
+		var d struct {
+			Capabilities []string `json:"capabilities"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &d); err != nil {
+			t.Fatal(err)
+		}
+		return d.Capabilities
+	}
+	says := func(state string, want bool) {
+		t.Helper()
+		for _, path := range []string{"/v1/discovery", "/.well-known/wappie"} {
+			if got := slices.Contains(advertised(path), "tokens.platform.v1"); got != want {
+				t.Fatalf("%s, %s: tokens.platform.v1 %t, want %t", state, path, got, want)
+			}
+		}
+	}
+	before := advertised("/v1/discovery")
+	says("tokens off", false)
+	execSQL(t, pool, `UPDATE contract_token_state SET mode = 'on'`)
+	now = now.Add(platformTokensFor - time.Millisecond)
+	says("tokens on, within the cache", false)
+	now = now.Add(time.Millisecond)
+	says("tokens on, past the cache", true)
+	execSQL(t, pool, `UPDATE contract_token_state SET mode = 'off'`)
+	now = now.Add(platformTokensFor)
+	says("tokens off again", false)
+	execSQL(t, pool, `INSERT INTO key_retirements (revoked, services_removed, services_kept, report, by) VALUES (0, 0, 0, '{}', 'root')`)
+	now = now.Add(platformTokensFor)
+	says("after a retirement", true)
+	if reads != 4 {
+		t.Fatalf("%d reads of the narrowing, want one per cache period: 4", reads)
+	}
+	if slices.Contains(before, "tokens.platform.v1") || !slices.Equal(before, advertised("/v1/discovery")[:len(before)]) {
+		t.Fatalf("the list served before changed: %v", before)
+	}
+	// A failed read keeps the last answer.
+	tokens.read = func(context.Context) (bool, error) { return false, errors.New("down") }
+	now = now.Add(platformTokensFor)
+	says("a failed read", true)
 }

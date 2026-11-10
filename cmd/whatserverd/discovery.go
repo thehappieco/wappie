@@ -1,8 +1,12 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
+	"sync"
+	"time"
 
 	"whatserver2/internal/authapi"
 	"whatserver2/internal/config"
@@ -51,7 +55,54 @@ type mcpEndpoints struct {
 // the address an assistant must be given: endpoints.mcp_server for the hosted
 // reader, endpoints.mcp_server_attested for the enclave. "mcp" stays the path
 // of the consent API on this server.
-func discoveryFor(mcp mcpEndpoints) http.HandlerFunc { return discoveryWith(mcp, nil) }
+func discoveryFor(mcp mcpEndpoints) http.HandlerFunc { return discoveryWith(mcp, nil, nil) }
+
+// platformTokensFor is how long discovery trusts what it read of the
+// narrowing: contract.md's mode cache, 5 seconds (the plan's 7.4).
+const platformTokensFor = 5 * time.Second
+
+// platformTokens is whether this installation takes The Happie Co's API
+// tokens in place of its own keys (store.APIKeys.KeysNarrowed: the token
+// mode on, or the keys retired), read at most once per platformTokensFor,
+// for discovery's tokens.platform.v1. A console then sends its people to
+// the platform's API keys page; an installation that never says so keeps
+// its own keys and TokenPanel. A failed read keeps the last answer, and the
+// next request reads again. A nil one is never on.
+type platformTokens struct {
+	read func(context.Context) (bool, error)
+	log  *slog.Logger
+	// now is the clock; nil is time.Now.
+	now func() time.Time
+
+	mu sync.Mutex
+	at time.Time
+	on bool
+}
+
+// On reports the narrowing as read within platformTokensFor.
+func (p *platformTokens) On(ctx context.Context) bool {
+	if p == nil {
+		return false
+	}
+	now := time.Now()
+	if p.now != nil {
+		now = p.now()
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if !p.at.IsZero() && now.Sub(p.at) < platformTokensFor {
+		return p.on
+	}
+	on, err := p.read(ctx)
+	if err != nil {
+		if p.log != nil {
+			p.log.Warn("discovery could not read whether the platform's tokens are on", "error", err)
+		}
+		return p.on
+	}
+	p.on, p.at = on, now
+	return on
+}
 
 // discoveryWith is discoveryFor and, when sign-in through an identity
 // provider is configured, platform_login: the issuer, the client and what
@@ -59,8 +110,11 @@ func discoveryFor(mcp mcpEndpoints) http.HandlerFunc { return discoveryWith(mcp,
 // hard-coding any of it. auth.password is advertised while password sign-in
 // is open at all, and auth.platform.v1 while the provider is, with
 // auth.platform.stepup.v1: the step-up at the provider
-// (/v1/auth/platform/step-up/start and /finish).
-func discoveryWith(mcp mcpEndpoints, platform *authapi.PlatformDiscovery) http.HandlerFunc {
+// (/v1/auth/platform/step-up/start and /finish). tokens.platform.v1 is
+// computed per request (tokens): while it is advertised, the general
+// credential here is the platform's token, and apikeys.create issues only
+// an MCP setup's key.
+func discoveryWith(mcp mcpEndpoints, platform *authapi.PlatformDiscovery, tokens *platformTokens) http.HandlerFunc {
 	remoteMCP := mcp.Server != "" || mcp.Attested != ""
 	capabilities := []string{"archive.sealed.v1", "archive.rest.v1", "archive.contacts.v1", "archive.scan.v1", "apikeys.device-scope.v1", "workspaces.v1"}
 	if platform == nil || platform.LocalLogin != string(config.LocalLoginOff) {
@@ -93,7 +147,11 @@ func discoveryWith(mcp mcpEndpoints, platform *authapi.PlatformDiscovery) http.H
 			}
 		}
 	}
-	return func(w http.ResponseWriter, _ *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
+		capabilities := capabilities
+		if tokens.On(r.Context()) {
+			capabilities = append(capabilities[:len(capabilities):len(capabilities)], "tokens.platform.v1")
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "no-store")
 		if err := json.NewEncoder(w).Encode(struct {

@@ -953,8 +953,12 @@ func (a *app) routes() http.Handler {
 	mux := http.NewServeMux()
 	mcpServers := advertisedMCP(a.cfg.MCP)
 	platform := a.platform.Discovery(a.cfg.Platform.LocalLogin)
-	mux.HandleFunc("GET /v1/discovery", discoveryWith(mcpServers, platform))
-	mux.HandleFunc("GET /.well-known/wappie", discoveryWith(mcpServers, platform))
+	var tokens *platformTokens
+	if a.apiKeys != nil {
+		tokens = &platformTokens{read: a.apiKeys.KeysNarrowed, log: a.log}
+	}
+	mux.HandleFunc("GET /v1/discovery", discoveryWith(mcpServers, platform, tokens))
+	mux.HandleFunc("GET /.well-known/wappie", discoveryWith(mcpServers, platform, tokens))
 	if a.cfg.MetricsAddr == "" {
 		a.probes(mux)
 	}
