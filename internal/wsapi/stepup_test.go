@@ -50,6 +50,7 @@ func TestEveryGrantNeedsAStepUp(t *testing.T) {
 	grant := func(to uuid.UUID) wsapi.Frame {
 		return ask(t, c, wsapi.Hello{Session: token}, wsapi.TypeGrantAdd, wsapi.GrantRequest{
 			DeviceID: dev, UserID: to.String(), Epoch: 1, SealedDSK: []byte("sealed"),
+			Fingerprint: grantFingerprint(t, store.NewKeys(c.pool), c.tenant, uuid.MustParse(dev), 1),
 		})
 	}
 	grantees := map[string]uuid.UUID{"a connection's service account": connection.ID, "a standing service account": standing.ID, "a member": member}
@@ -119,6 +120,7 @@ func TestAGrantAfterAStepUpAtTheProvider(t *testing.T) {
 	grant := func(token string) wsapi.Frame {
 		return ask(t, c, wsapi.Hello{Session: token}, wsapi.TypeGrantAdd, wsapi.GrantRequest{
 			DeviceID: dev, UserID: member.String(), Epoch: 1, SealedDSK: []byte("sealed"),
+			Fingerprint: grantFingerprint(t, store.NewKeys(c.pool), c.tenant, uuid.MustParse(dev), 1),
 		})
 	}
 

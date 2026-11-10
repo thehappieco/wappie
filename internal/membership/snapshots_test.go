@@ -724,7 +724,7 @@ func newSnapshotWorld(t *testing.T) *snapshotWorld {
 		t.Fatal(err)
 	}
 	if err := store.NewKeys(w.pool).PutGrant(ctx, store.Grant{TenantID: w.team, DeviceID: w.device, UserID: w.owner, Epoch: 1,
-		SealedDSK: []byte("grant")}, &w.owner); err != nil {
+		SealedDSK: []byte("grant"), Fingerprint: grantFingerprint(t, store.NewKeys(w.pool), w.team, w.device, 1)}, &w.owner); err != nil {
 		t.Fatal(err)
 	}
 	w.members.SignIn(ctx, w.sub)
@@ -869,7 +869,7 @@ func TestSnapshotCadence(t *testing.T) {
 			return err
 		}},
 		{"a grant", func() error {
-			return keys.PutGrant(ctx, store.Grant{TenantID: w.team, DeviceID: w.device, UserID: other, Epoch: 1, SealedDSK: []byte("g")}, &w.owner)
+			return keys.PutGrant(ctx, store.Grant{TenantID: w.team, DeviceID: w.device, UserID: other, Epoch: 1, SealedDSK: []byte("g"), Fingerprint: grantFingerprint(t, keys, w.team, w.device, 1)}, &w.owner) //nolint:contextcheck // the fingerprint is read on the test's own context
 		}},
 		{"a permission", func() error {
 			return users.SetDevicePermission(ctx, w.team, w.owner, store.DevicePermission{DeviceID: w.device, UserID: other, Read: true, Manage: true})

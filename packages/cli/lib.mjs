@@ -120,11 +120,11 @@ export async function execute(argv, io, sdk = { auth, Connection, bytes, seal })
       const recipient = users.users.find(user => user.id === o.user)
       if (!recipient) throw new Error('Recipient is not a member of this workspace')
       if (o['public-key'] && o['public-key'] !== recipient.public_key) throw new Error('Recipient public key does not match')
-      const reply = await sdk.auth.withDeviceKey({ serverURL: origin, token: session.token, email: session.email, password: await password(), deviceID: o.device }, async (deviceKey, epoch, archiveTenantID) => {
+      const reply = await sdk.auth.withDeviceKey({ serverURL: origin, token: session.token, email: session.email, password: await password(), deviceID: o.device }, async (deviceKey, epoch, archiveTenantID, fingerprint) => {
         const tenant = sdk.bytes.parseUUID(archiveTenantID || session.tenantID)
         const row = await sdk.seal.grantRow(tenant, sdk.bytes.parseUUID(o.device), sdk.bytes.parseUUID(o.user), epoch)
         const encrypted = await sdk.seal.sealDirect(sdk.bytes.fromBase64(recipient.public_key), sdk.seal.Kind.DeviceGrant, tenant, row, epoch, deviceKey)
-        return connection.request('grant.add', { device_id: o.device, user_id: o.user, epoch, sealed_dsk: sdk.bytes.toBase64(encrypted) }, 'device.readers')
+        return connection.request('grant.add', { device_id: o.device, user_id: o.user, epoch, sealed_dsk: sdk.bytes.toBase64(encrypted), fingerprint }, 'device.readers')
       }); io.print(reply)
     } finally { connection.close() }
     return

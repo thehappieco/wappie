@@ -393,6 +393,12 @@ func (s *session) handleGrantAdd(ctx context.Context, f Frame) {
 		s.replyError(f.ReqID, ErrCodeBadRequest, "a grant with no sealed key is not a grant")
 		return
 	}
+	if !store.ValidArchiveKeyFingerprint(req.Fingerprint) {
+		// A client from before DS49 sends none.
+		s.replyError(f.ReqID, ErrCodeBadRequest,
+			"a grant names the fingerprint of the archive key it seals, as the grant you opened gave it")
+		return
+	}
 
 	tenant := s.tenantID()
 	dev, err := s.srv.cfg.Devices.Get(ctx, tenant, req.DeviceID)
@@ -430,7 +436,7 @@ func (s *session) handleGrantAdd(ctx context.Context, f Frame) {
 		return
 	}
 
-	_, epoch, err := s.srv.cfg.Keys2.ArchiveKey(ctx, tenantUUID, deviceUUID)
+	pub, epoch, err := s.srv.cfg.Keys2.ArchiveKey(ctx, tenantUUID, deviceUUID)
 	if errors.Is(err, store.ErrNoArchiveKey) {
 		s.replyError(f.ReqID, ErrCodeConflict,
 			"this device has no archive key, so there is nothing to grant")
@@ -447,12 +453,24 @@ func (s *session) handleGrantAdd(ctx context.Context, f Frame) {
 				"it would be recorded as access and fail to open", epoch, req.Epoch))
 		return
 	}
+	// The epoch alone does not name the key: a reset gives the number a new
+	// key at epoch 1 again (DS49). PutGrant compares again in its own
+	// transaction; this answers early.
+	if store.ArchiveKeyFingerprint(pub.Bytes()) != req.Fingerprint {
+		s.replyError(f.ReqID, ErrCodeConflict, archiveKeyChanged)
+		return
+	}
 
 	author := who.userID
 	if err := s.srv.cfg.Keys2.PutGrant(ctx, store.Grant{
 		TenantID: tenantUUID, DeviceID: deviceUUID, UserID: user,
-		Epoch: epoch, SealedDSK: req.SealedDSK,
+		Epoch: epoch, SealedDSK: req.SealedDSK, Fingerprint: req.Fingerprint,
 	}, &author); err != nil {
+		if errors.Is(err, store.ErrArchiveKeyChanged) {
+			// A reset, and device-key, since the check above.
+			s.replyError(f.ReqID, ErrCodeConflict, archiveKeyChanged)
+			return
+		}
 		if errors.Is(err, store.ErrNumberGone) {
 			// It moved to Personal while the grant waited for the
 			// workspace's lock (decision 0040's transfer).
@@ -474,6 +492,11 @@ func (s *session) handleGrantAdd(ctx context.Context, f Frame) {
 		"device", dev.ID, "to", req.UserID, "by", who.email, "epoch", epoch)
 	s.replyReaders(ctx, f.ReqID, tenantUUID, deviceUUID, dev.ID)
 }
+
+// archiveKeyChanged is grant.add's conflict for a grant sealed with a key
+// the number no longer has.
+const archiveKeyChanged = "this number's archive key is not the one the grant was sealed with; " +
+	"it was reset since. Open your grant again and seal the key it gives"
 
 // handleGrantRevoke removes one account's access, for what that is worth.
 func (s *session) handleGrantRevoke(ctx context.Context, f Frame) {
@@ -599,7 +622,7 @@ func (s *session) handleGrantsList(ctx context.Context, f Frame) {
 		}
 		out.Grants = append(out.Grants, GrantEntry{
 			ArchiveTenantID: g.ArchiveTenantID.String(), DeviceID: g.DeviceID.String(), Label: labels[g.DeviceID.String()],
-			Epoch: int(g.Epoch), SealedDSK: g.SealedDSK,
+			Epoch: int(g.Epoch), SealedDSK: g.SealedDSK, Fingerprint: g.Fingerprint,
 		})
 	}
 	s.reply(TypeGrants, f.ReqID, out)

@@ -28,7 +28,7 @@ beforeAll(async () => {
   dsks = devices.map((_, index) => new Uint8Array(32).fill(index + 1))
   const ns = parseUUID(tenant)
   const grants = await Promise.all(devices.map(async (device, index) => ({
-    device_id: device, epoch: index + 2,
+    device_id: device, epoch: index + 2, fingerprint: String(index).repeat(64),
     sealed_dsk: toBase64(await sealDirect(owner.publicKey, Kind.DeviceGrant, ns, await grantRow(ns, parseUUID(device), parseUUID(userID), index + 2), index + 2, dsks[index]!)),
   })))
   reply = { user: { id: userID, tenant_id: tenant, email, public_key: toBase64(owner.publicKey), wrapped_usk: toBase64(await wrapPrivateKey(owner.privateKey, proof.wrapKey, email)) }, grants }
@@ -47,14 +47,16 @@ const input = { serverURL: 'https://example.test', token: 'session', email, pass
 it('opens N devices with one challenge, one derivation and one /auth/me, in order, zeroing each key after its use', async () => {
   const lent: { device: string; key: Bytes; copy: Bytes; live: number }[] = []
   let live = 0
-  const results = await withDeviceKeys({ ...input, deviceIDs: [devices[2]!, devices[0]!, devices[1]!] }, async (device, key, epoch, archiveTenantID) => {
+  const results = await withDeviceKeys({ ...input, deviceIDs: [devices[2]!, devices[0]!, devices[1]!] }, async (device, key, epoch, archiveTenantID, fingerprint) => {
     live++
     lent.push({ device, key, copy: new Uint8Array(key), live })
     expect(archiveTenantID).toBe(tenant)
     live--
-    return `${device}:${epoch}`
+    return `${device}:${epoch}:${fingerprint.slice(0, 2)}`
   })
-  expect(results).toEqual([`${devices[2]}:4`, `${devices[0]}:2`, `${devices[1]}:3`])
+  // Each key comes with the fingerprint its grant names, which a grant.add
+  // of it echoes (wappie DS49).
+  expect(results).toEqual([`${devices[2]}:4:22`, `${devices[0]}:2:00`, `${devices[1]}:3:11`])
   expect(lent.map(item => item.device)).toEqual([devices[2], devices[0], devices[1]])
   expect(lent.map(item => toBase64(item.copy))).toEqual([toBase64(dsks[2]!), toBase64(dsks[0]!), toBase64(dsks[1]!)])
   // Only one device key existed at a time, and none survives.
@@ -92,8 +94,8 @@ it('stops at the first failing use, with the keys lent so far already zeroed', a
 })
 
 it('keeps withDeviceKey as the one-device form of the same exchange', async () => {
-  const opened = await withDeviceKey({ ...input, deviceID: devices[1]! }, async (key, epoch, archiveTenantID) => ({ key: toBase64(key), epoch, archiveTenantID }))
-  expect(opened).toEqual({ key: toBase64(dsks[1]!), epoch: 3, archiveTenantID: tenant })
+  const opened = await withDeviceKey({ ...input, deviceID: devices[1]! }, async (key, epoch, archiveTenantID, fingerprint) => ({ key: toBase64(key), epoch, archiveTenantID, fingerprint }))
+  expect(opened).toEqual({ key: toBase64(dsks[1]!), epoch: 3, archiveTenantID: tenant, fingerprint: '1'.repeat(64) })
   expect(spy.derivations).toBe(1)
   expect(fromBase64(opened.key)).toHaveLength(32)
 })

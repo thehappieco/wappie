@@ -132,7 +132,7 @@ func deviceKey(args []string) error {
 		}
 		if err := keys.PutGrant(ctx, store.Grant{
 			TenantID: tenant, DeviceID: deviceID, UserID: u.ID,
-			Epoch: epoch, SealedDSK: sealed,
+			Epoch: epoch, SealedDSK: sealed, Fingerprint: store.ArchiveKeyFingerprint(pub.Bytes()),
 		}, nil); err != nil {
 			return err
 		}

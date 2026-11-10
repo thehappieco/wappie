@@ -180,10 +180,18 @@ func (s *session) handlePair(ctx context.Context, f Frame) {
 				s.replyError(f.ReqID, ErrCodeBadRequest, "a grant names an account id that is not a uuid")
 				return
 			}
+			// The key is the one this request carries, made just above.
 			if err := s.srv.cfg.Keys2.PutGrant(ctx, store.Grant{
 				TenantID: tenantUUID, DeviceID: deviceUUID, UserID: user,
-				Epoch: 1, SealedDSK: g.SealedDSK,
+				Epoch: 1, SealedDSK: g.SealedDSK, Fingerprint: store.ArchiveKeyFingerprint(pub.Bytes()),
 			}, nil); err != nil {
+				if errors.Is(err, store.ErrArchiveKeyChanged) {
+					// A reset and a device-key between the key and its
+					// grants (DS49).
+					s.cleanupFailedPairing(ctx, tenant, dev.ID)
+					s.replyError(f.ReqID, ErrCodeConflict, "this number's archive key changed while it was paired; pair it again")
+					return
+				}
 				if errors.Is(err, store.ErrConnectionAccountGrant) {
 					// A new number is no assistant connection's (DS48).
 					s.cleanupFailedPairing(ctx, tenant, dev.ID)

@@ -91,7 +91,7 @@ test('grant seals only to verified workspace recipient and sends no raw key', as
    sent.push({ type, payload })
    return type === 'users.list' ? { users: [{ id: 'recipient', public_key: 'verified-key' }] } : { readers: [] }
   }, close: () => { closed = true } }) },
-  auth: { withDeviceKey: async (input, use) => use(new Uint8Array([99]), 7) },
+  auth: { withDeviceKey: async (input, use) => use(new Uint8Array([99]), 7, undefined, 'f'.repeat(64)) },
   bytes: { parseUUID: value => value, fromBase64: value => value, toBase64: () => 'sealed-envelope' },
   seal: { Kind: { DeviceGrant: 4 }, grantRow: async () => 'bound-row', sealDirect: async (key, kind, tenant, row, epoch, raw) => {
    assert.equal(key, 'verified-key'); assert.equal(tenant, signed.tenantID); assert.equal(epoch, 7); assert.equal(raw[0], 99)
@@ -99,6 +99,6 @@ test('grant seals only to verified workspace recipient and sends no raw key', as
   } },
  }
  await execute(['grant', '--server', 'https://one.test', '--state-dir', dir, '--device', 'device', '--user', 'recipient'], { secret: async () => 'password', print: () => {} }, sdk)
- assert.deepEqual(sent[1], { type: 'grant.add', payload: { device_id: 'device', user_id: 'recipient', epoch: 7, sealed_dsk: 'sealed-envelope' } })
+ assert.deepEqual(sent[1], { type: 'grant.add', payload: { device_id: 'device', user_id: 'recipient', epoch: 7, sealed_dsk: 'sealed-envelope', fingerprint: 'f'.repeat(64) } })
  assert.equal(closed, true)
 })

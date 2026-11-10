@@ -210,7 +210,7 @@ func TestDirtyNotify(t *testing.T) {
 	sql("the member gone", once, `DELETE FROM device_key_grants USING change WHERE device_id=change.device AND user_id=change.member`,
 		`DELETE FROM workspace_memberships USING change WHERE tenant_id=change.team AND user_id=change.member`)
 	keys := store.NewKeys(a.pool)
-	if err := keys.PutGrant(ctx, store.Grant{TenantID: team, DeviceID: device, UserID: owner, Epoch: 1, SealedDSK: []byte("grant")}, &owner); err != nil {
+	if err := keys.PutGrant(ctx, store.Grant{TenantID: team, DeviceID: device, UserID: owner, Epoch: 1, SealedDSK: []byte("grant"), Fingerprint: grantFingerprint(t, keys, team, device, 1)}, &owner); err != nil {
 		t.Fatal(err)
 	}
 	expect("the owner's grant", once)

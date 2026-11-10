@@ -341,3 +341,12 @@ func TestServeListensForArchiveKeys(t *testing.T) {
 	inOrder(t, "the listener", listen, "a.keepListening(ctx,",
 		"each new content key is still checked against the number's key", "listenArchiveKeyChanged(ctx, a.pools.API, a.onArchiveKey, ready)")
 }
+
+// TestDeviceKeyGrantsNameTheKey: device-key's grants, and the demo seed's,
+// name the key the command just made (DS49), as every grant does.
+func TestDeviceKeyGrantsNameTheKey(t *testing.T) {
+	inOrder(t, "device-key", funcBody(t, rawCode(t, "."), "deviceKey"), "keys.CreateArchiveKey(ctx, tenant, deviceID, epoch, pub)",
+		"keys.PutGrant(", "Fingerprint: store.ArchiveKeyFingerprint(pub.Bytes())")
+	inOrder(t, "the demo seed", rawCode(t, "../seeddemo"), "keys.CreateArchiveKey(ctx, tenant, deviceID, epoch, pub)",
+		"keys.PutGrant(", "Fingerprint: store.ArchiveKeyFingerprint(pub.Bytes())")
+}

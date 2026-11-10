@@ -461,6 +461,7 @@ func TestGrantingNeedsTheRightGeneration(t *testing.T) {
 	// list looking like access and fail to open on the day somebody needed it.
 	f := ask(t, c, wsapi.Hello{Session: token}, wsapi.TypeGrantAdd, wsapi.GrantRequest{
 		DeviceID: dev, UserID: other.String(), Epoch: 2, SealedDSK: []byte("sealed"),
+		Fingerprint: grantFingerprint(t, store.NewKeys(c.pool), c.tenant, uuid.MustParse(dev), 1),
 	})
 	e := wantError(t, f, wsapi.ErrCodeConflict)
 	if !strings.Contains(e.Message, "generation") {
@@ -476,6 +477,7 @@ func TestGrantingAndRevoking(t *testing.T) {
 
 	f := ask(t, c, wsapi.Hello{Session: token}, wsapi.TypeGrantAdd, wsapi.GrantRequest{
 		DeviceID: dev, UserID: other.String(), Epoch: 1, SealedDSK: []byte("sealed"),
+		Fingerprint: grantFingerprint(t, store.NewKeys(c.pool), c.tenant, uuid.MustParse(dev), 1),
 	})
 	if f.Type != wsapi.TypeReaders {
 		t.Fatalf("frame = %q: %s", f.Type, f.Payload)
@@ -525,6 +527,7 @@ func TestGrantingToADeviceWithNoKey(t *testing.T) {
 
 	f := ask(t, c, wsapi.Hello{Session: token}, wsapi.TypeGrantAdd, wsapi.GrantRequest{
 		DeviceID: dev.ID, UserID: other.String(), Epoch: 1, SealedDSK: []byte("sealed"),
+		Fingerprint: strings.Repeat("a", 64),
 	})
 	wantError(t, f, wsapi.ErrCodeConflict)
 }
@@ -605,6 +608,7 @@ func TestAMemberWithoutAGrantSeesNothingOfADevice(t *testing.T) {
 	if err := store.NewKeys(c.pool).PutGrant(context.Background(), store.Grant{
 		TenantID: c.tenant, DeviceID: uuid.MustParse(device), UserID: memberID,
 		Epoch: 1, SealedDSK: []byte("sealed"),
+		Fingerprint: grantFingerprint(t, store.NewKeys(c.pool), c.tenant, uuid.MustParse(device), 1),
 	}, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -715,6 +719,7 @@ func TestAServiceAccountReadsOnlyWhatItWasGranted(t *testing.T) {
 	}
 	f := ask(t, c, owner, wsapi.TypeGrantAdd, wsapi.GrantRequest{
 		DeviceID: granted, UserID: service.ID.String(), Epoch: 1, SealedDSK: sealed,
+		Fingerprint: grantFingerprint(t, store.NewKeys(c.pool), c.tenant, uuid.MustParse(granted), 1),
 	})
 	if f.Type != wsapi.TypeReaders {
 		t.Fatalf("grant.add: %s %s", f.Type, f.Payload)

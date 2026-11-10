@@ -319,21 +319,44 @@ type Grant struct {
 	UserID          uuid.UUID
 	Epoch           uint16
 	SealedDSK       []byte
+	// Fingerprint names the archive key SealedDSK is (ArchiveKeyFingerprint).
+	// PutGrant requires it, and GrantsFor gives the stored key's (DS49).
+	Fingerprint string
 }
+
+// ErrGrantFingerprint is a grant that names no archive key fingerprint, or
+// one not in ArchiveKeyFingerprint's form.
+var ErrGrantFingerprint = errors.New("store: a grant must name its archive key's fingerprint")
 
 // PutGrant records a sealed device key for one user. A live connection's
 // own account takes only a number its key names and its person reads
 // (ErrConnectionAccountGrant, DS48): grant.add, a pairing's grants and the
 // command line's device-key alike.
+//
+// The grant names the archive key it was sealed for (g.Fingerprint), and
+// PutGrant compares it with the number's key at g.Epoch in the same
+// transaction: ErrArchiveKeyChanged for another key or none (DS49). The
+// epoch alone cannot say: after reset-archive -keep-devices, device-key
+// gives the number a new key at epoch 1 again, and a grant sealed with
+// the old key would be recorded as Read and open nothing. The transaction
+// holds the workspace's tenants row from before the comparison to its
+// commit, and a reset takes that row before its deletes, so a reset is
+// wholly before the comparison or wholly after the grant.
 func (k *Keys) PutGrant(ctx context.Context, g Grant, grantedBy *uuid.UUID) error {
 	if len(g.SealedDSK) == 0 {
 		return errors.New("store: a grant with no sealed key is not a grant")
+	}
+	if !ValidArchiveKeyFingerprint(g.Fingerprint) {
+		return ErrGrantFingerprint
 	}
 	return pg.InTenantTx(ctx, k.pool, g.TenantID.String(), func(tx pgx.Tx) error {
 		if err := lockWorkspaceAccess(ctx, tx, g.TenantID); err != nil {
 			return err
 		}
 		if err := grantableTx(ctx, tx, g.TenantID, g.DeviceID, g.UserID); err != nil {
+			return err
+		}
+		if err := grantKeyIsTx(ctx, tx, g.DeviceID, g.Epoch, g.Fingerprint); err != nil {
 			return err
 		}
 		_, err := tx.Exec(ctx, `
@@ -357,6 +380,51 @@ func (k *Keys) CheckGrant(ctx context.Context, tenant, device, user uuid.UUID) e
 	return pg.InTenantTx(ctx, k.pool, tenant.String(), func(tx pgx.Tx) error {
 		return grantableTx(ctx, tx, tenant, device, user)
 	})
+}
+
+// grantKeyIsTx returns ErrArchiveKeyChanged unless device's archive key
+// at epoch, not retired, has fingerprint. A number this workspace no
+// longer sees (moved to Personal, or deleted) is ErrNumberGone, as the
+// insert's ownership trigger would answer.
+func grantKeyIsTx(ctx context.Context, tx pgx.Tx, device uuid.UUID, epoch uint16, fingerprint string) error {
+	var stored []byte
+	err := tx.QueryRow(ctx, `SELECT public_key FROM device_archive_keys
+		WHERE device_id = $1 AND epoch = $2 AND retired_at IS NULL`, device, int32(epoch)).Scan(&stored)
+	if errors.Is(err, pgx.ErrNoRows) {
+		var here bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM devices WHERE id = $1)`, device).Scan(&here); err != nil {
+			return fmt.Errorf("store: read the number: %w", err)
+		}
+		if !here {
+			return ErrNumberGone
+		}
+		return fmt.Errorf("%w: device %s has no key at epoch %d", ErrArchiveKeyChanged, device, epoch)
+	}
+	if err != nil {
+		return fmt.Errorf("store: read the archive key: %w", err)
+	}
+	if ArchiveKeyFingerprint(stored) != fingerprint {
+		return fmt.Errorf("%w: the grant is for another key than device %s's at epoch %d", ErrArchiveKeyChanged, device, epoch)
+	}
+	return nil
+}
+
+// ArchiveKeyFingerprintAt returns the fingerprint of device's archive key
+// at epoch, not retired, or ErrNoArchiveKey: what a grant sealed for that
+// key names. For a tool or a test that grants a key it did not make.
+func (k *Keys) ArchiveKeyFingerprintAt(ctx context.Context, tenant, device uuid.UUID, epoch uint16) (string, error) {
+	var stored []byte
+	err := pg.InTenantTx(ctx, k.pool, tenant.String(), func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `SELECT public_key FROM device_archive_keys
+			WHERE device_id = $1 AND epoch = $2 AND retired_at IS NULL`, device, int32(epoch)).Scan(&stored)
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", fmt.Errorf("%w: %s at epoch %d", ErrNoArchiveKey, device, epoch)
+	}
+	if err != nil {
+		return "", fmt.Errorf("store: read the archive key: %w", err)
+	}
+	return ArchiveKeyFingerprint(stored), nil
 }
 
 // grantableTx is PutGrant's checks of user on device.
@@ -389,14 +457,17 @@ func numberGone(err error) error {
 // GrantsFor returns every device key one user may open.
 //
 // The reply is what a browser turns into a set of readable accounts: no grant,
-// no key, and the archive stays closed however the server behaves.
+// no key, and the archive stays closed however the server behaves. Each
+// grant carries its key's fingerprint, which a client echoes when it seals
+// the key to someone else (grant.add, DS49).
 func (k *Keys) GrantsFor(ctx context.Context, tenant, user uuid.UUID) ([]Grant, error) {
 	var out []Grant
 	err := pg.InTenantTx(ctx, k.pool, tenant.String(), func(tx pgx.Tx) error {
 		rows, err := tx.Query(ctx, `
-			SELECT g.device_id, g.epoch, g.sealed_dsk, d.archive_tenant_id
+			SELECT g.device_id, g.epoch, g.sealed_dsk, d.archive_tenant_id, k.public_key
 			  FROM device_key_grants g
 			  JOIN devices d ON d.id = g.device_id AND d.current_epoch = g.epoch AND d.deleted_at IS NULL
+			  JOIN device_archive_keys k ON k.device_id = g.device_id AND k.epoch = g.epoch
 			 WHERE g.user_id = $1
 			 ORDER BY d.created_at`, user)
 		if err != nil {
@@ -406,9 +477,11 @@ func (k *Keys) GrantsFor(ctx context.Context, tenant, user uuid.UUID) ([]Grant, 
 		for rows.Next() {
 			g := Grant{TenantID: tenant, UserID: user}
 			var epoch int32
-			if err := rows.Scan(&g.DeviceID, &epoch, &g.SealedDSK, &g.ArchiveTenantID); err != nil {
+			var pub []byte
+			if err := rows.Scan(&g.DeviceID, &epoch, &g.SealedDSK, &g.ArchiveTenantID, &pub); err != nil {
 				return err
 			}
+			g.Fingerprint = ArchiveKeyFingerprint(pub)
 			if epoch < 1 || epoch > maxEpoch {
 				return fmt.Errorf("store: grant epoch %d is out of range", epoch)
 			}

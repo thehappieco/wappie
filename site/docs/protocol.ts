@@ -277,6 +277,14 @@ export interface GrantRequest {
   epoch: number
   /** base64 */
   sealed_dsk: string
+  /**
+   * The archive key's fingerprint, echoed from the grant this client opened
+   * (/v1/auth/me, grants.list, GET /v1/grants): lowercase hex SHA-256 of the
+   * key's public bytes. Required. The server refuses a grant of a key the
+   * number no longer has with conflict: after a reset a number has a new key
+   * at epoch 1 again, so the epoch alone does not name it (wappie DS49).
+   */
+  fingerprint: string
 }
 
 export interface GrantRevoke {

@@ -63,7 +63,7 @@ func (f *fixture) serviceKey(t *testing.T, owner store.User) (service uuid.UUID,
 	if err := users.SetDevicePermission(ctx, f.tenant, owner.ID, store.DevicePermission{DeviceID: f.device, UserID: account.ID, Read: true}); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.NewKeys(f.pool).PutGrant(ctx, store.Grant{TenantID: f.tenant, DeviceID: f.device, UserID: account.ID, Epoch: 1, SealedDSK: []byte("sealed to the attested key")}, &owner.ID); err != nil {
+	if err := store.NewKeys(f.pool).PutGrant(ctx, store.Grant{TenantID: f.tenant, DeviceID: f.device, UserID: account.ID, Epoch: 1, SealedDSK: []byte("sealed to the attested key"), Fingerprint: grantFingerprint(t, store.NewKeys(f.pool), f.tenant, f.device, 1)}, &owner.ID); err != nil {
 		t.Fatal(err)
 	}
 	in := time.Now().Add(20 * time.Minute)
@@ -168,7 +168,7 @@ func TestTheGateLetsOnlyMediaConnectionsThrough(t *testing.T) {
 	if err := store.NewKeys(f.pool).CreateArchiveKey(ctx, f.tenant, f.device, 1, archivePub); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.NewKeys(f.pool).PutGrant(ctx, store.Grant{TenantID: f.tenant, DeviceID: f.device, UserID: owner.ID, Epoch: 1, SealedDSK: []byte("the owner's")}, &owner.ID); err != nil {
+	if err := store.NewKeys(f.pool).PutGrant(ctx, store.Grant{TenantID: f.tenant, DeviceID: f.device, UserID: owner.ID, Epoch: 1, SealedDSK: []byte("the owner's"), Fingerprint: grantFingerprint(t, store.NewKeys(f.pool), f.tenant, f.device, 1)}, &owner.ID); err != nil {
 		t.Fatal(err)
 	}
 	if err := users.SetDevicePermission(ctx, f.tenant, owner.ID, store.DevicePermission{DeviceID: f.device, UserID: owner.ID, Read: true}); err != nil {

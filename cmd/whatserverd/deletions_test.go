@@ -984,7 +984,7 @@ func TestNoMailForDeletion(t *testing.T) {
 	if err := keys.CreateArchiveKey(ctx, team, device, 1, pub); err != nil {
 		t.Fatal(err)
 	}
-	if err := keys.PutGrant(ctx, store.Grant{TenantID: team, DeviceID: device, UserID: reader.ID, Epoch: 1, SealedDSK: []byte("grant")}, &owner); err != nil {
+	if err := keys.PutGrant(ctx, store.Grant{TenantID: team, DeviceID: device, UserID: reader.ID, Epoch: 1, SealedDSK: []byte("grant"), Fingerprint: grantFingerprint(t, keys, team, device, 1)}, &owner); err != nil {
 		t.Fatal(err)
 	}
 	if err := a.users.SetDevicePermission(ctx, team, owner, store.DevicePermission{DeviceID: device, UserID: reader.ID, Read: true}); err != nil {

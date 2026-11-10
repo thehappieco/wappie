@@ -3,6 +3,7 @@ package store_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -215,5 +216,119 @@ func TestParseArchiveKeyNotice(t *testing.T) {
 		if _, _, err := store.ParseArchiveKeyNotice(bad); err == nil {
 			t.Fatalf("%q read as a notice", bad)
 		}
+	}
+}
+
+// member is an active member of the workspace, who may hold a grant.
+func (w *keyWorld) member(t *testing.T, role string) uuid.UUID {
+	t.Helper()
+	u, err := store.NewUsers(w.pool).Create(context.Background(), store.NewUser{TenantID: w.tenant,
+		Email: role + "-" + uuid.NewString()[:8] + "@acme.test", Role: role, AuthKey: "test", KDFSalt: make([]byte, 16),
+		KDFParams: store.DefaultKDFParams(), PublicKey: make([]byte, 32), WrappedUSK: []byte("wrapped")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return u.ID
+}
+
+// grant writes user's grant of the number at epoch 1, naming fingerprint.
+func (w *keyWorld) grant(ctx context.Context, user uuid.UUID, fingerprint string) error {
+	return w.keys.PutGrant(ctx, store.Grant{TenantID: w.tenant, DeviceID: w.device, UserID: user, Epoch: 1,
+		SealedDSK: []byte("sealed for " + fingerprint), Fingerprint: fingerprint}, nil)
+}
+
+// TestPutGrantNamesItsKey: every grant names the archive key it was sealed
+// for, and PutGrant compares it with the number's key in its own
+// transaction (DS49). The epoch is reused after a reset, so a grant sealed
+// with the old key at epoch 1 is refused once device-key gave the number
+// a new key at epoch 1, and so is one between the reset and device-key.
+// Each grant the context lists gives the fingerprint to echo.
+func TestPutGrantNamesItsKey(t *testing.T) {
+	w := newKeyWorld(t)
+	ctx := context.Background()
+	owner, member := w.member(t, "owner"), w.member(t, "member")
+	old := store.ArchiveKeyFingerprint(w.pub.Bytes())
+	for _, bad := range []string{"", "x", strings.ToUpper(old)} {
+		if err := w.grant(ctx, owner, bad); !errors.Is(err, store.ErrGrantFingerprint) {
+			t.Fatalf("a grant naming %q: %v, want ErrGrantFingerprint", bad, err)
+		}
+	}
+	if err := w.grant(ctx, owner, old); err != nil {
+		t.Fatal(err)
+	}
+	if fp, err := w.keys.ArchiveKeyFingerprintAt(ctx, w.tenant, w.device, 1); err != nil || fp != old {
+		t.Fatalf("the key's fingerprint: %s %v", fp, err)
+	}
+
+	if _, err := store.ResetArchive(ctx, w.pool, w.tenant, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.grant(ctx, member, old); !errors.Is(err, store.ErrArchiveKeyChanged) {
+		t.Fatalf("the old key after the reset: %v, want ErrArchiveKeyChanged", err)
+	}
+	fresh := store.ArchiveKeyFingerprint(w.newKey(t).Bytes())
+	if err := w.grant(ctx, member, old); !errors.Is(err, store.ErrArchiveKeyChanged) {
+		t.Fatalf("the old key at the reused epoch: %v, want ErrArchiveKeyChanged", err)
+	}
+	if err := w.grant(ctx, member, fresh); err != nil {
+		t.Fatalf("the new key: %v", err)
+	}
+	grants, err := w.keys.GrantsFor(ctx, w.tenant, member)
+	if err != nil || len(grants) != 1 || grants[0].Fingerprint != fresh {
+		t.Fatalf("the grant context: %+v %v, want the new key's fingerprint", grants, err)
+	}
+}
+
+// TestPutGrantRacingReset: a grant whose context was read before a reset
+// and device-key, written while they commit. The comparison is in the
+// grant's transaction, after the workspace's lock, so it reads the new key
+// and refuses the old one. Read before the lock, it would pass, and the
+// grant's foreign key would find the new key's row at epoch 1.
+func TestPutGrantRacingReset(t *testing.T) {
+	w := newKeyWorld(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	owner := w.member(t, "owner")
+	old := store.ArchiveKeyFingerprint(w.pub.Bytes())
+	fresh, _, err := seal.GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	granted := make(chan error, 1)
+	err = pg.InTenantTx(ctx, w.pool, w.tenant.String(), func(tx pgx.Tx) error {
+		// What the reset holds first.
+		if _, err := tx.Exec(ctx, `SELECT id FROM tenants WHERE id = $1 FOR UPDATE`, w.tenant); err != nil {
+			return err
+		}
+		go func() { granted <- w.grant(ctx, owner, old) }()
+		for {
+			waiting, err := w.backends.Waiting(ctx, w.pool)
+			if err != nil {
+				return err
+			}
+			if waiting {
+				break
+			}
+			select {
+			case err := <-granted:
+				t.Fatalf("the grant did not wait for the reset: %v", err)
+			case <-time.After(10 * time.Millisecond):
+			}
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM device_archive_keys WHERE device_id = $1`, w.device); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, `INSERT INTO device_archive_keys (tenant_id, device_id, epoch, public_key, suite)
+			VALUES ($1, $2, 1, $3, 1)`, w.tenant, w.device, fresh.Bytes())
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := <-granted; !errors.Is(err, store.ErrArchiveKeyChanged) {
+		t.Fatalf("a grant of the old key after a racing reset: %v, want ErrArchiveKeyChanged", err)
+	}
+	if ok, err := w.keys.HasGrant(ctx, w.tenant, w.device, owner); err != nil || ok {
+		t.Fatalf("a grant sealed with the old key is recorded at epoch 1: %v %v", ok, err)
 	}
 }

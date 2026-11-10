@@ -77,6 +77,8 @@ interface GrantReply {
   label: string
   epoch: number
   sealed_dsk: string
+  /** The archive key's fingerprint, which a grant.add of it echoes (wappie DS49). */
+  fingerprint: string
 }
 
 export interface MeReply {
@@ -568,14 +570,16 @@ export const MaxDeviceKeys = 100
  * make the caller responsible for the erasing, and callers forget.
  * `use` also receives the immutable archive namespace. Use it, rather than the
  * currently selected workspace, when sealing another grant after a transfer.
+ * And it receives the key's fingerprint, as the server listed it with the
+ * grant: a grant.add of this key echoes it (wappie DS49).
  */
 export async function withDeviceKey<T>(
   input: WithDeviceKeyInput,
-  use: (deviceKey: Bytes, epoch: number, archiveTenantID: string) => Promise<T>,
+  use: (deviceKey: Bytes, epoch: number, archiveTenantID: string, fingerprint: string) => Promise<T>,
 ): Promise<T> {
   const { deviceID, ...rest } = input
-  const [result] = await withDeviceKeys({ ...rest, deviceIDs: [deviceID] }, (_device, deviceKey, epoch, archiveTenantID) =>
-    use(deviceKey, epoch, archiveTenantID))
+  const [result] = await withDeviceKeys({ ...rest, deviceIDs: [deviceID] }, (_device, deviceKey, epoch, archiveTenantID, fingerprint) =>
+    use(deviceKey, epoch, archiveTenantID, fingerprint))
   return result as T
 }
 
@@ -591,7 +595,7 @@ export async function withDeviceKey<T>(
  */
 export async function withDeviceKeys<T>(
   input: Omit<WithDeviceKeyInput, 'deviceID'> & { deviceIDs: readonly string[] },
-  use: (deviceID: string, deviceKey: Bytes, epoch: number, archiveTenantID: string) => Promise<T>,
+  use: (deviceID: string, deviceKey: Bytes, epoch: number, archiveTenantID: string, fingerprint: string) => Promise<T>,
 ): Promise<T[]> {
   if (input.maxKDF && (['m', 't', 'p'] as const).some(key => !Number.isSafeInteger(input.maxKDF![key]) || input.maxKDF![key] < 1)) {
     throw new AuthError('invalid_kdf_limits', 'Invalid local KDF limits.')
@@ -647,7 +651,7 @@ export async function withDeviceKeys<T>(
       const row = await grantRow(archiveTenant, parseUUID(deviceID), user, grant.epoch)
       const deviceKey = await openDirect(account, Kind.DeviceGrant, archiveTenant, row, fromBase64(grant.sealed_dsk))
       try {
-        results.push(await use(deviceID, deviceKey, grant.epoch, archiveTenantID))
+        results.push(await use(deviceID, deviceKey, grant.epoch, archiveTenantID, grant.fingerprint))
       } finally {
         deviceKey.fill(0)
       }

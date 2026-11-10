@@ -32,7 +32,7 @@ export interface ArchiveScanOptions {
 }
 export interface ArchiveGrants extends WorkspaceReply {
   user_id: string
-  grants: { device_id: string; archive_tenant_id?: string; label?: string; epoch: number; sealed_dsk: string }[]
+  grants: { device_id: string; archive_tenant_id?: string; label?: string; epoch: number; sealed_dsk: string; fingerprint?: string }[]
 }
 export interface ArchiveCursor { ts: string; seq: number }
 export interface ArchiveClientOptions {

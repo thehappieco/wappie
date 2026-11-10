@@ -59,7 +59,7 @@ func (w *actWorld) epochKey(t *testing.T, device uuid.UUID, epoch uint16) {
 func (w *actWorld) grantAt(t *testing.T, device, user uuid.UUID, epoch uint16) {
 	t.Helper()
 	if err := w.keys.PutGrant(context.Background(), store.Grant{TenantID: w.tenant, DeviceID: device, UserID: user, Epoch: epoch,
-		SealedDSK: []byte("grant")}, &w.owner); err != nil {
+		SealedDSK: []byte("grant"), Fingerprint: grantFingerprint(t, w.keys, w.tenant, device, epoch)}, &w.owner); err != nil {
 		t.Fatal(err)
 	}
 }
