@@ -161,18 +161,26 @@ func contactNames(ctx context.Context, c *client, device string, o *opener) map[
 		return out
 	}
 	for _, ct := range list.Contacts {
+		// Each name with its own content key: they are written one at a
+		// time and need not share the row's (DS50). A server that predates
+		// the per-name ids sends only the row's.
 		for _, candidate := range []struct {
 			kind   seal.Kind
+			keyID  uint32
 			sealed []byte
 		}{
-			{seal.KindFullName, ct.FullNameSealed},
-			{seal.KindBusinessName, ct.BusinessNameSealed},
-			{seal.KindPushName, ct.PushNameSealed},
+			{seal.KindFullName, ct.FullNameKeyID, ct.FullNameSealed},
+			{seal.KindBusinessName, ct.BusinessNameKeyID, ct.BusinessNameSealed},
+			{seal.KindPushName, ct.PushNameKeyID, ct.PushNameSealed},
 		} {
 			if len(candidate.sealed) == 0 {
 				continue
 			}
-			name := o.open(ctx, list.DeviceID, ct.ContentKeyID, ct.UID, candidate.kind, candidate.sealed)
+			keyID := candidate.keyID
+			if keyID == 0 {
+				keyID = ct.ContentKeyID
+			}
+			name := o.open(ctx, list.DeviceID, keyID, ct.UID, candidate.kind, candidate.sealed)
 			if name != "" && !strings.HasPrefix(name, "<") {
 				out[ct.ContactKey] = name
 				break
