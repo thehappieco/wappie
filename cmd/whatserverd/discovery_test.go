@@ -358,7 +358,9 @@ func TestDiscoveryNeverWaitsOnASlowRead(t *testing.T) {
 	reads := 0
 	entered := make(chan struct{}, 4)
 	release := make(chan bool)
-	tokens := &platformTokens{now: func() time.Time { mu.Lock(); defer mu.Unlock(); return now }, readFor: 300 * time.Millisecond}
+	// The first read has time to spare, so a loaded machine never cuts it
+	// before the test releases it; the slow one below gets 300 ms.
+	tokens := &platformTokens{now: func() time.Time { mu.Lock(); defer mu.Unlock(); return now }, readFor: 10 * time.Second}
 	tokens.read = func(ctx context.Context) (bool, error) {
 		mu.Lock()
 		reads++
@@ -410,6 +412,7 @@ func TestDiscoveryNeverWaitsOnASlowRead(t *testing.T) {
 
 	// A slow read: the others answer the last answer at once, with no
 	// read of their own.
+	tokens.readFor = 300 * time.Millisecond
 	advance()
 	slow := on(context.Background())
 	<-entered
