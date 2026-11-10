@@ -25,6 +25,11 @@ import (
 // takes its state_seq first, in its own measuring transaction, so a
 // section at or above an act's seq shows it (DS3).
 
+// rendered are the sections this binary sends. The sender picks only
+// their rows, so a row a later binary added (mcp, integrations) never
+// holds it in a loop after a rollback (DS25).
+var rendered = []string{kc.SectionNumbers}
+
 // sectionSender is one leader's sender of the settings sections, and of
 // the persons' documents (person.go), as one sender.
 type sectionSender struct {
@@ -77,7 +82,7 @@ func (s *sectionSender) run(ctx context.Context) {
 			}
 			continue
 		}
-		next, ok, err := c.NextSection(ctx)
+		next, ok, err := c.NextSection(ctx, rendered)
 		var person store.ContractPersonDue
 		var pok bool
 		if err == nil {

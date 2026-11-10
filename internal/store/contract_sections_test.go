@@ -436,7 +436,7 @@ func TestSectionSent(t *testing.T) {
 		}
 		return r
 	}
-	due, ok, err := c.NextSection(ctx)
+	due, ok, err := c.NextSection(ctx, []string{store.SectionNumbers})
 	if err != nil || !ok || due.Workspace != w.tenant || due.Section != store.SectionNumbers || !due.Due {
 		t.Fatalf("the first due: %+v %v %v", due, ok, err)
 	}
@@ -479,7 +479,7 @@ func TestSectionSent(t *testing.T) {
 	if _, ok, err := c.NumbersOf(ctx, w.tenant); err != nil || ok {
 		t.Fatalf("a parked section read: %v %v", ok, err)
 	}
-	if _, ok, _ := c.NextSection(ctx); ok {
+	if _, ok, _ := c.NextSection(ctx, []string{store.SectionNumbers}); ok {
 		t.Fatal("a parked section is due")
 	}
 	// The leader's start releases it for one try.
@@ -600,5 +600,41 @@ func TestSectionsRecovered(t *testing.T) {
 		if i == 3 && parked == nil {
 			t.Error("the park is released")
 		}
+	}
+}
+
+// TestNextSectionSkipsUnknown (DS25): a section row the caller does not
+// render (a later binary's mcp, due first) is never picked; the numbers
+// row is, before and after it is sent. A caller that renders both picks
+// the one due first.
+func TestNextSectionSkipsUnknown(t *testing.T) {
+	ctx := context.Background()
+	w := newDelWorld(t)
+	c := store.NewContract(w.pool)
+	w.recordLocal(t, c)
+	if _, err := w.pool.Exec(ctx, `INSERT INTO contract_sections (workspace_id, section, due_at)
+		VALUES ($1, 'mcp', clock_timestamp() - interval '1 hour')`, w.tenant); err != nil {
+		t.Fatal(err)
+	}
+	numbers := []string{store.SectionNumbers}
+	due, ok, err := c.NextSection(ctx, numbers)
+	if err != nil || !ok || due.Section != store.SectionNumbers || !due.Due {
+		t.Fatalf("the first due: %+v %v %v", due, ok, err)
+	}
+	n := w.numbers(ctx, t, c)
+	if rec, err := c.SectionSent(ctx, w.tenant, store.SectionNumbers, n.Seq, n.MeasuredAt, store.SnapshotAccepted, "", snapshotTimes); err != nil ||
+		!rec.Recorded {
+		t.Fatalf("the numbers sent: %+v %v", rec, err)
+	}
+	due, ok, err = c.NextSection(ctx, numbers)
+	if err != nil || !ok || due.Section != store.SectionNumbers || due.Due {
+		t.Fatalf("after the numbers were sent: %+v %v %v", due, ok, err)
+	}
+	due, ok, err = c.NextSection(ctx, []string{store.SectionNumbers, "mcp"})
+	if err != nil || !ok || due.Section != "mcp" || !due.Due {
+		t.Fatalf("a caller that renders mcp: %+v %v %v", due, ok, err)
+	}
+	if _, ok, err := c.NextSection(ctx, nil); err != nil || ok {
+		t.Fatalf("a caller that renders nothing: %v %v", ok, err)
 	}
 }

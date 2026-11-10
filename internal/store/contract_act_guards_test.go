@@ -113,7 +113,7 @@ func TestActShowsParkedDocuments(t *testing.T) {
 	if parked || due > 0 {
 		t.Fatalf("the parked section after an act: parked %v, due in %v", parked, due)
 	}
-	if next, ok, err := w.c.NextSection(ctx); err != nil || !ok || next.Workspace != w.tenant || !next.Due {
+	if next, ok, err := w.c.NextSection(ctx, []string{store.SectionNumbers}); err != nil || !ok || next.Workspace != w.tenant || !next.Due {
 		t.Fatalf("the section the sender reads next: %+v %v %v", next, ok, err)
 	}
 

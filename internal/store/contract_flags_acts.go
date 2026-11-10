@@ -300,3 +300,28 @@ func (c *Contract) StoredFlags(ctx context.Context, workspace, item, user uuid.U
 	}
 	return canOf(p), p.HasKey, nil
 }
+
+// FlagsTargetActive is the executor's look at a raise's target before R4
+// (step 12b's F2; the platform's Q6, DS22): user an active, unexpired
+// member of workspace with an active local account, and sub's stored
+// document active, with no disablement seen later than the one it carries
+// (contract_accounts keeps the latest seen). Anything else is a final
+// not_found: no retry lifts a suspension, so the raise is never left to
+// R4's memberships_unconfirmed. Read-only; the act checks the membership
+// again in its transaction.
+func (c *Contract) FlagsTargetActive(ctx context.Context, workspace, user, sub uuid.UUID) (bool, error) {
+	var ok bool
+	err := readOnly(ctx, c, func(tx pgx.Tx) error {
+		ok = false
+		if err := scope(ctx, tx, workspace, uuid.Nil); err != nil {
+			return err
+		}
+		member, err := activeTargetTx(ctx, tx, workspace, user)
+		if err != nil || !member {
+			return err
+		}
+		return tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM contract_accounts WHERE sub = $1 AND status = 'active'
+			AND (disabled_at IS NULL OR disabled_at <= coalesce((doc->>'disabled_at')::timestamptz, '-infinity')))`, sub).Scan(&ok)
+	})
+	return ok, err
+}
