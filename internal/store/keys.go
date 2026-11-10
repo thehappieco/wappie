@@ -167,12 +167,15 @@ var ErrArchiveKeyChanged = errors.New("store: the number's archive key changed")
 // archive key at epoch, read in the same transaction, else
 // ErrArchiveKeyChanged.
 //
-// The transaction takes the workspace's tenants row (FOR KEY SHARE, which
-// the content key's own foreign key takes anyway) before it reads the key.
-// A reset holds that row (FOR UPDATE) from before its deletes to its
-// commit, so the read sees the key either before the reset or after it.
-// Without it a reset and a device-key could commit between the read and
-// the insert, and the insert's foreign key would find the new key's row.
+// The transaction takes the workspace's tenants row FOR UPDATE before it
+// reads the key. The insert's own trigger (0036's archive_owner_lock)
+// takes that lock anyway, so this only takes it earlier. A reset holds the
+// row from before its deletes to its commit, so the read sees the key
+// either before the reset or after it. Without it a reset and a
+// device-key could commit between the read and the insert, and the
+// insert's foreign key would find the new key's row. A weaker lock here
+// would deadlock: two numbers of one workspace would each hold it and
+// wait at the trigger to upgrade it.
 func (k *Keys) CreateContentKeyFor(ctx context.Context, tenant, device uuid.UUID, epoch uint16,
 	pub seal.PublicKey, sealFn func(id uint32) ([]byte, error)) (uint32, error) {
 	if !pub.Valid() {
@@ -226,10 +229,10 @@ func (k *Keys) createContentKey(ctx context.Context, tenant, device uuid.UUID, e
 
 // currentArchiveKeyIsTx returns ErrArchiveKeyChanged unless pub at epoch
 // is device's current archive key, not retired. It takes the tenants row
-// first (FOR KEY SHARE), so a reset is wholly before it or wholly after.
+// first (lockWorkspaceAccess, FOR UPDATE, as the insert's trigger does),
+// so a reset is wholly before it or wholly after.
 func currentArchiveKeyIsTx(ctx context.Context, tx pgx.Tx, tenant, device uuid.UUID, epoch uint16, pub []byte) error {
-	var id uuid.UUID
-	if err := tx.QueryRow(ctx, `SELECT id FROM tenants WHERE id = $1 FOR KEY SHARE`, tenant).Scan(&id); err != nil {
+	if err := lockWorkspaceAccess(ctx, tx, tenant); err != nil {
 		return fmt.Errorf("store: lock the workspace for a content key: %w", err)
 	}
 	var stored []byte

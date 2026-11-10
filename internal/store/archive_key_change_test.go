@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -164,6 +165,61 @@ func TestCreateContentKeyForRacingReset(t *testing.T) {
 	}
 	if n != 0 {
 		t.Fatalf("%d content keys filed for the new key, sealed to the old one", n)
+	}
+}
+
+// TestCreateContentKeyForTwoNumbers: two numbers of one workspace make a
+// content key at the same moment. Both are made. The check's lock on the
+// workspace's row is FOR UPDATE, the lock the insert's trigger takes. A
+// weaker one (FOR KEY SHARE) let both transactions hold it, and each then
+// waited for the other at the trigger: a deadlock, and a lost message.
+func TestCreateContentKeyForTwoNumbers(t *testing.T) {
+	w := newKeyWorld(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	dev, err := store.NewDevices(w.pool).Create(ctx, w.tenant.String(), "second number", wa.ModePassive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other := uuid.MustParse(dev.ID)
+	otherPub, _, err := seal.GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.keys.CreateArchiveKey(ctx, w.tenant, other, 1, otherPub); err != nil {
+		t.Fatal(err)
+	}
+	// Each sealFn waits, a little, for the other to be inside its own
+	// transaction too: with the old lock both held it here.
+	both := make(chan struct{})
+	var arrived sync.WaitGroup
+	arrived.Add(2)
+	go func() { arrived.Wait(); close(both) }()
+	made := make(chan error, 2)
+	for _, n := range []struct {
+		device uuid.UUID
+		pub    seal.PublicKey
+	}{{w.device, w.pub}, {other, otherPub}} {
+		go func() {
+			_, err := w.keys.CreateContentKeyFor(ctx, w.tenant, n.device, 1, n.pub, func(id uint32) ([]byte, error) {
+				arrived.Done()
+				select {
+				case <-both:
+				case <-time.After(time.Second):
+				}
+				ck, err := seal.NewContentKey(n.pub, w.tenant, n.device, 1, id)
+				if err != nil {
+					return nil, err
+				}
+				return ck.Sealed, nil
+			})
+			made <- err
+		}()
+	}
+	for range 2 {
+		if err := <-made; err != nil {
+			t.Fatalf("two numbers' content keys at once: %v", err)
+		}
 	}
 }
 

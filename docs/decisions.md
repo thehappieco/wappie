@@ -2605,12 +2605,15 @@ around it.
 **(ii) The check before each content key.** Every sealer of the router,
 and `reproject`'s, makes its content keys through
 `Keys.CreateContentKeyFor` (`ingest.PinnedKeys`). In the content key's
-own transaction it takes the workspace's tenants row `FOR KEY SHARE`,
-which the content key's foreign key takes anyway, then reads the
-number's current key and epoch, and refuses another key or none with
-`store.ErrArchiveKeyChanged`. A reset takes that row `FOR UPDATE`
-before its deletes, so the read sees the key wholly before the reset or
-wholly after it. Read first, a reset and `device-key` could commit
+own transaction it takes the workspace's tenants row `FOR UPDATE`
+(`lockWorkspaceAccess`), then reads the number's current key and epoch,
+and refuses another key or none with `store.ErrArchiveKeyChanged`. The
+insert's own trigger (0036's `archive_owner_lock`) takes that lock
+anyway, so this only takes it earlier. A weaker lock deadlocked: two
+numbers of one workspace each held it and waited for the other at the
+trigger (`TestCreateContentKeyForTwoNumbers`). A reset takes that row
+`FOR UPDATE` before its deletes, so the read sees the key wholly before
+the reset or wholly after it. Read first, a reset and `device-key` could commit
 between the read and the insert, and the foreign key would find the new
 key's row at epoch 1; the race test shows that. A failed seal, this
 refusal or any other, drops the pipeline (`Pipeline.sealAll`,
