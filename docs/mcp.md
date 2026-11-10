@@ -207,9 +207,9 @@ The connection's record goes with its key, 13 months after the key's end
 its usage counts and its notices
 ([ended API keys](deployment.md#ended-api-keys)). An approval that is not
 completed within twenty minutes expires with its provisional key. The
-approver must read every number they
-choose (Read and the number's key), for metadata as for text, and losing
-Read on a number ends the connections they approved that held it.
+approver must read every number they choose (Read and the number's key),
+for metadata as for text, and losing Read on a number ends the
+connections they approved that held it.
 
 On the attested reader the console first asks it for a fresh attestation
 document and verifies it in the browser: the image must be one of the

@@ -118,9 +118,9 @@ func FreshWith(t *testing.T, apply Migrator, configure func(*pgxpool.Config)) *p
 
 // KeysNarrowedEnv is the switch that, set to 1, starts every Fresh schema
 // with Wappie's own keys retired, as after whatserverd tokens retire-keys
-// (a key_retirements row; step 7's plan, 7.3). The narrowed apikeys.create and the setup
-// key's gate (store.APIKeys.VerifyClient) then hold in every test, with
-// the token mode as each test leaves it. make test-narrowed runs the MCP
+// (a key_retirements row; step 7's plan, 7.3). The narrowed
+// apikeys.create and the setup key's gate (store.APIKeys.VerifyClient)
+// then hold in every test, with the token mode as each test leaves it. make test-narrowed runs the MCP
 // and AI consent packages so, as CI does: a consent that used its key
 // before its connection names it would fail there.
 const KeysNarrowedEnv = "WS_TEST_KEYS_NARROWED"
