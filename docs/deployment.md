@@ -248,6 +248,25 @@ messages. Restore backups into separate storage when testing rollback. Never
 run two runtimes against the same WhatsApp session. No archive migration or
 re-pairing is necessary for frontend extraction.
 
+## Ended API keys
+
+The hourly pass of every server process deletes an API key 13 months after
+its end: its revocation or its expiry, whichever came first. It does so on
+every installation, whatever the token mode, once Wappie's clock and the
+database's both say the 13 months have passed. The key's MCP connection goes
+with it, with the connection's chats, send ledger, usage counts and notices.
+An AI integration's results stay, and no longer name it. A key whose
+connection has not ended (its status live and its expiry ahead) is kept,
+and the pass logs the WARN "ended api keys kept: their connection has not
+ended" with a count; a key and its connection end together, so look into
+it. A connection past its expiry has ended, whatever its status says: where
+MCP is off, no pass marks it expired. The INFO line "api keys deleted"
+gives counts by origin, never a prefix.
+
+A restore of the database brings back the keys deleted since its snapshot,
+and the next pass deletes them again. Rolling back below 0053 leaves them
+deleted.
+
 ## Deleted numbers and the deletion ledger
 
 Migration 0050 keeps a deleted number 30 days, recoverable by an owner, and
@@ -862,7 +881,8 @@ at version 53, so its down-step comes first, before 0052's. In this order:
    while a migration after 0053 is applied, and a refusal changes nothing.
    It says what it drops: the tokens, their identities and grants, the
    local stops and the retirement's record. The keys the retirement
-   revoked stay revoked.
+   revoked stay revoked, and the ended keys the hourly pass deleted stay
+   deleted.
 4. 0052's down-step, if the release being restored is older than 0052
    ([Rolling back below 0052](#rolling-back-below-0052), from its step 2:
    its step 1 ran in step 1 here), and so on down, each from its step 2.

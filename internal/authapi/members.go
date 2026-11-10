@@ -25,6 +25,8 @@ func (h *Handler) memberError(w http.ResponseWriter, err error) {
 		fail(w, http.StatusConflict, "personal_workspace", "create a team workspace to invite people")
 	case errors.Is(err, store.ErrInvitationsPaused):
 		invitationsPaused(w)
+	case errors.Is(err, store.ErrTokensAreThePlatforms):
+		tokensAreThePlatforms(w)
 	case errors.Is(err, store.ErrInviteInvalid):
 		fail(w, http.StatusConflict, "invite_invalid", "the invitation is expired, revoked or already accepted")
 	case errors.Is(err, store.ErrInviteNotRecoverable):
@@ -56,6 +58,16 @@ func (h *Handler) memberError(w http.ResponseWriter, err error) {
 func invitationsPaused(w http.ResponseWriter) {
 	fail(w, http.StatusConflict, "invitations_paused", "people join this team through The Happie Co; "+
 		"person invitations are paused here until Wappie applies the platform's members")
+}
+
+// tokensAreThePlatforms answers a standing service account's invitation,
+// issued or redeemed, while the platform's tokens are on or the keys were
+// retired (step 7's plan, 7.3): 409, as invitationsPaused. Such an
+// account is what a general key acts as; a provisional one, a content
+// consent's, still works.
+func tokensAreThePlatforms(w http.ResponseWriter) {
+	fail(w, http.StatusConflict, "tokens_are_the_platforms", "API tokens are made in The Happie Co's console here; "+
+		"a standing service account's invitation is not issued")
 }
 
 func (h *Handler) members(w http.ResponseWriter, r *http.Request) {

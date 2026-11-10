@@ -253,7 +253,7 @@ func (c *Checker) credential(ctx context.Context, token string) (Actor, error) {
 	if c.Keys == nil {
 		return Actor{}, store.ErrInvalidKey
 	}
-	key, err := c.Keys.VerifyScoped(ctx, token)
+	key, err := c.Keys.VerifyClient(ctx, token)
 	if err != nil {
 		return Actor{}, err
 	}

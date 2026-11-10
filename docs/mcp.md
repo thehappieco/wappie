@@ -200,11 +200,16 @@ bundle as an opaque blob and records the connection; it never sees the key
 inside. A workspace can hold five live connections (ten from the server
 release that prepares reader 0.6.0, of which at most three untested
 assistants or tokens); each is listed in the console's MCP panel and can be
-revoked there, which revokes its API key in the same transaction. Revocation stops future reads; it cannot retract metadata
-already returned. An approval that is not completed within twenty minutes
-expires with its provisional key. The approver must read every number they
-choose (Read and the number's key), for metadata as for text, and losing
-Read on a number ends the connections they approved that held it.
+revoked there, which revokes its API key in the same transaction.
+Revocation stops future reads; it cannot retract metadata already returned.
+The connection's record goes with its key, 13 months after the key's end
+(its revocation or its expiry): the connection, its chats, its send ledger,
+its usage counts and its notices
+([ended API keys](deployment.md#ended-api-keys)). An approval that is not
+completed within twenty minutes expires with its provisional key. The
+approver must read every number they choose (Read and the number's key),
+for metadata as for text, and losing Read on a number ends the
+connections they approved that held it.
 
 On the attested reader the console first asks it for a fresh attestation
 document and verifies it in the browser: the image must be one of the

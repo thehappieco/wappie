@@ -483,6 +483,12 @@ workspace waits for its purge. Deleting a number keeps it 30 days, readable by
 nobody and recoverable by an owner; the purge then removes its archive and its
 attachment objects ([device lifecycle](docs/devices.md#deletion-and-recovery)).
 
+An API key goes 13 months after its end, its revocation or its expiry,
+whichever came first ([ended API keys](docs/deployment.md#ended-api-keys)). An
+assistant connection's record goes with its key: the connection, its chats,
+its send ledger, its usage counts and its notices. An AI integration's results
+stay.
+
 Logs mask identifiers at every level: a JID keeps its server and last four
 digits, an email its first letter and domain. `WS_LOG_WIRE` puts whatsmeow's own
 protocol trace — message bodies in the clear — into the log, and is refused in

@@ -533,6 +533,8 @@ export interface APIKeyInfo {
   created_at: string
   last_used_at?: string
   revoked_at?: string
+  /** How the key was issued; absent on older installations. */
+  origin?: 'rest' | 'cli' | 'mcp_setup' | 'legacy_mcp'
 }
 
 export interface APIKeys {

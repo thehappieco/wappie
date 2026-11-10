@@ -139,6 +139,7 @@ func (a *app) maintainOnce(ctx context.Context, grace time.Duration, objects obj
 	} else if keys > 0 {
 		a.log.Info("api keys expired", "keys", keys)
 	}
+	a.retainAPIKeys(ctx, time.Now())
 	if a.cfg.MCP.Enabled {
 		a.maintainMCP(ctx)
 	}
@@ -169,6 +170,33 @@ func (a *app) maintainOnce(ctx context.Context, grace time.Duration, objects obj
 	a.compactLedger(time.Now())
 	a.applyRetention(ctx, deletes)
 	a.deleteOrphans(ctx, tenants, deletes, limits.orphans)
+}
+
+// retainAPIKeys deletes the keys whose end (revocation or expiry, the
+// earlier) is 13 months past, with their connections, on every
+// installation and whatever the token mode (store.RetainAPIKeys; step 7's
+// plan, 7.6). Its log gives counts by origin, never a prefix. A key past
+// its 13 months whose connection has not ended is kept, with a WARN: a
+// key and its connection end together, so that is a fault to look at.
+func (a *app) retainAPIKeys(ctx context.Context, now time.Time) {
+	got, err := store.RetainAPIKeys(ctx, a.pools.API, now)
+	if err != nil {
+		a.log.Warn("api key retention failed", "error", err)
+	}
+	if got.Held > 0 {
+		a.log.Warn("ended api keys kept: their connection has not ended", "keys", got.Held)
+	}
+	var total int64
+	for _, n := range got.Deleted {
+		total += n
+	}
+	if total > 0 {
+		a.log.Info("api keys deleted", "keys", total, "rest", got.Deleted[store.OriginREST], "cli", got.Deleted[store.OriginCLI],
+			"mcp_setup", got.Deleted[store.OriginMCPSetup], "legacy_mcp", got.Deleted[store.OriginLegacyMCP], "no_origin", got.Deleted[""])
+	}
+	if got.Reports > 0 {
+		a.log.Info("key retirement reports lost their keys", "reports", got.Reports)
+	}
 }
 
 // tokenStopTrimWait bounds the stop record's trim and its wait for the

@@ -77,7 +77,7 @@ func (h *attestedHarness) serviceFor(t *testing.T, actor uuid.UUID, pub []byte) 
 		t.Fatal(err)
 	}
 	in := time.Now().Add(20 * time.Minute)
-	key, err = h.keys.IssueActingAsForDevices(ctx, h.tenant.String(), "assistant", store.ScopeRead, &actor, &svc.ID, []uuid.UUID{h.device}, &in)
+	key, err = h.keys.IssueAsked(ctx, h.tenant.String(), store.SetupKeyName+"assistant", store.ScopeRead, &actor, &svc.ID, []uuid.UUID{h.device}, &in)
 	if err != nil {
 		t.Fatal(err)
 	}

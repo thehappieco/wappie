@@ -628,6 +628,9 @@ type APIKeyInfo struct {
 	// ExpiresAt is the deadline the key stops working at; absent for a key
 	// that lives until revoked.
 	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+	// Origin is how the key was issued: rest, cli, mcp_setup or legacy_mcp
+	// (an old local MCP token); absent on an older installation.
+	Origin string `json:"origin,omitempty"`
 }
 
 // APIKeys is the response to apikeys.list.
@@ -1983,6 +1986,10 @@ const (
 	// ErrCodeStoragePaused is an act refused while the workspace's storage
 	// is paused.
 	ErrCodeStoragePaused = "storage_paused"
+	// ErrCodeTokensAreThePlatforms refuses an apikeys.create in any shape
+	// but an MCP setup's while the platform's tokens are on, or once the
+	// keys were retired (step 7's plan, 7.3).
+	ErrCodeTokensAreThePlatforms = "tokens_are_the_platforms"
 
 	// A relink's refusals (the pair frame's relink branch), named as the
 	// contract's 14.9 names them, so the console's runner maps them one to

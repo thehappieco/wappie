@@ -809,6 +809,11 @@ func TestQuarantineScopeHasOneDoor(t *testing.T) {
 		// read, and on a deleted one the permission write, which 0036's
 		// ownership trigger checks against devices.
 		"flagsNumberTx": true, "writeFlagsTx": true,
+		// The hourly deletion of ended API keys (step 7's plan, 7.6): an
+		// AI integration's derived rows lose their connection's id before
+		// its key goes, on a deleted number too, which 0036's ownership
+		// trigger checks against devices.
+		"RetainAPIKeys": true,
 	}
 	const guc = "app.device_quarantine"
 	var found []string
