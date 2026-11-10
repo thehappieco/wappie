@@ -3,12 +3,14 @@ package store
 import (
 	"context"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"whatserver2/internal/crypto/seal"
 	"whatserver2/internal/pg"
 )
 
@@ -46,6 +48,9 @@ type ContactName struct {
 	ContactPN  string
 	IsGroup    bool
 
+	// ContentKeyID is the content key every name of this write was sealed
+	// under: one seal call for all of them (Router.ImportContacts). Names
+	// stored before under another key keep theirs (DS50).
 	ContentKeyID       uint32
 	PushNameSealed     []byte
 	FullNameSealed     []byte
@@ -64,10 +69,20 @@ type ContactRow struct {
 	ContactPN  string
 	IsGroup    bool
 
+	// ContentKeyID is the content key of the names written last. The
+	// names are written one at a time, each under the content key of its
+	// own seal, so they need not share one: the key ids below name each
+	// name's own key (DS50).
 	ContentKeyID       uint32
 	PushNameSealed     []byte
 	FullNameSealed     []byte
 	BusinessNameSealed []byte
+	// PushNameKeyID, FullNameKeyID and BusinessNameKeyID are each
+	// name's content key, read from its envelope (nameKeyID). Zero for a
+	// name not stored.
+	PushNameKeyID     uint32
+	FullNameKeyID     uint32
+	BusinessNameKeyID uint32
 
 	AvatarID      string
 	AvatarKeyID   uint32
@@ -76,6 +91,11 @@ type ContactRow struct {
 }
 
 // Upsert records what is known about a contact.
+//
+// content_key_id becomes the key of the names written, and a name not
+// written keeps its own sealed value. So a row can hold names under
+// different content keys. Readers open each with its own key, which its
+// envelope names (ContactRow.PushNameKeyID and the others, DS50).
 func (c *Contacts) Upsert(ctx context.Context, in ContactName) error {
 	err := pg.InTenantTx(ctx, c.pool, in.TenantID.String(), func(tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, `
@@ -166,7 +186,30 @@ func scanContact(rows pgx.Rows) (ContactRow, error) {
 	if avatarKeyID > 0 {
 		c.AvatarKeyID = uint32(avatarKeyID)
 	}
+	c.PushNameKeyID = nameKeyID(c.PushNameSealed, c.ContentKeyID)
+	c.FullNameKeyID = nameKeyID(c.FullNameSealed, c.ContentKeyID)
+	c.BusinessNameKeyID = nameKeyID(c.BusinessNameSealed, c.ContentKeyID)
 	return c, nil
+}
+
+// nameKeyID is the content key a stored name was sealed under.
+//
+// The row has one content_key_id for its three names, and a write
+// replaces it with the key of the names it writes. A name written
+// earlier under the key before stays as it was, so the row's id no
+// longer opens it. Its envelope names its own key in the clear, after
+// the header (seal.ContentKeyID), and that id is the one to open it
+// with (DS50). A name whose envelope does not give one gets the row's
+// id, as before.
+func nameKeyID(sealed []byte, row uint32) uint32 {
+	if len(sealed) == 0 {
+		return 0
+	}
+	id, _, err := seal.ContentKeyID(sealed)
+	if err != nil || id == 0 || id > math.MaxInt32 {
+		return row
+	}
+	return id
 }
 
 // List returns the contacts of one device.
