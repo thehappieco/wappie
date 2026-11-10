@@ -408,12 +408,14 @@ func TestPutGrantNamesItsKey(t *testing.T) {
 	if _, err := store.ResetArchive(ctx, w.pool, w.tenant, true); err != nil {
 		t.Fatal(err)
 	}
-	if err := w.grant(ctx, member, old); !errors.Is(err, store.ErrArchiveKeyChanged) {
-		t.Fatalf("the old key after the reset: %v, want ErrArchiveKeyChanged", err)
+	// No key at all: both errors, so grant.add and step 7's token grant,
+	// which test them in different orders, both answer conflict.
+	if err := w.grant(ctx, member, old); !errors.Is(err, store.ErrArchiveKeyChanged) || !errors.Is(err, store.ErrNoArchiveKey) {
+		t.Fatalf("the old key after the reset: %v, want ErrArchiveKeyChanged and ErrNoArchiveKey", err)
 	}
 	fresh := store.ArchiveKeyFingerprint(w.newKey(t).Bytes())
-	if err := w.grant(ctx, member, old); !errors.Is(err, store.ErrArchiveKeyChanged) {
-		t.Fatalf("the old key at the reused epoch: %v, want ErrArchiveKeyChanged", err)
+	if err := w.grant(ctx, member, old); !errors.Is(err, store.ErrArchiveKeyChanged) || errors.Is(err, store.ErrNoArchiveKey) {
+		t.Fatalf("the old key at the reused epoch: %v, want ErrArchiveKeyChanged only", err)
 	}
 	if err := w.grant(ctx, member, fresh); err != nil {
 		t.Fatalf("the new key: %v", err)

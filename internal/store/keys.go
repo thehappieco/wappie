@@ -155,13 +155,6 @@ func (k *Keys) CreateContentKey(ctx context.Context, tenant, device uuid.UUID, e
 	return k.createContentKey(ctx, tenant, device, epoch, nil, sealFn)
 }
 
-// ErrArchiveKeyChanged means a number's archive key is not the one a write
-// was made for. It was deleted (reset-archive), or replaced at the same
-// epoch (device-key after reset-archive -keep-devices). A content key
-// sealed to the old key, or a grant of it, would be filed as the new key's
-// and open nothing (DS49).
-var ErrArchiveKeyChanged = errors.New("store: the number's archive key changed")
-
 // CreateContentKeyFor is CreateContentKey for a sealer that seals to pub. It
 // makes the content key only while pub is still the number's current
 // archive key at epoch, read in the same transaction, else
@@ -395,7 +388,7 @@ func (k *Keys) PutGrant(ctx context.Context, g Grant, grantedBy *uuid.UUID) erro
 		if err := grantableTx(ctx, tx, g.TenantID, g.DeviceID, g.UserID); err != nil {
 			return err
 		}
-		if err := grantKeyIsTx(ctx, tx, g.DeviceID, g.Epoch, g.Fingerprint); err != nil {
+		if err := archiveKeyIsTx(ctx, tx, g.DeviceID, g.Epoch, g.Fingerprint); err != nil {
 			return err
 		}
 		_, err := tx.Exec(ctx, `
@@ -419,33 +412,6 @@ func (k *Keys) CheckGrant(ctx context.Context, tenant, device, user uuid.UUID) e
 	return pg.InTenantTx(ctx, k.pool, tenant.String(), func(tx pgx.Tx) error {
 		return grantableTx(ctx, tx, tenant, device, user)
 	})
-}
-
-// grantKeyIsTx returns ErrArchiveKeyChanged unless device's archive key
-// at epoch, not retired, has fingerprint. A number this workspace no
-// longer sees (moved to Personal, or deleted) is ErrNumberGone, as the
-// insert's ownership trigger would answer.
-func grantKeyIsTx(ctx context.Context, tx pgx.Tx, device uuid.UUID, epoch uint16, fingerprint string) error {
-	var stored []byte
-	err := tx.QueryRow(ctx, `SELECT public_key FROM device_archive_keys
-		WHERE device_id = $1 AND epoch = $2 AND retired_at IS NULL`, device, int32(epoch)).Scan(&stored)
-	if errors.Is(err, pgx.ErrNoRows) {
-		var here bool
-		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM devices WHERE id = $1)`, device).Scan(&here); err != nil {
-			return fmt.Errorf("store: read the number: %w", err)
-		}
-		if !here {
-			return ErrNumberGone
-		}
-		return fmt.Errorf("%w: device %s has no key at epoch %d", ErrArchiveKeyChanged, device, epoch)
-	}
-	if err != nil {
-		return fmt.Errorf("store: read the archive key: %w", err)
-	}
-	if ArchiveKeyFingerprint(stored) != fingerprint {
-		return fmt.Errorf("%w: the grant is for another key than device %s's at epoch %d", ErrArchiveKeyChanged, device, epoch)
-	}
-	return nil
 }
 
 // ArchiveKeyFingerprintAt returns the fingerprint of device's archive key
