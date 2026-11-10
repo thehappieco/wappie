@@ -172,7 +172,7 @@ func (s *session) handleAPIKeysList(ctx context.Context, f Frame) {
 
 func apiKeyInfo(k store.APIKeyInfo) APIKeyInfo {
 	info := APIKeyInfo{
-		Prefix: k.Prefix, Name: k.Name, Scope: string(k.Scope), ActsAs: k.ActsAs,
+		Prefix: k.Prefix, Name: k.Name, Scope: string(k.Scope), ActsAs: k.ActsAs, Origin: k.Origin,
 		CreatedBy: k.CreatedBy, CreatedAt: k.CreatedAt,
 		DevicesRestricted: k.DevicesRestricted, DeviceIDs: append([]string{}, k.DeviceIDs...),
 	}
@@ -312,7 +312,14 @@ func (s *session) handleAPIKeyCreate(ctx context.Context, f Frame) {
 		return
 	}
 	author := who.userID
-	key, err := s.srv.cfg.Keys.IssueActingAsForDevices(ctx, tenant, name, scope, &author, actsAs, deviceIDs, expiresAt)
+	key, err := s.srv.cfg.Keys.IssueAsked(ctx, tenant, name, scope, &author, actsAs, deviceIDs, expiresAt)
+	if errors.Is(err, store.ErrTokensAreThePlatforms) {
+		// Tokens on, or the keys retired (the plan's 7.3): only an MCP
+		// setup's key. The general credential is the platform's token.
+		s.replyError(f.ReqID, ErrCodeTokensAreThePlatforms, "API tokens are made in The Happie Co's console here; "+
+			"Wappie issues only an MCP setup's key")
+		return
+	}
 	if errors.Is(err, store.ErrInvalidKeyDevices) {
 		s.replyError(f.ReqID, ErrCodeBadRequest, "device_ids must select distinct devices in this workspace")
 		return

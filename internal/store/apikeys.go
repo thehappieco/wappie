@@ -110,6 +110,67 @@ var ErrInvalidExpiry = errors.New("store: expiry must be in the future and withi
 // that "expires" in a decade is one with no expiry and a false sense of one.
 const maxKeyLifetime = 365 * 24 * time.Hour
 
+// A key's origin (0053's api_keys.origin): how it was issued. Keys issued
+// before 0053 got theirs from api_key_class, once.
+const (
+	// OriginREST is a key a person asked for in any other shape: a
+	// TokenPanel key, a REST client's.
+	OriginREST = "rest"
+	// OriginCLI is a key with no creator: whatserverd key and bootstrap.
+	OriginCLI = "cli"
+	// OriginMCPSetup is an MCP setup's key (setupShaped), or a connection's,
+	// which was one.
+	OriginMCPSetup = "mcp_setup"
+	// OriginLegacyMCP is an old local MCP token, only from the backfill.
+	OriginLegacyMCP = "legacy_mcp"
+)
+
+// SetupKeyName starts the name of every key an MCP setup asks for
+// (the console's mcpSetup.ts).
+const SetupKeyName = "MCP · "
+
+// setupKeyLifetime is how far past its issue an MCP setup's key may
+// expire: the setups ask 20 minutes and a consent binds at most 30
+// (maxProvisionalKeyLifetime); a minute more for the clocks, as 0053's
+// api_key_class has it (interval '31 minutes').
+const setupKeyLifetime = maxProvisionalKeyLifetime + time.Minute
+
+// setupShaped is an MCP setup's key (the plan's 7.3): read, a list of
+// numbers, a deadline at most setupKeyLifetime after created (the key's
+// created_at), and a name that starts with SetupKeyName. What it acts as
+// (a provisional service, or none) the caller checks.
+func setupShaped(name string, scope KeyScope, restricted bool, expiresAt *time.Time, created time.Time) bool {
+	return strings.HasPrefix(name, SetupKeyName) && scope == ScopeRead && restricted &&
+		expiresAt != nil && !expiresAt.After(created.Add(setupKeyLifetime))
+}
+
+// ErrTokensAreThePlatforms refuses what the platform's tokens replace
+// while keys are narrowed (KeysNarrowed): a key in any shape but an MCP
+// setup's, and a standing service account's invitation.
+var ErrTokensAreThePlatforms = errors.New("store: this installation takes The Happie Co's API tokens; only an MCP setup's key is issued here")
+
+// keysNarrowedSQL is the narrowing (the plan's 7.3): the token mode on, or
+// a retirement of the keys made (key_retirements), which stays.
+const keysNarrowedSQL = `SELECT EXISTS (SELECT 1 FROM contract_token_state WHERE mode = 'on')
+	OR EXISTS (SELECT 1 FROM key_retirements)`
+
+func keysNarrowedTx(ctx context.Context, tx pgx.Tx) (bool, error) {
+	var narrowed bool
+	err := tx.QueryRow(ctx, keysNarrowedSQL).Scan(&narrowed)
+	return narrowed, err
+}
+
+// KeysNarrowed reports whether keys are narrowed: the token mode is on, or
+// the keys were retired once. Then apikeys.create issues only an MCP
+// setup's key, the command line's key and bootstrap refuse, a standing
+// service account's invitation is refused, a setup's key works only
+// through its connection, and discovery advertises tokens.platform.v1.
+func (a *APIKeys) KeysNarrowed(ctx context.Context) (bool, error) {
+	var narrowed bool
+	err := a.pool.QueryRow(ctx, keysNarrowedSQL).Scan(&narrowed)
+	return narrowed, err
+}
+
 // Argon2id parameters for verifying API keys.
 //
 // Much lighter than the parameters used for a user password, and on purpose:
@@ -169,8 +230,26 @@ func (a *APIKeys) IssueActingAs(ctx context.Context, tenantID, name string, scop
 // A nil expiresAt issues a key that lives until revoked. A deadline must be
 // in the future and at most a year out; past that the key is refused as if
 // it had never been valid, by the same query that refuses a revoked one.
+//
+// The key's origin is set here (0053's api_keys.origin): cli for a key with
+// no creator, mcp_setup for an MCP setup's shape (setupShaped), else rest.
 func (a *APIKeys) IssueActingAsForDevices(ctx context.Context, tenantID, name string, scope KeyScope,
 	createdBy, actsAs *uuid.UUID, deviceIDs []uuid.UUID, expiresAt *time.Time) (string, error) {
+	return a.issue(ctx, tenantID, name, scope, createdBy, actsAs, deviceIDs, expiresAt, false)
+}
+
+// IssueAsked is IssueActingAsForDevices for a key a person asks for
+// (apikeys.create) or the operator does (whatserverd key and bootstrap,
+// with no creator). While keys are narrowed (KeysNarrowed: tokens on, or a
+// retirement made), it issues only an MCP setup's key, and refuses any
+// other with ErrTokensAreThePlatforms, before anything is written.
+func (a *APIKeys) IssueAsked(ctx context.Context, tenantID, name string, scope KeyScope,
+	createdBy, actsAs *uuid.UUID, deviceIDs []uuid.UUID, expiresAt *time.Time) (string, error) {
+	return a.issue(ctx, tenantID, name, scope, createdBy, actsAs, deviceIDs, expiresAt, true)
+}
+
+func (a *APIKeys) issue(ctx context.Context, tenantID, name string, scope KeyScope,
+	createdBy, actsAs *uuid.UUID, deviceIDs []uuid.UUID, expiresAt *time.Time, asked bool) (string, error) {
 	if _, err := ParseKeyScope(string(scope)); err != nil {
 		return "", err
 	}
@@ -211,7 +290,10 @@ func (a *APIKeys) IssueActingAsForDevices(ctx context.Context, tenantID, name st
 	}
 	err = pg.InTenantTx(ctx, a.pool, tenantID, func(tx pgx.Tx) error {
 		var status string
-		if err := tx.QueryRow(ctx, `SELECT status FROM tenants WHERE id=$1 FOR SHARE`, tenantID).Scan(&status); err != nil {
+		// now() is the key's created_at, which 0053's api_key_class
+		// measures a setup's deadline from.
+		var created time.Time
+		if err := tx.QueryRow(ctx, `SELECT status, now() FROM tenants WHERE id=$1 FOR SHARE`, tenantID).Scan(&status, &created); err != nil {
 			return err
 		}
 		if status != "active" {
@@ -227,11 +309,29 @@ func (a *APIKeys) IssueActingAsForDevices(ctx context.Context, tenantID, name st
 				return ErrMembershipForbidden
 			}
 		}
+		// A provisional service (a content consent's) has a deadline; a
+		// standing one has none.
+		provisional := true
 		if actsAs != nil {
-			var id uuid.UUID
-			if err := tx.QueryRow(ctx, `SELECT m.user_id FROM workspace_memberships m JOIN users u ON u.id=m.user_id
-				WHERE m.tenant_id=$1 AND m.user_id=$2 AND m.status='active' AND u.status='active' AND m.role='service' AND (m.expires_at IS NULL OR m.expires_at > now()) FOR SHARE OF m`, tenantID, actsAs).Scan(&id); err != nil {
+			if err := tx.QueryRow(ctx, `SELECT m.expires_at IS NOT NULL FROM workspace_memberships m JOIN users u ON u.id=m.user_id
+				WHERE m.tenant_id=$1 AND m.user_id=$2 AND m.status='active' AND u.status='active' AND m.role='service' AND (m.expires_at IS NULL OR m.expires_at > now()) FOR SHARE OF m`, tenantID, actsAs).Scan(&provisional); err != nil {
 				return ErrMembershipForbidden
+			}
+		}
+		origin := OriginREST
+		switch {
+		case createdBy == nil:
+			origin = OriginCLI
+		case setupShaped(name, scope, deviceIDs != nil, expiresAt, created) && provisional:
+			origin = OriginMCPSetup
+		}
+		if asked && origin != OriginMCPSetup {
+			narrowed, err := keysNarrowedTx(ctx, tx)
+			if err != nil {
+				return err
+			}
+			if narrowed {
+				return ErrTokensAreThePlatforms
 			}
 		}
 		if deviceIDs != nil {
@@ -254,8 +354,8 @@ func (a *APIKeys) IssueActingAsForDevices(ctx context.Context, tenantID, name st
 			}
 		}
 		var keyID uuid.UUID
-		if err := tx.QueryRow(ctx, `INSERT INTO api_keys (tenant_id, prefix, key_hash, name, created_by, scope, acts_as, devices_restricted, expires_at)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`, tenantID, prefix, hash, name, createdBy, string(scope), actsAs, deviceIDs != nil, expiresAt).Scan(&keyID); err != nil {
+		if err := tx.QueryRow(ctx, `INSERT INTO api_keys (tenant_id, prefix, key_hash, name, created_by, scope, acts_as, devices_restricted, expires_at, origin)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`, tenantID, prefix, hash, name, createdBy, string(scope), actsAs, deviceIDs != nil, expiresAt, origin).Scan(&keyID); err != nil {
 			return err
 		}
 		if deviceIDs != nil {
@@ -394,6 +494,9 @@ type APIKeyInfo struct {
 	// ExpiresAt is the deadline the key was issued or extended to, nil for a
 	// key that lives until revoked.
 	ExpiresAt *time.Time
+	// Origin is how the key was issued (OriginREST and the rest), empty
+	// for one an older binary issued after 0053.
+	Origin string
 }
 
 // List returns a tenant's keys, active ones first.
@@ -414,7 +517,7 @@ func (a *APIKeys) List(ctx context.Context, tenantID string) ([]APIKeyInfo, erro
 	err := pg.InTenantTx(ctx, a.pool, tenantID, func(tx pgx.Tx) error {
 		rows, err := tx.Query(ctx, `
 			SELECT k.prefix, k.name, k.scope, coalesce(creator.email, u.email, ''), coalesce(service.email, s.email, ''),
-			       k.created_at, k.last_used_at, k.revoked_at, k.expires_at, k.acts_as, k.devices_restricted,
+			       k.created_at, k.last_used_at, k.revoked_at, k.expires_at, k.acts_as, k.devices_restricted, coalesce(k.origin, ''),
 			       ARRAY(SELECT x.device_id::text FROM api_key_devices x JOIN devices d ON d.id=x.device_id
 			             WHERE x.api_key_id=k.id AND d.tenant_id=k.tenant_id ORDER BY x.device_id)
 			  FROM api_keys k
@@ -433,7 +536,7 @@ func (a *APIKeys) List(ctx context.Context, tenantID string) ([]APIKeyInfo, erro
 			var used, revoked *time.Time
 			var actsAs string
 			if err := rows.Scan(&k.Prefix, &k.Name, &k.Scope, &k.CreatedBy, &actsAs,
-				&k.CreatedAt, &used, &revoked, &k.ExpiresAt, &k.ActsAsID, &k.DevicesRestricted, &k.DeviceIDs); err != nil {
+				&k.CreatedAt, &used, &revoked, &k.ExpiresAt, &k.ActsAsID, &k.DevicesRestricted, &k.Origin, &k.DeviceIDs); err != nil {
 				return err
 			}
 			if actsAs != "" {
