@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"whatserver2/internal/pg"
@@ -120,9 +121,29 @@ func storedDevicePermissionTx(ctx context.Context, tx pgx.Tx, tenant, user, devi
 	return out, err
 }
 
+// ErrOwnerTarget is a change of an owner's flags by an admin: only an owner
+// changes an owner's (the owner's answer to the platform's Q58). It is an
+// ErrMembershipForbidden, so Wappie's screen answers it 403 not_authorized;
+// the console's acts answer not_authorized.
+var ErrOwnerTarget = fmt.Errorf("%w: only an owner changes an owner's flags", ErrMembershipForbidden)
+
+// ownerTargetTx reports whether user is an owner of tenant, by the local
+// membership (whatever its status) or by their stored account document
+// (whatever its status or generation): read fail-closed, so a role the two
+// sides disagree on counts as an owner's.
+func ownerTargetTx(ctx context.Context, tx pgx.Tx, tenant, user uuid.UUID) (bool, error) {
+	var owner bool
+	err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM workspace_memberships WHERE tenant_id = $1 AND user_id = $2 AND role = 'owner')
+		OR EXISTS (SELECT 1 FROM platform_identities p JOIN contract_accounts a ON a.sub = p.sub,
+			jsonb_array_elements(CASE WHEN jsonb_typeof(a.doc->'workspaces') = 'array' THEN a.doc->'workspaces' ELSE '[]'::jsonb END) w
+			WHERE p.user_id = $2 AND w->>'id' = $1::text AND w->>'role' = 'owner')`, tenant, user).Scan(&owner)
+	return owner, err
+}
+
 func (u *Users) SetDevicePermission(ctx context.Context, tenant, actor uuid.UUID, p DevicePermission) error {
 	return pg.InTenantTx(ctx, u.pool, tenant.String(), func(tx pgx.Tx) error {
-		if _, err := lockWorkspaceManager(ctx, tx, tenant, actor); err != nil {
+		role, err := lockWorkspaceManager(ctx, tx, tenant, actor)
+		if err != nil {
 			return err
 		}
 		var exists bool
@@ -132,6 +153,15 @@ func (u *Users) SetDevicePermission(ctx context.Context, tenant, actor uuid.UUID
 		}
 		if !exists {
 			return ErrNotFound
+		}
+		if role != "owner" {
+			owner, err := ownerTargetTx(ctx, tx, tenant, p.UserID)
+			if err != nil {
+				return err
+			}
+			if owner {
+				return ErrOwnerTarget
+			}
 		}
 		// Read revocation removes the envelope too. Re-enabling requires an
 		// explicit client-side grant by somebody who still holds the archive key.

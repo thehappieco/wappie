@@ -20,7 +20,9 @@ import (
 // TestVectorsThroughTheExecutor: every command of wire-commands.json that
 // Wappie takes (Wappie's, valid for Wappie), and every actions case that
 // runs, is taken into the ledger and judged by the executor in the mode
-// on: each ends with a result, and every result posts.
+// on: each ends with a result, and every result posts. The flags vectors
+// are judged past R0 now (step 12b): their actor is no one Wappie holds
+// here, so not_held (TestFlagsVectorsRun runs them on the world's ids).
 func TestVectorsThroughTheExecutor(t *testing.T) {
 	var v commandVectors
 	readVectors(t, "wire-commands.json", &v)
@@ -91,10 +93,21 @@ func TestVectorsThroughTheExecutor(t *testing.T) {
 	if err != nil || len(rows) != taken {
 		t.Fatalf("%d results for %d rows: %v", len(rows), taken, err)
 	}
+	flags := map[string]int{}
 	for _, r := range rows {
 		if _, why := resultOf(r); why != "" {
 			t.Errorf("the result of a %s (%s %s) would not post: %s", r.Kind, r.Outcome, r.Code, why)
 		}
+		switch r.Kind {
+		case kc.OpItemFlagsRaise, kc.OpItemFlagsDrop, kc.OpItemAccessRemove:
+			flags[r.Kind]++
+			if r.Code == kc.CodeKindNotAccepted {
+				t.Errorf("a %s vector was not accepted", r.Kind)
+			}
+		}
+	}
+	if len(flags) != 3 {
+		t.Errorf("the flags vectors judged: %v", flags)
 	}
 }
 
@@ -143,6 +156,9 @@ func TestRunResultsPost(t *testing.T) {
 		kc.OpPersonNoticesDismiss:    {ran(""), refused(kc.CodeStateChanged, 0, true)},
 		kc.OpItemSyncNow: {ran(""), refused(kc.CodePaused, 0, true), refused(kc.CodeStoragePaused, 0, true), refused(kc.CodeNotLinked, 0, true),
 			refused(kc.CodeReadOnly, 0, true), refused(kc.CodeItemBusy, 42, true), refused(kc.CodeConnectFailed, 0, true)},
+		kc.OpItemFlagsRaise:   {ran(""), refused(kc.CodeStateChanged, 0, true)},
+		kc.OpItemFlagsDrop:    {ran(""), refused(kc.CodeLastReader, 0, true)},
+		kc.OpItemAccessRemove: {ran(""), refused(kc.CodeLastReader, 0, true)},
 	} {
 		person := kind == kc.OpPersonSignOutEverywhere || kind == kc.OpPersonNoticesDismiss
 		for _, r := range append(own, every(person)...) {

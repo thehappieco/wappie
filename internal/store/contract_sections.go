@@ -278,14 +278,17 @@ type ContractSectionDue struct {
 }
 
 // NextSection reads the section due first, of those not parked whose
-// workspace's snapshot has a seq (a section names one); false when none
-// is.
-func (c *Contract) NextSection(ctx context.Context) (ContractSectionDue, bool, error) {
+// workspace's snapshot has a seq (a section names one), among sections,
+// the ones the caller renders; false when none is. A row of another
+// section (a later binary's) is never picked, so an older binary never
+// loops on a row it cannot send (DS25).
+func (c *Contract) NextSection(ctx context.Context, sections []string) (ContractSectionDue, bool, error) {
 	var d ContractSectionDue
 	var now time.Time
 	err := c.pool.QueryRow(ctx, `SELECT s.workspace_id, s.section, s.state_seq, s.due_at, clock_timestamp()
 		FROM contract_sections s JOIN contract_workspaces w ON w.workspace_id = s.workspace_id
-		WHERE s.parked_at IS NULL AND w.snapshot_seq > 0 ORDER BY s.due_at, s.workspace_id, s.section LIMIT 1`).
+		WHERE s.parked_at IS NULL AND w.snapshot_seq > 0 AND s.section = ANY ($1)
+		ORDER BY s.due_at, s.workspace_id, s.section LIMIT 1`, sections).
 		Scan(&d.Workspace, &d.Section, &d.Seq, &d.DueAt, &now)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ContractSectionDue{}, false, nil

@@ -2051,3 +2051,90 @@ may retry for a minute and a half, and puts the pause back when it fails:
 a mark inside that window would say resumed of a number paused again. A
 number paused again is left: its notice is open. A workspace with no
 notice to mark takes no lock for the repair.
+
+## The console's flags kinds (2026-11-09)
+
+Step 12b gives the console's `numbers` section three more kinds:
+`item.flags_raise`, `item.flags_drop` and `item.access_remove`, a
+person's `read`, `send` and `manage` on a number. No migration: the ledger
+takes any kind, and the flags, grants, triggers and protection rule exist.
+F1 built the acts on Wappie's own permission write and the runners; F2
+wires them into the executor and lists them. The platform's answers to Q1
+to Q6 and the owner's to Q7, Q8 and Q58 are applied. These decisions are
+numbered on from DS17 (DS26 to DS45 belong to the later sections of 12b).
+
+**DS18. Who.** The flags kinds need `RuleAdmin`: owner or admin locally
+and in the stored document, both (DS15). An owner's flags are only an
+owner's (the owner's answer to Q58): where the target is an owner,
+locally (whatever the membership's status) or in their stored document,
+the actor must be an owner on both sides, else `not_authorized`. The
+target's role is read fail-closed, so a person the two sides disagree on
+counts as an owner. Wappie's own permissions screen refuses an admin the
+same way (`ErrOwnerTarget`, 403 `not_authorized`); `grant.revoke`, which
+changes no flag, keeps its own rule.
+
+**DS19. The drop** removes `before \ after` from the current flags, so a
+flag raised since stays, as the platform's reference app does. When
+`read` goes, every grant of the person on the number goes, at every
+epoch, even when the flag was already gone (no dormant key, 0040). It is
+never `state_changed`: Wappie keeps no time per flag (the spec's 14.6),
+so a drop retried late may undo a raise made since on Wappie's own
+screen (the owner kept this, Q7).
+
+**DS20. The remove** sets every flag false and keeps the row, so a key
+shared later does not bring back read and send through
+`grant_initial_permissions`; every grant of the person on the number
+goes, a key holder's without read too. The person stays in the snapshot
+with `can: []` (Q1).
+
+**DS21. Deleted numbers.** Drop and remove run on a deleted number of
+the workspace, read under quarantine for that one statement (and the row
+written under it, which 0036's ownership trigger needs); `sole_key_holders`
+still protects its last holder (`last_reader`). A raise there is
+`state_changed`, as the platform's own retry answers it; another
+workspace's number or a gone one is `not_found`. Wappie's own screen
+finds no deleted number; that difference is pinned by the parity test.
+
+**DS22. The target person.** Not linked or not followed: `not_held`,
+judged on a seq, also when `based_on.docs` leaves them out. For a raise,
+a target Wappie holds as not active locally (a suspended or expired
+membership, a disabled local account, a stored document disabled or
+closed, or a disablement seen later than the document's own) is a final
+`not_found`, judged read-only before the freshness, so it is never
+`memberships_unconfirmed`: no retry lifts a suspension (the platform's
+Q6). For a drop or a remove, `ran` only when there is no membership row
+at all; a suspended or expired one still has its flags and grants
+removed.
+
+**DS23. Freshness.** A raise asks `RequireWidening` for the actor and the
+target (in a team both, a GET for a stale one; in a personal workspace
+the actor's stored status). A drop of read, and a remove, ask
+`RequireBackups` when the target reads the number or holds its key, in a
+team only. Both run before the act, outside any write transaction;
+`last_reader` is judged inside it. A refusal is `memberships_unconfirmed`,
+a retry; a drop or remove delivered again waits instead.
+
+**DS24. No seal, no connections.** `grant_needed` is never answered: the
+kit refuses a raise of read, and Wappie's send and manage need no seal.
+A person's MCP connections and AI integrations keep their copy of the
+number's key after their Read goes, as on Wappie's own screen
+([mcp-enclave](mcp-enclave.md) 15.15). The owner answered Q8 yes, for the
+person's own connections and integrations only: F3 takes the number off
+them, on the screen and in the acts alike.
+
+**DS25. A binary sends only the sections it renders.** The sender picks
+only rows of the sections this binary renders (`NextSection`'s filter,
+`numbers` today), and 0054's and 0055's down-steps delete the rows they
+added, so a binary rolled back below a section never loops sending
+`numbers` for a row it cannot render.
+
+**DS46. The flags kinds go live with R3's deploy, after the platform's
+notice.** There is no switch: a binary lists the kinds it runs from its
+start, the settings mode being `on` already. `WS_CONTRACT_FLAGS` was
+dropped, since it would mean editing the pilot's `runtime.env`, and a
+binaries-only rollback is as cheap. F2 merges only when R3's kit is ready,
+so no earlier release, step 7's stage A included, carries the kinds
+unannounced. Their rollback is the release before's binaries, after
+telling the platform: a drop or a remove in flight then waits
+(`kind_not_accepted` is a retry for a tightening), a raise in flight ends
+final.

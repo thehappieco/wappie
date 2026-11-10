@@ -676,23 +676,48 @@ type ContractCommandFacts struct {
 	// Versions are the stored document versions of the current
 	// generation, of the subs asked.
 	Versions map[uuid.UUID]int64
+	// Subs are the actor's and each sub asked's link and document, as
+	// User and Followed are the actor's (step 12b: R1 for a target person).
+	Subs map[uuid.UUID]ContractSubFacts
 	// Recorded, Kind and Status are the workspace's record (Status ""
 	// before a document set it); Local: Wappie has a workspace of its id.
 	Recorded, Local bool
 	Kind, Status    string
 }
 
-// CommandFacts reads what R1 to R3 judge a row by: actor's link and
-// document, the stored versions of subs, and workspace's record (nil for a
-// person's kind).
+// ContractSubFacts is one sub's link and document, as R1 reads them.
+type ContractSubFacts struct {
+	// User is the local account linked to the sub, nil for none; Followed:
+	// Wappie follows the sub with a document.
+	User     *uuid.UUID
+	Followed bool
+}
+
+// CommandFacts reads what R1 to R3 judge a row by: the link and document
+// of actor and of each of subs, the stored versions of subs, and
+// workspace's record (nil for a person's kind).
 func (c *Contract) CommandFacts(ctx context.Context, actor uuid.UUID, subs []uuid.UUID, workspace *uuid.UUID) (ContractCommandFacts, error) {
-	out := ContractCommandFacts{Versions: map[uuid.UUID]int64{}}
+	out := ContractCommandFacts{Versions: map[uuid.UUID]int64{}, Subs: map[uuid.UUID]ContractSubFacts{}}
 	err := readOnly(ctx, c, func(tx pgx.Tx) error {
-		if err := tx.QueryRow(ctx, `SELECT (SELECT user_id FROM platform_identities WHERE sub = $1),
-			EXISTS (SELECT 1 FROM contract_accounts WHERE sub = $1 AND doc IS NOT NULL)`, actor).Scan(&out.User, &out.Followed); err != nil {
+		rows, err := tx.Query(ctx, `SELECT q.sub, (SELECT user_id FROM platform_identities WHERE sub = q.sub),
+			EXISTS (SELECT 1 FROM contract_accounts WHERE sub = q.sub AND doc IS NOT NULL)
+			FROM unnest($1::uuid[]) AS q(sub)`, append([]uuid.UUID{actor}, subs...))
+		if err != nil {
 			return err
 		}
-		rows, err := tx.Query(ctx, `SELECT a.sub, a.version FROM contract_accounts a JOIN contract_state s ON a.generation = s.generation
+		if err := forEachRow(rows, func(row pgx.Rows) error {
+			var sub uuid.UUID
+			var f ContractSubFacts
+			if err := row.Scan(&sub, &f.User, &f.Followed); err != nil {
+				return err
+			}
+			out.Subs[sub] = f
+			return nil
+		}); err != nil {
+			return err
+		}
+		out.User, out.Followed = out.Subs[actor].User, out.Subs[actor].Followed
+		rows, err = tx.Query(ctx, `SELECT a.sub, a.version FROM contract_accounts a JOIN contract_state s ON a.generation = s.generation
 			WHERE a.sub = ANY ($1) AND a.version IS NOT NULL`, subs)
 		if err != nil {
 			return err

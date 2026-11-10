@@ -132,6 +132,17 @@ func memberRowTx(ctx context.Context, tx pgx.Tx, workspace, user uuid.UUID) (boo
 	return ok, err
 }
 
+// adminOnOwnerTx reports whether run's actor, allowed RuleAdmin, is an
+// admin on either side while user is an owner of the workspace (locally
+// or in their document): not_authorized, as Wappie's screen refuses it
+// (ErrOwnerTarget; the owner's answer to the platform's Q58).
+func adminOnOwnerTx(ctx context.Context, tx pgx.Tx, run ContractRun, roles ActorRoles, user uuid.UUID) (bool, error) {
+	if roles.Local == "owner" && roles.Doc == "owner" {
+		return false, nil
+	}
+	return ownerTargetTx(ctx, tx, run.Workspace, user)
+}
+
 // wroteRan reports whether an act ran and its last try wrote.
 func wroteRan(act ContractAct, wrote bool, err error) bool {
 	return err == nil && wrote && act.Result.Outcome == CommandRan
@@ -141,11 +152,12 @@ func wroteRan(act ContractAct, wrote bool, err error) bool {
 // screen is PUT …/permissions with flags added): the number live (a
 // deleted one of the workspace is state_changed, as the platform's own
 // retry answers it; one gone or another workspace's is not_found), user an
-// active member (not_found), the actor's RuleAdmin (not_authorized, DS18),
-// params.before against the stored flags as a set (state_changed), then
-// after written. It never touches a grant: a raise never adds read, and
-// Wappie's send and manage need no key, so grant_needed is never answered
-// (DS24). wrote reports a ran that wrote the row.
+// active member (not_found), the actor's RuleAdmin, and an owner's flags
+// only an owner's (not_authorized, DS18; Q58), params.before against the
+// stored flags as a set (state_changed), then after written. It never
+// touches a grant: a raise never adds read, and Wappie's send and manage
+// need no key, so grant_needed is never answered (DS24). wrote reports a
+// ran that wrote the row.
 func (c *Contract) RunFlagsRaise(ctx context.Context, run ContractRun, item, user uuid.UUID, before, after []string) (act ContractAct, wrote bool, err error) {
 	was, errWas := flagsOf(before)
 	next, errNext := flagsOf(after)
@@ -176,6 +188,13 @@ func (c *Contract) RunFlagsRaise(ctx context.Context, run ContractRun, item, use
 		case err != nil:
 			return actWrite{}, err
 		case !roles.Allows(RuleAdmin):
+			return refusedWith(kc.CodeNotAuthorized), nil
+		}
+		onOwner, err := adminOnOwnerTx(ctx, tx, run, roles, user)
+		switch {
+		case err != nil:
+			return actWrite{}, err
+		case onOwner:
 			return refusedWith(kc.CodeNotAuthorized), nil
 		}
 		stored, err := storedDevicePermissionTx(ctx, tx, run.Workspace, user, item)
@@ -228,10 +247,11 @@ func (c *Contract) RunAccessRemove(ctx context.Context, run ContractRun, item, u
 
 // tightenFlags is a drop's and a remove's act: the number of the
 // workspace, a deleted one included (DS21; not_found otherwise), the
-// actor's RuleAdmin; a person with no membership row at all has nothing to
-// take (ran, DS22), while a suspended or expired one's flags and grants go
-// as an active one's. change maps the stored flags to the new ones and
-// says whether the keys go; a change that changes nothing writes nothing.
+// actor's RuleAdmin, and an owner's flags only an owner's (Q58); a person
+// with no membership row at all has nothing to take (ran, DS22), while a
+// suspended or expired one's flags and grants go as an active one's.
+// change maps the stored flags to the new ones and says whether the keys
+// go; a change that changes nothing writes nothing.
 func (c *Contract) tightenFlags(ctx context.Context, run ContractRun, item, user uuid.UUID,
 	change func(stored DevicePermission) (DevicePermission, bool)) (ContractAct, bool, error) {
 	var wrote bool
@@ -249,6 +269,13 @@ func (c *Contract) tightenFlags(ctx context.Context, run ContractRun, item, user
 		case err != nil:
 			return actWrite{}, err
 		case !roles.Allows(RuleAdmin):
+			return refusedWith(kc.CodeNotAuthorized), nil
+		}
+		onOwner, err := adminOnOwnerTx(ctx, tx, run, roles, user)
+		switch {
+		case err != nil:
+			return actWrite{}, err
+		case onOwner:
 			return refusedWith(kc.CodeNotAuthorized), nil
 		}
 		member, err := memberRowTx(ctx, tx, run.Workspace, user)
@@ -299,4 +326,29 @@ func (c *Contract) StoredFlags(ctx context.Context, workspace, item, user uuid.U
 		return nil, false, err
 	}
 	return canOf(p), p.HasKey, nil
+}
+
+// FlagsTargetActive is the executor's look at a raise's target before R4
+// (step 12b's F2; the platform's Q6, DS22): user an active, unexpired
+// member of workspace with an active local account, and sub's stored
+// document active, with no disablement seen later than the one it carries
+// (contract_accounts keeps the latest seen). Anything else is a final
+// not_found: no retry lifts a suspension, so the raise is never left to
+// R4's memberships_unconfirmed. Read-only; the act checks the membership
+// again in its transaction.
+func (c *Contract) FlagsTargetActive(ctx context.Context, workspace, user, sub uuid.UUID) (bool, error) {
+	var ok bool
+	err := readOnly(ctx, c, func(tx pgx.Tx) error {
+		ok = false
+		if err := scope(ctx, tx, workspace, uuid.Nil); err != nil {
+			return err
+		}
+		member, err := activeTargetTx(ctx, tx, workspace, user)
+		if err != nil || !member {
+			return err
+		}
+		return tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM contract_accounts WHERE sub = $1 AND status = 'active'
+			AND (disabled_at IS NULL OR disabled_at <= coalesce((doc->>'disabled_at')::timestamptz, '-infinity')))`, sub).Scan(&ok)
+	})
+	return ok, err
 }

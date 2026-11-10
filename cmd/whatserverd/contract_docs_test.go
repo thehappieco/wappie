@@ -582,12 +582,17 @@ func TestContractDocsMatchTheCode(t *testing.T) {
 
 		// The acts, by the names the hooks log: each one the code gives a
 		// hook is in the Act table, and each the table names is the code's.
+		// A console kind the executor gates is named by the kit's constant,
+		// so it is the code's when the executor gives it a hook.
+		executor := executorActs(t)
 		inTable := map[string]bool{}
 		for key := range tableRows(t, "../../docs/contract.md", "## Freshness") {
 			for _, m := range backticked.FindAllStringSubmatch(key, -1) {
 				if !strings.HasPrefix(m[1], "Require") {
 					inTable[m[1]] = true
-					codeSays(`"` + m[1] + `"`)
+					if !slices.Contains(executor, m[1]) {
+						codeSays(`"` + m[1] + `"`)
+					}
 				}
 			}
 		}
@@ -798,6 +803,34 @@ func TestContractDocsMatchTheCode(t *testing.T) {
 			}
 		}
 	})
+
+	t.Run("the flags kinds in the executor's order", func(t *testing.T) {
+		// Step 6 of the order says how the flags kinds differ from the
+		// rest, and the acts still do so: a raise answers a deleted number
+		// state_changed, while a drop and a remove run on it and never
+		// answer state_changed (DS19, DS21).
+		_, step, _ := strings.Cut(docSection(t, "../../docs/contract.md", "### The kinds"), "6. then the kind")
+		step, _, _ = strings.Cut(step, "| Kind |")
+		for _, s := range []string{
+			"`" + kc.OpItemFlagsRaise + "` answers a deleted number of the workspace `" + kc.CodeStateChanged + "`",
+			"`" + kc.OpItemFlagsDrop + "` and `" + kc.OpItemAccessRemove + "` run on a deleted number of the workspace",
+			"never compare `params.before` with the stored flags",
+			"answer `ran` for a person with no membership row, after the roles",
+		} {
+			if !strings.Contains(step, s) {
+				t.Errorf("docs/contract.md's step 6 of the kinds does not say %q", s)
+			}
+		}
+		src := rawCode(t, "../../internal/store")
+		raise := funcBody(t, src, "(c *Contract) RunFlagsRaise")
+		if !regexp.MustCompile(`case deleted:\s+return refusedWith\(kc\.CodeStateChanged\)`).MatchString(raise) {
+			t.Error("RunFlagsRaise no longer answers a deleted number state_changed")
+		}
+		tighten := funcBody(t, src, "(c *Contract) tightenFlags")
+		if strings.Contains(tighten, "case deleted") || strings.Contains(tighten, "CodeStateChanged") {
+			t.Error("tightenFlags no longer runs on a deleted number, or answers state_changed")
+		}
+	})
 }
 
 // tableRows reads the tables under heading in a Markdown file, to the next
@@ -872,8 +905,73 @@ func gatedActs(t *testing.T) []string {
 		}
 	}
 	acts = append(acts, membership.ActTransfer)
-	if len(acts) < 18 {
+	acts = append(acts, executorActs(t)...)
+	if len(acts) < 23 {
 		t.Fatalf("only %d gated acts found: %q", len(acts), acts)
 	}
 	return acts
+}
+
+// executorActs are the console kinds the executor's R4 gives a hook
+// (settingsWork.fresh), by the kit's names: the kinds its cases name. Each
+// hook there is given the command's kind as its act.
+func executorActs(t *testing.T) []string {
+	t.Helper()
+	_, body, ok := strings.Cut(rawCode(t, "../../internal/membership"), "\nfunc (sw *settingsWork) fresh(")
+	if !ok {
+		t.Fatal("no settingsWork.fresh")
+	}
+	body, _, _ = strings.Cut(body, "\n}\n")
+	for _, m := range regexp.MustCompile(`\.Require\w+\(ctx, ([\w.]+),`).FindAllStringSubmatch(body, -1) {
+		if m[1] != "cmd.Kind" {
+			t.Fatalf("settingsWork.fresh gives a hook the act %s, not the command's kind", m[1])
+		}
+	}
+	var acts []string
+	for _, c := range regexp.MustCompile(`\bcase ([^:]+):`).FindAllStringSubmatch(body, -1) {
+		for _, m := range regexp.MustCompile(`\bkc\.(\w+)`).FindAllStringSubmatch(c[1], -1) {
+			kind, ok := wappieKinds[m[1]]
+			if !ok {
+				t.Fatalf("settingsWork.fresh gates kc.%s, which is not one of Wappie's kinds", m[1])
+			}
+			acts = append(acts, kind)
+		}
+	}
+	if len(acts) < 5 {
+		t.Fatalf("only %d acts the executor gates found: %q", len(acts), acts)
+	}
+	return acts
+}
+
+// wappieKinds are Wappie's command kinds by their constants' names in the
+// kit, for the checks that read the executor's source.
+var wappieKinds = map[string]string{
+	"OpItemRename": kc.OpItemRename, "OpItemSyncStop": kc.OpItemSyncStop, "OpItemSyncResume": kc.OpItemSyncResume,
+	"OpItemSyncNow": kc.OpItemSyncNow, "OpItemFlagsRaise": kc.OpItemFlagsRaise, "OpItemFlagsDrop": kc.OpItemFlagsDrop,
+	"OpItemAccessRemove": kc.OpItemAccessRemove, "OpItemRegistrationDelete": kc.OpItemRegistrationDelete,
+	"OpItemMoveOut": kc.OpItemMoveOut, "OpAIProviderKeyDelete": kc.OpAIProviderKeyDelete,
+	"OpAIIntegrationNarrow": kc.OpAIIntegrationNarrow, "OpAIIntegrationRevoke": kc.OpAIIntegrationRevoke,
+	"OpMCPConnectionRevoke": kc.OpMCPConnectionRevoke, "OpMCPConnectionSeen": kc.OpMCPConnectionSeen,
+	"OpMCPSendPause": kc.OpMCPSendPause, "OpMCPSendResume": kc.OpMCPSendResume, "OpMCPSwitchOn": kc.OpMCPSwitchOn,
+	"OpMCPSwitchOff": kc.OpMCPSwitchOff, "OpMCPLegacyTokenRevoke": kc.OpMCPLegacyTokenRevoke,
+	"OpInstallationAdd": kc.OpInstallationAdd, "OpInstallationRename": kc.OpInstallationRename,
+	"OpLicenceRelease": kc.OpLicenceRelease, "OpPersonSignOutEverywhere": kc.OpPersonSignOutEverywhere,
+	"OpPersonNoticesDismiss": kc.OpPersonNoticesDismiss,
+}
+
+// TestWappieKindsAreTheKits holds wappieKinds to the kit's list, so a kind
+// the executor gates is never missed for want of a name.
+func TestWappieKindsAreTheKits(t *testing.T) {
+	var kit, ours []string
+	for _, k := range kc.CommandKinds(membership.App) {
+		kit = append(kit, k.Kind)
+	}
+	for _, k := range wappieKinds {
+		ours = append(ours, k)
+	}
+	slices.Sort(kit)
+	slices.Sort(ours)
+	if !slices.Equal(kit, ours) {
+		t.Errorf("wappieKinds: %q, the kit's: %q", ours, kit)
+	}
 }

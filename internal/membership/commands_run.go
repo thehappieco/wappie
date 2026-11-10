@@ -21,15 +21,20 @@ import (
 //	R0 its kind is in this mode's accepts for its section, Wappie's
 //	   producer's (kind_not_accepted);
 //	R1 its actor is followed with a document, and linked to a local
-//	   account (not_held; a person's with no seq);
+//	   account (not_held; a person's with no seq); so is the person its
+//	   target names, for the flags kinds (step 12b);
 //	R2 every document it was drawn from is applied: based_on.docs at most
 //	   the stored version of the current generation (memberships_behind,
 //	   retry_after behindRetry);
 //	R3 a workspace's kind: the workspace recorded and Wappie's, and open
-//	   (not_found, team_closed);
-//	R4 the freshness item.sync_stop and item.sync_resume ask in a team
-//	   (the frame's: RequireFresh, before any write; at observe it only
-//	   logs);
+//	   (not_found, team_closed); then, for item.flags_raise, its target
+//	   active locally, read-only (a final not_found: the platform's Q6);
+//	R4 the freshness the kind asks before any write (the plan's 3.1; at
+//	   observe it only logs): item.sync_stop and item.sync_resume the
+//	   actor's in a team (RequireFresh), item.flags_raise the actor's and
+//	   the target's in every workspace (RequireWidening), and a drop of
+//	   read or an access_remove of someone who reads or holds the key the
+//	   minute rule in a team (RequireBackups);
 //
 // then its kind runs: the numbers kinds through internal/numberacts, a
 // person's through person_kinds.go, each checking its target (R5) before
@@ -97,9 +102,16 @@ func (sw *settingsWork) runCommand(ctx context.Context, cmd store.ContractComman
 	if err != nil {
 		return sw.unreadable(ctx, cmd, refuse)
 	}
-	subs := make([]uuid.UUID, 0, len(docs))
+	person, err := targetPerson(cmd)
+	if err != nil {
+		return sw.unreadable(ctx, cmd, refuse)
+	}
+	subs := make([]uuid.UUID, 0, len(docs)+1)
 	for sub := range docs {
 		subs = append(subs, sub)
+	}
+	if _, drawn := docs[person]; person != uuid.Nil && !drawn {
+		subs = append(subs, person)
 	}
 	facts, err := c.CommandFacts(ctx, cmd.Actor, subs, cmd.Workspace)
 	if err != nil {
@@ -108,6 +120,14 @@ func (sw *settingsWork) runCommand(ctx context.Context, cmd store.ContractComman
 	// R1.
 	if facts.User == nil || !facts.Followed {
 		return refuse(code(kc.CodeNotHeld), "R1")
+	}
+	var target uuid.UUID
+	if person != uuid.Nil {
+		f := facts.Subs[person]
+		if f.User == nil || !f.Followed {
+			return refuse(code(kc.CodeNotHeld), "R1")
+		}
+		target = *f.User
 	}
 	// R2.
 	for sub, v := range docs {
@@ -125,16 +145,31 @@ func (sw *settingsWork) runCommand(ctx context.Context, cmd store.ContractComman
 		case facts.Status == "closed":
 			return refuse(code(kc.CodeTeamClosed), "R3")
 		}
-		// R4.
-		if cmd.Kind == kc.OpItemSyncStop || cmd.Kind == kc.OpItemSyncResume {
-			_, err := l.Members.RequireFresh(ctx, cmd.Kind, *cmd.Workspace, Party{User: *facts.User, How: IfStale})
-			if errors.Is(err, ErrMembershipsUnconfirmed) {
-				return refuse(code(kc.CodeMembershipsUnconfirmed), "R4")
+		// A raise's target, before R4: one Wappie holds as not active
+		// locally is a final not_found, never memberships_unconfirmed (the
+		// platform's Q6; the act checks the membership again).
+		if cmd.Kind == kc.OpItemFlagsRaise {
+			active, err := c.FlagsTargetActive(ctx, *cmd.Workspace, target, person)
+			switch {
+			case err != nil:
+				return failed(err)
+			case !active:
+				return refuse(code(kc.CodeNotFound), "target")
 			}
+		}
+		// R4.
+		unconfirmed, err := sw.fresh(ctx, cmd, *facts.User, target)
+		switch {
+		case errors.Is(err, errUnreadable):
+			return sw.unreadable(ctx, cmd, refuse)
+		case err != nil:
+			return failed(err)
+		case unconfirmed:
+			return refuse(code(kc.CodeMembershipsUnconfirmed), "R4")
 		}
 	}
 
-	act, err := sw.dispatch(ctx, cmd, *facts.User)
+	act, err := sw.dispatch(ctx, cmd, *facts.User, target)
 	switch {
 	case errors.Is(err, errUnreadable):
 		return sw.unreadable(ctx, cmd, refuse)
@@ -241,15 +276,101 @@ func basedOnDocs(raw json.RawMessage) (map[uuid.UUID]int64, error) {
 // ourID is a target's id as one of Wappie's: a UUID written as Wappie
 // writes one, else errNotOurs.
 func ourID(s string) (uuid.UUID, error) {
-	id, err := uuid.Parse(s)
-	if err != nil || id.String() != s {
+	id, ok := ours(s)
+	if !ok {
 		return uuid.Nil, errNotOurs
 	}
 	return id, nil
 }
 
-// dispatch runs cmd's kind for the local account user.
-func (sw *settingsWork) dispatch(ctx context.Context, cmd store.ContractCommand, user uuid.UUID) (store.ContractAct, error) {
+// ours reads s as one of Wappie's ids, as ourID does.
+func ours(s string) (uuid.UUID, bool) {
+	id, err := uuid.Parse(s)
+	return id, err == nil && id.String() == s
+}
+
+// targetPerson is the sub cmd's target names as its person, uuid.Nil for a
+// kind whose target names none (the kit's CommandKind.Target).
+func targetPerson(cmd store.ContractCommand) (uuid.UUID, error) {
+	k, ok := kc.CommandKindOf(App, cmd.Kind)
+	if !ok || !slices.Contains(k.Target, kc.TargetPerson) {
+		return uuid.Nil, nil
+	}
+	var target kc.CommandTarget
+	if err := json.Unmarshal(cmd.Target, &target); err != nil {
+		return uuid.Nil, errUnreadable
+	}
+	sub, err := uuid.Parse(target.Person)
+	if err != nil {
+		return uuid.Nil, errUnreadable
+	}
+	return sub, nil
+}
+
+// flagsParams reads a flags kind's params as the kit read them: the
+// person's flags on the item (can) before and after, by their exact names.
+func flagsParams(raw json.RawMessage) (before, after []string, err error) {
+	var p map[string]json.RawMessage
+	var b, a map[string][]string
+	if json.Unmarshal(raw, &p) != nil || json.Unmarshal(p["before"], &b) != nil || json.Unmarshal(p["after"], &a) != nil ||
+		b["can"] == nil || a["can"] == nil {
+		return nil, nil, errUnreadable
+	}
+	return b["can"], a["can"], nil
+}
+
+// fresh is R4 for cmd, by actor on target (uuid.Nil for none), outside
+// any write transaction (the plan's 3.1): whether the hook refused it
+// (only with Enforce), or a read it needs that failed. A drop that keeps
+// read, or a target who neither reads nor holds the key, asks nothing; a
+// number that is none of Wappie's is left to the act (not_found).
+func (sw *settingsWork) fresh(ctx context.Context, cmd store.ContractCommand, actor, target uuid.UUID) (bool, error) {
+	m, ws := sw.l.Members, *cmd.Workspace
+	var err error
+	switch cmd.Kind {
+	case kc.OpItemSyncStop, kc.OpItemSyncResume:
+		_, err = m.RequireFresh(ctx, cmd.Kind, ws, Party{User: actor, How: IfStale})
+	case kc.OpItemFlagsRaise:
+		parties := []Party{{User: actor, How: IfStale}}
+		if target != actor {
+			parties = append(parties, Party{User: target, How: IfStale})
+		}
+		_, err = m.RequireWidening(ctx, cmd.Kind, ws, parties...)
+	case kc.OpItemFlagsDrop, kc.OpItemAccessRemove:
+		var t kc.CommandTarget
+		if json.Unmarshal(cmd.Target, &t) != nil {
+			return false, errUnreadable
+		}
+		item, ok := ours(t.Item)
+		if !ok {
+			// None of Wappie's: the act answers it not_found.
+			return false, nil
+		}
+		if cmd.Kind == kc.OpItemFlagsDrop {
+			before, after, err := flagsParams(cmd.Params)
+			if err != nil {
+				return false, err
+			}
+			if !slices.Contains(before, kc.CanRead) || slices.Contains(after, kc.CanRead) {
+				return false, nil
+			}
+		}
+		can, key, err := m.Contract.StoredFlags(ctx, ws, item, target)
+		if err != nil {
+			return false, err
+		}
+		if !key && !slices.Contains(can, kc.CanRead) {
+			return false, nil
+		}
+		_, err = m.RequireBackups(ctx, cmd.Kind, ws, item, target)
+		return errors.Is(err, ErrMembershipsUnconfirmed), nil
+	}
+	return errors.Is(err, ErrMembershipsUnconfirmed), nil
+}
+
+// dispatch runs cmd's kind for the local account user; person is the
+// local account of the person its target names (uuid.Nil for none).
+func (sw *settingsWork) dispatch(ctx context.Context, cmd store.ContractCommand, user, person uuid.UUID) (store.ContractAct, error) {
 	if cmd.Workspace == nil {
 		return sw.runPerson(ctx, cmd, user)
 	}
@@ -291,6 +412,33 @@ func (sw *settingsWork) dispatch(ctx context.Context, cmd store.ContractCommand,
 		return acts.SyncResume(ctx, run, item)
 	case kc.OpItemSyncNow:
 		return acts.SyncNow(ctx, run, item)
+	case kc.OpItemFlagsRaise, kc.OpItemFlagsDrop, kc.OpItemAccessRemove:
+		return runFlags(ctx, acts, run, cmd, item, person)
 	}
 	return store.ContractAct{}, errNotRun
+}
+
+// runFlags runs a flags kind on item for the local account target, with
+// the params the kit read; params the act refuses (the kit refused them
+// first) are errUnreadable, invalid_command.
+func runFlags(ctx context.Context, acts *numberacts.Runner, run numberacts.Run, cmd store.ContractCommand, item, target uuid.UUID) (store.ContractAct, error) {
+	var act store.ContractAct
+	var err error
+	if cmd.Kind == kc.OpItemAccessRemove {
+		act, err = acts.AccessRemove(ctx, run, item, target)
+	} else {
+		before, after, perr := flagsParams(cmd.Params)
+		if perr != nil {
+			return store.ContractAct{}, perr
+		}
+		if cmd.Kind == kc.OpItemFlagsRaise {
+			act, err = acts.FlagsRaise(ctx, run, item, target, before, after)
+		} else {
+			act, err = acts.FlagsDrop(ctx, run, item, target, before, after)
+		}
+	}
+	if errors.Is(err, store.ErrInvalidFlags) {
+		return store.ContractAct{}, errUnreadable
+	}
+	return act, err
 }
