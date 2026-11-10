@@ -66,7 +66,8 @@ const (
 	ContractErrorRoundIncomplete = "round_incomplete"
 	// ContractErrorSnapshotParked: a workspace's snapshot parked, after a
 	// day of not_found or on an invalid_request; ContractErrorSnapshotInvalid:
-	// one Wappie would not send (over README 8's limits, or not valid).
+	// one Wappie would not send (over README 8's limits, or not valid), or
+	// sends without its tokens (over a limit by them alone).
 	ContractErrorSnapshotParked  = "snapshot_parked"
 	ContractErrorSnapshotInvalid = "snapshot_invalid"
 	// ContractErrorEventParked: an event parked (conflict, invalid_request,

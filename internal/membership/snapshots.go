@@ -51,7 +51,10 @@ const (
 
 // SnapshotOf is the wire's snapshot (README 8) of Wappie's read model,
 // with snapshot_seq seq. Everyone listed is enrolled: a person exists in
-// Wappie only after the sign-in that pins their key (the reply's Q4).
+// Wappie only after the sign-in that pins their key (the reply's Q4). An
+// item's ordinal and tokens go only as the read model has them, which is
+// while the token mode is on (step 7's plan, 6.2): then every item has its
+// tokens, [] for none, and its ordinal unless it has none past 9999.
 func SnapshotOf(s store.ContractSnapshot, seq int64) kc.Snapshot {
 	out := kc.Snapshot{V: kc.SnapshotV, SnapshotSeq: seq, Items: make([]kc.Item, 0, len(s.Items))}
 	for _, it := range s.Items {
@@ -68,30 +71,48 @@ func SnapshotOf(s store.ContractSnapshot, seq int64) kc.Snapshot {
 			item.PurgeAt = &at
 		}
 		for _, p := range it.People {
-			can := []string{}
-			for _, f := range []struct {
-				on   bool
-				name string
-			}{{p.Read, kc.CanRead}, {p.Send, kc.CanSend}, {p.Manage, kc.CanManage}} {
-				if f.on {
-					can = append(can, f.name)
-				}
-			}
-			item.People = append(item.People, kc.Person{Sub: p.Sub.String(), Can: can, Reads: p.Reads, Waiting: p.Waiting,
-				Enrolled: true, HoldsKey: p.HoldsKey})
+			item.People = append(item.People, kc.Person{Sub: p.Sub.String(), Can: canOf(p.Read, p.Send, p.Manage), Reads: p.Reads,
+				Waiting: p.Waiting, Enrolled: true, HoldsKey: p.HoldsKey})
 		}
 		for _, sub := range it.Protected {
 			item.Protected = append(item.Protected, sub.String())
+		}
+		if it.Ordinal != nil {
+			item.Ordinal = kc.Ordinal(*it.Ordinal)
+		}
+		if it.Tokens != nil {
+			item.Tokens = make(kc.ItemTokens, 0, len(it.Tokens))
+			for _, tok := range it.Tokens {
+				item.Tokens = append(item.Tokens, kc.ItemToken{ID: tok.ID.String(), Can: canOf(tok.Read, tok.Send, tok.Manage),
+					Reads: tok.Reads, Waiting: tok.Waiting})
+			}
 		}
 		out.Items = append(out.Items, item)
 	}
 	return out
 }
 
-// checkSnapshot says why Wappie would not send snap, or "": more items or
-// people than README 8 allows, a snapshot the kit's Validate refuses (its
-// labels and hints included, as the platform's strict intake checks them),
-// or a body over the call's limit. Its words name a rule, never a value.
+// canOf is a number's can list: read, send and manage, those set, in that
+// order, and never nil.
+func canOf(read, send, manage bool) []string {
+	can := []string{}
+	for _, f := range []struct {
+		on   bool
+		name string
+	}{{read, kc.CanRead}, {send, kc.CanSend}, {manage, kc.CanManage}} {
+		if f.on {
+			can = append(can, f.name)
+		}
+	}
+	return can
+}
+
+// checkSnapshot says why Wappie would not send snap as it is, or "": more
+// items, people or tokens on an item than README 8 allows, a snapshot the
+// kit's Validate refuses (its labels and hints included, as the platform's
+// strict intake checks them), or a body over the call's limit. Its words
+// name a rule, never a value. The sender then sends one over a limit by
+// its tokens alone without them (sendable).
 func checkSnapshot(snap kc.Snapshot) string {
 	why, _ := snapshotRule(snap) //nolint:errcheck // the rule's words alone; send logs the kit's refusal
 	return why
@@ -107,6 +128,9 @@ func snapshotRule(snap kc.Snapshot) (string, error) {
 		if len(it.People) > kc.MaxPeople {
 			return "people", nil
 		}
+		if len(it.Tokens) > kc.MaxItemTokens {
+			return "tokens", nil
+		}
 	}
 	if err := snap.Validate(); err != nil {
 		return "invalid", err
@@ -119,6 +143,41 @@ func snapshotRule(snap kc.Snapshot) (string, error) {
 		return "too_large", nil
 	}
 	return "", nil
+}
+
+// sendable is the snapshot Wappie sends of snap, or why it sends none
+// (snapshotRule's words and the kit's refusal). One over the body's limit,
+// or an item's tokens', by its tokens alone goes without any item's tokens
+// (README 8: absent, the app does not report tokens), and left names the
+// limit: the platform allows more tokens than one snapshot can carry, and
+// the people, their protection and the numbers' states must not wait for
+// them (step 7's plan, 6.2).
+func sendable(snap kc.Snapshot) (out kc.Snapshot, why, left string, rule error) {
+	why, rule = snapshotRule(snap)
+	if why != "too_large" && why != "tokens" {
+		return snap, why, "", rule
+	}
+	bare, listed := withoutTokens(snap)
+	if !listed {
+		return snap, why, "", rule
+	}
+	if w, r := snapshotRule(bare); w != "" {
+		return snap, w, "", r
+	}
+	return bare, "", why, nil
+}
+
+// withoutTokens is snap with no item's tokens, and whether any item had a
+// list.
+func withoutTokens(snap kc.Snapshot) (kc.Snapshot, bool) {
+	out, listed := snap, false
+	out.Items = make([]kc.Item, len(snap.Items))
+	for i, it := range snap.Items {
+		listed = listed || it.Tokens != nil
+		it.Tokens = nil
+		out.Items[i] = it
+	}
+	return out, listed
 }
 
 // snapshotResult sorts a PutAccess's error into the outcome the store
@@ -196,6 +255,9 @@ type snapshotSender struct {
 	notices *notices
 	// logged is when each workspace's label counts were last logged.
 	logged map[uuid.UUID]time.Time
+	// bare are the workspaces whose snapshots go without their tokens, so
+	// their ERROR is logged once a run.
+	bare map[uuid.UUID]bool
 	// warned spaces the WARNs of failed sends.
 	warned time.Time
 }
@@ -205,6 +267,7 @@ func (l *Leader) times() store.ContractSnapshotTimes {
 		Every:      or(l.SnapshotEvery, snapshotEvery),
 		BackoffMin: or(l.SnapshotBackoffMin, snapshotBackoffMin),
 		BackoffMax: or(l.SnapshotBackoffMax, snapshotBackoffMax),
+		Debounce:   or(l.SnapshotDebounce, snapshotDebounce),
 	}
 }
 
@@ -296,17 +359,17 @@ func (s *snapshotSender) send(ctx context.Context, next store.ContractSnapshotDu
 		}
 		l.log().Warn("contract: could not read a workspace's snapshot", "workspace", ws, "error", err)
 		// Recorded against the due time and the seq it was chosen with.
-		_, ok := s.record(ctx, ws, next.Seq, next.DueAt, store.SnapshotFailed, "database")
+		_, ok := s.record(ctx, ws, next.Seq, next.DueAt, nil, store.SnapshotFailed, "database")
 		return ok
 	case !ok:
 		// Parked meanwhile: nothing goes.
 		return true
 	}
 	seq := read.Seq
-	snap := SnapshotOf(read, seq)
-	if why, rule := snapshotRule(snap); why != "" {
+	snap, why, left, rule := sendable(SnapshotOf(read, seq))
+	if why != "" {
 		class := "local_invalid:" + why
-		rec, ok := s.record(ctx, ws, seq, read.MeasuredAt, store.SnapshotFailed, class)
+		rec, ok := s.record(ctx, ws, seq, read.MeasuredAt, nil, store.SnapshotFailed, class)
 		// Once per run, whichever leader, however many tries a document or
 		// a restart asks for in between (which count none).
 		if ok && rec.Recorded && rec.Before != class {
@@ -321,6 +384,18 @@ func (s *snapshotSender) send(ctx context.Context, next store.ContractSnapshotDu
 		}
 		return ok
 	}
+	switch {
+	case left == "":
+		delete(s.bare, ws)
+	case !s.bare[ws]:
+		// Once a run, per leader, while it goes without them.
+		s.bare[ws] = true
+		l.log().Error("contract: a workspace's snapshot goes without its tokens: with them it is over a limit",
+			"workspace", ws, "reason", left, "items", len(snap.Items))
+		if err := c.RecordError(ctx, store.ContractErrorSnapshotInvalid); err != nil && ctx.Err() == nil {
+			l.log().Warn("contract: could not record an ERROR", "error", err)
+		}
+	}
 	err = m.Client.PutAccess(ctx, ws.String(), snap)
 	if ctx.Err() != nil {
 		// The leader is stopping: whatever came back, the next leader
@@ -328,7 +403,10 @@ func (s *snapshotSender) send(ctx context.Context, next store.ContractSnapshotDu
 		return true
 	}
 	outcome, class := snapshotResult(err)
-	rec, stored := s.record(ctx, ws, seq, read.MeasuredAt, outcome, class)
+	// A token's expiry writes nothing: an accepted snapshot is due again
+	// just after the first one it lists, and that one leaves it out (step
+	// 7's plan, 6.2).
+	rec, stored := s.record(ctx, ws, seq, read.MeasuredAt, read.TokensExpire, outcome, class)
 	switch {
 	case !rec.Recorded:
 	case outcome == store.SnapshotAccepted:
@@ -354,10 +432,10 @@ func (s *snapshotSender) send(ctx context.Context, next store.ContractSnapshotDu
 
 // record stores an outcome, and logs a failure to store it (false): the
 // snapshot is then due as it was, and sent again.
-func (s *snapshotSender) record(ctx context.Context, ws uuid.UUID, seq int64, measured time.Time,
+func (s *snapshotSender) record(ctx context.Context, ws uuid.UUID, seq int64, measured time.Time, expires *time.Time,
 	outcome store.ContractSnapshotOutcome, class string) (store.ContractSnapshotRecord, bool) {
 	c := s.l.Members.Contract
-	rec, err := c.SnapshotSent(ctx, ws, seq, measured, outcome, class, s.l.times())
+	rec, err := c.SnapshotSent(ctx, ws, seq, measured, expires, outcome, class, s.l.times())
 	if err != nil {
 		if ctx.Err() == nil {
 			s.l.log().Warn("contract: could not record a snapshot's outcome", "workspace", ws, "error", err)

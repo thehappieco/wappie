@@ -415,3 +415,38 @@ func TestATokenGrantNeverHoldsAKeyForARelink(t *testing.T) {
 		t.Fatalf("a token's grant held the key for a relink: %v %v", held, err)
 	}
 }
+
+// TestPauseByAToken (the plan's 10.5): a token whose creator has no local
+// account pauses as a key, with the creator's sub from its record, and no
+// local actor: every reader is told, and the event names the sub.
+func TestPauseByAToken(t *testing.T) {
+	w := newAuthWorld(t)
+	ctx := context.Background()
+	device := snapshotNumber(w, "Vendas", "5511900000001")
+	// Its record as the applier keeps it, created by a sub no local
+	// account is linked to.
+	tok, stranger := uuid.New(), uuid.New()
+	w.Exec(`INSERT INTO contract_token_selectors (selector, token_id, tenant_id, hash, until)
+		VALUES ('00000000000000cd', $1, $2, decode(repeat('cd', 32), 'hex'), clock_timestamp() + interval '1 day')`, tok, w.Tenant)
+	w.ExecIn(`INSERT INTO contract_tokens (id, tenant_id, name, created_by, created_at, expires_at)
+		VALUES ($1, $2, 'n', $3, clock_timestamp(), clock_timestamp() + interval '1 day')`, tok, w.Tenant, stranger)
+	paused, err := w.Devices.Pause(ctx, w.Tenant, device, store.PauseActor{Token: tok})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !paused.Changed || paused.ActorKind != "key" || paused.ActorUser != nil || !paused.Recorded {
+		t.Fatalf("the pause: %+v", paused)
+	}
+	if len(paused.Notices) != 1 || paused.Notices[0].UserID != w.Owner {
+		t.Fatalf("the notices: %+v", paused.Notices)
+	}
+	var kind string
+	var sub, user *uuid.UUID
+	w.Scoped(func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `SELECT actor_kind, actor_sub, actor_user_id FROM item_events WHERE item_id = $1 AND type = 'sync_paused'`, device).
+			Scan(&kind, &sub, &user)
+	})
+	if kind != "key" || sub == nil || *sub != stranger || user != nil {
+		t.Fatalf("the event's actor: %s %v %v", kind, sub, user)
+	}
+}

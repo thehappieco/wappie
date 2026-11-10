@@ -1057,11 +1057,46 @@ missing snapshot as unknown protection.
   accounts and people never linked to the platform. A deleted number is
   reported as it was live until its purge, its readers, holders and
   `protected` included (platform decision 0044).
-- **Limits.** At most 1000 items, 5000 people on an item and a 1 MiB body,
-  and the kit's validation (labels and hints as the platform's strict
-  intake checks them). A snapshot past them is not sent (ERROR "contract: a
-  workspace's snapshot is not sent: Wappie would not send it"), recorded
-  `local_invalid:<rule>`, and retried with the backoff.
+- **`ordinal` and `tokens`** go on every item only while the token mode
+  is on (`whatserverd contract tokens on`), and never while it is off: the
+  platform decodes strictly, and tokens on says its side takes them.
+  `ordinal` is the number's place in its workspace (`devices.ordinal`,
+  1 to 9999: the lowest free one at its creation, kept across a rename, a
+  deletion and a recovery, freed by its purge; a moved-out number takes a
+  free one in its new workspace; past 9999 none, and the member is left
+  out). The console names an unlabelled number by it. `tokens` lists, in
+  id order, the platform tokens with a permission Wappie applied on the
+  number: `can` the applied ones (never a pending, waiting or refused
+  one), `reads` an applied Read with a grant to the token's identity at
+  the number's current epoch, `waiting` an applied Read without it. A
+  token revoked (the belt included, as its usage counts it), expired at
+  the measurement or unlisted by a reset's pass is left out; one Wappie
+  stops on its own (an operator's stop, `apply_failed`, `local_rule`,
+  `creator_disabled_here`) is listed, as the acknowledgement reports it
+  suspended. The belt's stop writes no token row, so no trigger tells the
+  sender: a creator who leaves the workspace changes its members, which
+  makes the snapshot due at once, but a creator's disable or recovery
+  shows when the platform's own revocation of the token arrives (it
+  revokes such tokens itself, platform decision 0053), or at the next
+  snapshot for any other reason, an hour at most. Token auth refuses the
+  token at once either way. An item no token holds, and a deleted one,
+  has `[]`. A token is never a person: never in `people`, `protected` or
+  `other_backups`. About 105 bytes a token: 100 tokens on each of about
+  97 numbers fill the 1 MiB.
+- **Limits.** At most 1000 items, 5000 people on an item, 1000 tokens on
+  an item and a 1 MiB body, and the kit's validation (labels and hints as
+  the platform's strict intake checks them). A snapshot past them is not sent
+  (ERROR "contract: a workspace's snapshot is not sent: Wappie would not
+  send it"), recorded `local_invalid:<rule>`, and retried with the
+  backoff. One past the 1 MiB or an item's 1000 tokens by its tokens alone
+  goes without any item's `tokens` (the spec: absent, the app does not
+  report tokens), its ordinals kept, with one ERROR a run per leader
+  "contract: a workspace's snapshot goes without its tokens: with them it
+  is over a limit" (`reason` `too_large` or `tokens`, never a value;
+  recorded `snapshot_invalid`). The platform allows 100 live tokens a
+  workspace and 1000 numbers a token, more than one snapshot carries, and
+  the people, their protection and the numbers' states never wait for
+  them. The tokens go again once they fit.
 - **`snapshot_seq`** is the greater of the measurement's milliseconds and
   the last one numbered plus one (which may be one whose send failed), or
   the workspace's last section's plus one, stored before the send, so it
@@ -1077,9 +1112,14 @@ released for one try); 2 seconds after the first of a run of changes the
 snapshot shows (a number's state, label, identity or deletion, a
 permission, a grant, a membership, a person's status, a new platform link,
 the workspace's status or storage stop: 0051's triggers notify the leader
-at each commit); at once after a document that changes the workspace's
-members or names it first; and 55 minutes after the last accepted one, so
-a snapshot is never an hour old. One sender, in the order they are due, at
+at each commit; with 0053, a number's ordinal, a token's perms and its
+narrowings, but not the belt's stop, above); at once after a document that changes the workspace's
+members or names it first, and, every workspace's, when the token mode
+switches; 2 seconds after the earliest expiry of a token the last
+accepted one lists, since an expiry writes nothing (set in the same write
+as the outcome, so expiries under 2 seconds apart share one snapshot); and
+55 minutes after the last accepted one, so a snapshot is never an hour
+old. One sender, in the order they are due, at
 the leader's pace.
 
 **Outcomes.** `{"accepted": true}` resets its backoff. A signed `not_found`
@@ -1087,7 +1127,11 @@ is retried with the backoff for 24 hours, then the workspace's snapshots
 are parked (ERROR "contract: a workspace's snapshot is parked") until a
 document names it again, a restart or a leader's start. A signed
 `invalid_request` parks it at once (a Wappie bug), until a restart or a
-leader's start. No answer, an unverified one or another refusal: 5 seconds
+leader's start; but a refusal of a snapshot measured before a due time
+set since (a document, a restart, a leader's start, a switch of the token
+mode) parks nothing: the snapshot measured after it goes next, and parks
+if it is refused too. So turning tokens off after the platform refused
+the new members unparks every workspace for good. No answer, an unverified one or another refusal: 5 seconds
 doubled with each failure, up to an hour. Each accepted snapshot logs, at
 most hourly per workspace, INFO "contract: snapshot labels": how many of
 its labels fall in each class (named, phone, placeholder, legacy id,

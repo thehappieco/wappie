@@ -259,7 +259,7 @@ func (l *Leader) lead(held *pg.Held, wake <-chan string) (lost bool) {
 	f.commands = settings.interrupt
 	tokens := newTokenWork(l, f.round, gate)
 	f.tokens = tokens.interrupt
-	snaps := &snapshotSender{l: l, notices: newNotices(), logged: map[uuid.UUID]time.Time{}}
+	snaps := &snapshotSender{l: l, notices: newNotices(), logged: map[uuid.UUID]time.Time{}, bare: map[uuid.UUID]bool{}}
 	events := newEventSender(l)
 	var wg sync.WaitGroup
 	wg.Go(func() { f.run(ctx) })
