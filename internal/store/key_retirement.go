@@ -14,17 +14,17 @@ import (
 // The retirement of Wappie's own API keys on a platform installation
 // (whatserverd tokens retire-keys; step 7's plan, 7.1 and 7.2): once the
 // platform's tokens are on, every live key that is not an MCP
-// connection's, a setup in flight or an old local MCP token is revoked,
-// and a standing service account such a key acted as is removed where
-// every number it holds a key of keeps a human holder.
+// connection's, a setup in flight or an old local MCP token is revoked
+// (retiredKey). A standing service account such a key acted as, or a
+// revoked old local MCP token did, is removed where every number it holds
+// a key of keeps a human holder.
 
 // RevokeReasonPlatformTokens is api_keys.revoke_reason for a key the
 // retirement revoked.
 const RevokeReasonPlatformTokens = "platform_tokens"
 
 // The classes of 0053's api_key_class (the plan's 7.1), by shape first and
-// then by creator. A key of KeyClassREST or KeyClassCLI is retired; the
-// others are spared.
+// then by creator. Which are retired, retiredKey says.
 const (
 	KeyClassMCP       = "mcp"
 	KeyClassMCPSetup  = "mcp_setup"
@@ -35,8 +35,9 @@ const (
 
 // Why a standing service account is kept (KeptService.Reason).
 const (
-	// KeptNoRetiredKey: no retired key ever acted as it, and no earlier
-	// retirement kept it. It is not the retirement's.
+	// KeptNoRetiredKey: no retired key ever acted as it, nor a revoked old
+	// local MCP token, and no earlier retirement kept it. It is not the
+	// retirement's.
 	KeptNoRetiredKey = "no_retired_key"
 	// KeptSparedKey: a key the retirement spares acts as it.
 	KeptSparedKey = "spared_key"
@@ -66,9 +67,10 @@ type RetireKey struct {
 	Prefix    string
 	Name      string
 	Scope     KeyScope
-	// Class is api_key_class's; Retire is whether the class is retired.
-	Class  string
-	Retire bool
+	// Class is api_key_class's; Origin is how the key was issued ("" for
+	// none); Retire is retiredKey's answer.
+	Class, Origin string
+	Retire        bool
 	// Creator is the creator's platform sub, else the address, else ""
 	// (the command line's).
 	Creator string
@@ -145,16 +147,26 @@ func (a *APIKeys) RetirePlan(ctx context.Context) (KeyRetirement, error) {
 	return out, err
 }
 
-// Retire is the apply, in one transaction over every workspace, each
-// under its row lock (lockWorkspaceAccess), in workspace id order (DB25
-// step 3): it revokes every live key of class rest or cli (revoked_at the
-// apply's time, revoke_reason platform_tokens); then removes each standing
-// service account that a key revoked by this or an earlier retirement
-// acted as (or an earlier report kept), that no spared live key acts as,
-// and where every number it holds a key of keeps a human holder
-// (everyGrantKeepsAHumanHolderTx), with a workspace_member_history row;
-// then writes the key_retirements row, with the apply's time. confirm must
-// equal the count of keys to revoke, or nothing is written
+// Retire is the apply, in one transaction over every workspace. It holds
+// the modes it checks first: contract_state, then contract_token_state,
+// FOR SHARE (DB25 steps 1 and 2), so neither mode turns off under it. Then
+// each workspace's row (lockWorkspaceAccess, DB25 step 3), in workspace id
+// order, held to the commit. That blocks every insert with a foreign key
+// to the workspace (a message's capture, say) until then, for the run's
+// fraction of a second.
+//
+// In each workspace it revokes every live key retiredKey names
+// (revoked_at the apply's time, revoke_reason platform_tokens). Then it
+// removes each standing service account that no spared live key acts as,
+// that a key revoked by this or an earlier retirement acted as (or an
+// earlier report kept, or a revoked old local MCP token acted as), and
+// where every number it holds a key of keeps a human holder
+// (everyGrantKeepsAHumanHolderTx), with a workspace_member_history row.
+// Then it writes the key_retirements row, with the apply's time. One
+// transaction checks confirm against the count once, and writes one row
+// per apply.
+//
+// confirm must equal the count of keys to revoke, or nothing is written
 // (ErrRetireConfirm). by is who ran it. Run again, it revokes nothing, and
 // removes a service kept before that now has a human holder.
 //
@@ -174,8 +186,17 @@ func (a *APIKeys) Retire(ctx context.Context, confirm int, by string) (KeyRetire
 
 func retireTx(ctx context.Context, tx pgx.Tx, apply bool, confirm int, by string) (KeyRetirement, error) {
 	var out KeyRetirement
+	// The apply holds both modes until it commits, in DB25's order; the
+	// dry run, read only, takes no lock.
+	lock := ""
+	if apply {
+		lock = " FOR SHARE"
+	}
 	var contract, tokens string
-	if err := tx.QueryRow(ctx, `SELECT c.mode, t.mode FROM contract_state c CROSS JOIN contract_token_state t`).Scan(&contract, &tokens); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT mode FROM contract_state`+lock).Scan(&contract); err != nil {
+		return out, err
+	}
+	if err := tx.QueryRow(ctx, `SELECT mode FROM contract_token_state`+lock).Scan(&tokens); err != nil {
 		return out, err
 	}
 	if contract == ContractOff || tokens != TokensOn {
@@ -253,6 +274,23 @@ func retireTx(ctx context.Context, tx pgx.Tx, apply bool, confirm int, by string
 	return out, err
 }
 
+// retiredKey is whether the retirement revokes a live key of class with
+// origin (the plan's 7.1). A rest or cli key is. A key in an MCP setup's
+// or an old local token's shape is too when it was issued as rest or cli:
+// no consent made it. That is a new key in the old token's shape (only
+// 0053's backfill writes legacy_mcp), which MCPPanel and M2L do not list,
+// or one acting as a standing service. A connection's key (mcp) never is,
+// whatever its origin, and a key with no origin keeps its class's rule.
+func retiredKey(class, origin string) bool {
+	switch class {
+	case KeyClassREST, KeyClassCLI:
+		return true
+	case KeyClassLegacyMCP, KeyClassMCPSetup:
+		return origin == OriginREST || origin == OriginCLI
+	}
+	return false
+}
+
 // retireWorkspaceTx is one workspace's part, under its app.tenant_id (and,
 // for an apply, its row lock): its live keys, classified, revoked when
 // applying; then its standing service accounts, judged, removed when
@@ -264,7 +302,7 @@ func retireWorkspaceTx(ctx context.Context, tx pgx.Tx, w *RetireWorkspace, apply
 	}
 	// The creator's sub (platform_identities has no policy), else the
 	// address, a removed member's from the history.
-	rows, err := tx.Query(ctx, `SELECT k.id, k.prefix, k.name, k.scope, api_key_class(k), k.last_used_at, k.acts_as,
+	rows, err := tx.Query(ctx, `SELECT k.id, k.prefix, k.name, k.scope, api_key_class(k), coalesce(k.origin, ''), k.last_used_at, k.acts_as,
 			coalesce(pi.sub::text, u.email, creator.email, ''), coalesce(s.email, service.email, '')
 		FROM api_keys k
 		LEFT JOIN users u ON u.id = k.created_by
@@ -280,13 +318,13 @@ func retireWorkspaceTx(ctx context.Context, tx pgx.Tx, w *RetireWorkspace, apply
 	w.Keys, err = pgx.CollectRows(rows, func(r pgx.CollectableRow) (RetireKey, error) {
 		k := RetireKey{Workspace: w.ID}
 		var actsAs string
-		if err := r.Scan(&k.ID, &k.Prefix, &k.Name, &k.Scope, &k.Class, &k.LastUsedAt, &k.ActsAsID, &k.Creator, &actsAs); err != nil {
+		if err := r.Scan(&k.ID, &k.Prefix, &k.Name, &k.Scope, &k.Class, &k.Origin, &k.LastUsedAt, &k.ActsAsID, &k.Creator, &actsAs); err != nil {
 			return k, err
 		}
 		if actsAs != "" {
 			k.ActsAs = ServiceName(User{Role: RoleService, Email: actsAs})
 		}
-		k.Retire = k.Class == KeyClassREST || k.Class == KeyClassCLI
+		k.Retire = retiredKey(k.Class, k.Origin)
 		return k, nil
 	})
 	if err != nil {
@@ -309,10 +347,16 @@ func retireWorkspaceTx(ctx context.Context, tx pgx.Tx, w *RetireWorkspace, apply
 		}
 	}
 
+	// A candidate: a key the retirement revoked acted as it, or an earlier
+	// report kept it, or a revoked old local MCP token acted as it (12b's
+	// M2L revokes one and keeps its account while a number has no other
+	// human holder; a later run removes the account once one does).
 	rows, err = tx.Query(ctx, `SELECT m.user_id, u.email,
 			EXISTS (SELECT 1 FROM api_keys k WHERE k.tenant_id = m.tenant_id AND k.acts_as = m.user_id AND k.revoke_reason = 'platform_tokens')
 			OR EXISTS (SELECT 1 FROM key_retirements r, jsonb_array_elements(r.report->'kept') e
 				WHERE e->>'workspace' = m.tenant_id::text AND e->>'user_id' = m.user_id::text)
+			OR EXISTS (SELECT 1 FROM api_keys k WHERE k.tenant_id = m.tenant_id AND k.acts_as = m.user_id
+				AND k.origin = 'legacy_mcp' AND k.revoked_at IS NOT NULL)
 		FROM workspace_memberships m JOIN users u ON u.id = m.user_id
 		WHERE m.tenant_id = $1 AND m.role = 'service' AND m.expires_at IS NULL AND NOT u.token_identity
 		  AND NOT EXISTS (SELECT 1 FROM mcp_connections c WHERE c.service_user_id = m.user_id)
@@ -374,16 +418,20 @@ func retireWorkspaceTx(ctx context.Context, tx pgx.Tx, w *RetireWorkspace, apply
 
 // everyGrantKeepsAHumanHolderTx reports whether every number where account
 // holds a grant at an epoch not retired has another holder of that epoch
-// who is human: the user and the membership not of role service, the
-// membership active with no deadline, the user active, with Read on the
-// number, and no connection's account (the plan's 7.2, step 3). Stricter
-// than sole_key_holders (0051), where two standing services shield each
-// other; a token identity is never a member, so never a holder here. A connection's account is a service account, so the
-// role already leaves it out; it is named anyway, as the plan and
-// sole_key_holders name it. An account with no such grant has none to
-// keep. The
-// retirement removes a standing service account only where this holds,
-// and so does M2L's legacy token revoke (12b). The caller holds
+// who is human (the plan's 7.2, step 3):
+//   - the user and the membership not of role service;
+//   - the membership active with no deadline;
+//   - the user active, with Read on the number;
+//   - no connection's account.
+//
+// It is stricter than sole_key_holders (0051), where two standing services
+// shield each other. A token identity is never a member, so never a holder
+// here. A connection's account is a service account, so the role already
+// leaves it out; it is named anyway, as the plan and sole_key_holders name
+// it. An account with no such grant has none to keep.
+//
+// The retirement removes a standing service account only where this
+// holds, and so does M2L's legacy token revoke (12b). The caller holds
 // pg.InTenantTx(tenant), or app.tenant_id, and the workspace's row lock
 // (lockWorkspaceAccess). A deleted number not purged yet counts, as in
 // sole_key_holders: nothing here joins devices.

@@ -44,6 +44,17 @@ func (w *retireWorld) key(t *testing.T, name string, scope store.KeyScope, creat
 	return key
 }
 
+// legacy issues an old local MCP token as 0053's backfill found it: read,
+// devices, no deadline, "MCP · …", acting as actsAs (or nothing), with
+// origin legacy_mcp. A key issued in that shape since 0053 has origin
+// rest, and is retired.
+func (w *retireWorld) legacy(t *testing.T, name string, creator, actsAs *uuid.UUID, devices []uuid.UUID) string {
+	t.Helper()
+	key := w.key(t, name, store.ScopeRead, creator, actsAs, devices, nil)
+	w.exec(t, `UPDATE api_keys SET origin = 'legacy_mcp' WHERE prefix = $1`, strings.SplitN(key, ".", 2)[0])
+	return key
+}
+
 // standing is a standing service account of the workspace, registered by
 // the owner's invitation, that reads devices.
 func (w *retireWorld) standing(t *testing.T, devices ...uuid.UUID) uuid.UUID {
@@ -123,7 +134,10 @@ func (w *retireWorld) apply(t *testing.T) store.KeyRetirement {
 // the old local MCP tokens (with an mcp-… service, with none, and one
 // whose creator was deleted) are kept; a panel's key, REST keys acting as
 // a standing service and as an old token's service, and the command
-// line's key are revoked at the apply's time with platform_tokens. Keys
+// line's key are revoked at the apply's time with platform_tokens. So are
+// keys in an MCP shape that no consent issued (origin rest): one in the
+// old token's shape issued since 0053, which MCPPanel and M2L would not
+// list, and one in a setup's shape acting as a standing service. Keys
 // already revoked or expired are untouched. The kept keys still
 // authenticate on REST and the socket (VerifyClient), but the setup in
 // flight, which works only through its connection.
@@ -162,16 +176,24 @@ func TestRetireRevokesOnlyTheRESTKeys(t *testing.T) {
 	erp := w.standing(t, device)
 	kept := map[string]string{
 		"a setup in flight":                      w.key(t, "MCP · Claude", store.ScopeRead, owner, nil, devices, &in20),
-		"an old token with its mcp-… service":    w.key(t, "MCP · Claude", store.ScopeRead, owner, &legacyService, devices, nil),
-		"an old token with no service":           w.key(t, "MCP · Cursor", store.ScopeRead, owner, nil, devices, nil),
-		"an old token whose creator was deleted": w.key(t, "MCP · Desktop", store.ScopeRead, owner, nil, devices, nil),
+		"an old token with its mcp-… service":    w.legacy(t, "MCP · Claude", owner, &legacyService, devices),
+		"an old token with no service":           w.legacy(t, "MCP · Cursor", owner, nil, devices),
+		"an old token whose creator was deleted": w.legacy(t, "MCP · Desktop", owner, nil, devices),
 	}
 	w.exec(t, `UPDATE api_keys SET created_by = NULL WHERE prefix = $1`, strings.SplitN(kept["an old token whose creator was deleted"], ".", 2)[0])
 	retired := map[string]string{
-		"a panel's full key":                  w.key(t, "deploy bot", store.ScopeFull, owner, nil, nil, nil),
-		"a REST key acting as a service":      w.key(t, "erp", store.ScopeSend, owner, &erp, devices, nil),
-		"a REST key acting as an old token's": w.key(t, "MCP helper", store.ScopeRead, owner, &legacyService, nil, nil),
-		"the command line's key":              w.key(t, "cli", store.ScopeFull, nil, nil, nil, nil),
+		"a panel's full key":                    w.key(t, "deploy bot", store.ScopeFull, owner, nil, nil, nil),
+		"a REST key acting as a service":        w.key(t, "erp", store.ScopeSend, owner, &erp, devices, nil),
+		"a REST key acting as an old token's":   w.key(t, "MCP helper", store.ScopeRead, owner, &legacyService, nil, nil),
+		"the command line's key":                w.key(t, "cli", store.ScopeFull, nil, nil, nil, nil),
+		"an old token's shape since 0053":       w.key(t, "MCP · script", store.ScopeRead, owner, nil, devices, nil),
+		"a setup's shape as a standing service": w.key(t, "MCP · erp", store.ScopeRead, owner, &erp, devices, &in20),
+	}
+	for name, want := range map[string]string{"an old token's shape since 0053": store.KeyClassLegacyMCP,
+		"a setup's shape as a standing service": store.KeyClassMCPSetup} {
+		if origin, class := w.originOf(t, retired[name]); origin != store.OriginREST || class != want {
+			t.Fatalf("%s: origin %q, class %q", name, origin, class)
+		}
 	}
 	revoked := w.key(t, "old", store.ScopeFull, owner, nil, nil, nil)
 	prefix, _, _ := strings.Cut(revoked, ".")
@@ -377,7 +399,7 @@ func TestRetireKeepsAServiceASparedKeyActsAs(t *testing.T) {
 	ctx := context.Background()
 	c := w.retiring(t, "both")
 	w.reads(t, w.owner, c.number)
-	legacy := w.key(t, "MCP · Claude", store.ScopeRead, &w.owner, &c.service, []uuid.UUID{c.number}, nil)
+	legacy := w.legacy(t, "MCP · Claude", &w.owner, &c.service, []uuid.UUID{c.number})
 	// A service no retired key acted as is never the retirement's.
 	other := w.standing(t, w.shared)
 	w.tokensOn(t)
@@ -502,13 +524,28 @@ func TestRetireRefusesWhileTokensAreOff(t *testing.T) {
 
 // TestRetireMakesTheSnapshotsDue: removing a service account deletes its
 // grants and membership, whose dirty triggers wake the snapshot of its
-// workspace; its other_backups shrink with it.
+// workspace; its number's other_backups shrink by the account.
 func TestRetireMakesTheSnapshotsDue(t *testing.T) {
 	w := newRetireWorld(t)
 	ctx := context.Background()
 	c := w.retiring(t, "backed")
 	w.reads(t, w.owner, c.number)
 	w.tokensOn(t)
+	backups := func() int {
+		t.Helper()
+		snap, err := w.c.Snapshot(ctx, w.tenant)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, it := range snap.Items {
+			if it.ID == c.number {
+				return it.OtherBackups
+			}
+		}
+		t.Fatal("the number is not in the snapshot")
+		return 0
+	}
+	before := backups()
 	conn, err := w.pool.Acquire(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -520,6 +557,9 @@ func TestRetireMakesTheSnapshotsDue(t *testing.T) {
 	if s := service(t, w.apply(t), c.service); !s.Remove {
 		t.Fatalf("not removed: %+v", s)
 	}
+	if after := backups(); after != before-1 {
+		t.Errorf("other_backups %d after the retirement, %d before", after, before)
+	}
 	wait, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	for {
@@ -530,5 +570,98 @@ func TestRetireMakesTheSnapshotsDue(t *testing.T) {
 		if n.Payload == w.tenant.String() {
 			return
 		}
+	}
+}
+
+// TestALaterRunRemovesTheAccountOfARevokedOldToken (12b's M2L and its
+// Q30): an old local MCP token's standing account, which no REST key acted
+// as, is not the retirement's while the token lives. Once the token is
+// revoked (M2L revokes it with no revoke_reason) and while a number it
+// reads has no other human holder, a run keeps the account and its report
+// lists it; so a run after the token's deletion, 13 months on, still
+// removes the account once such a holder exists.
+func TestALaterRunRemovesTheAccountOfARevokedOldToken(t *testing.T) {
+	w := newRetireWorld(t)
+	ctx := context.Background()
+	number := w.number(t, "legacy")
+	account := w.standing(t, number)
+	token := w.legacy(t, "MCP · Claude", &w.owner, &account, []uuid.UUID{number})
+	w.tokensOn(t)
+	if s := service(t, w.apply(t), account); s.Remove || s.Reason != store.KeptNoRetiredKey {
+		t.Fatalf("with its token live: %+v", s)
+	}
+	prefix, _, _ := strings.Cut(token, ".")
+	if err := w.apiKeys.Revoke(ctx, w.tenant.String(), prefix); err != nil {
+		t.Fatal(err)
+	}
+	if s := service(t, w.apply(t), account); s.Remove || s.Reason != store.KeptSoleReader || !w.member(t, account) {
+		t.Fatalf("its token revoked, no other human holder: %+v", s)
+	}
+	w.exec(t, `DELETE FROM api_keys WHERE prefix = $1`, prefix)
+	if s := service(t, w.apply(t), account); s.Remove || s.Reason != store.KeptSoleReader {
+		t.Fatalf("its token deleted: %+v", s)
+	}
+	w.reads(t, w.owner, number)
+	if s := service(t, w.apply(t), account); !s.Remove || w.member(t, account) {
+		t.Fatalf("a human holder now: %+v", s)
+	}
+}
+
+// TestRetireHoldsTheModes (DB25 steps 1 and 2): the apply holds the
+// contract's mode and the token mode until it commits. So a contract
+// tokens off that commits during it never leaves keys revoked with tokens
+// off: the apply waits for it, then refuses, and writes nothing.
+func TestRetireHoldsTheModes(t *testing.T) {
+	w := newRetireWorld(t)
+	ctx := context.Background()
+	key := w.key(t, "deploy bot", store.ScopeFull, &w.owner, nil, nil, nil)
+	w.tokensOn(t)
+	off, err := w.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer off.Rollback(ctx) //nolint:errcheck // committed below
+	var pid int32
+	if err := off.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&pid); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := off.Exec(ctx, `UPDATE contract_token_state SET mode = 'off'`); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := w.apiKeys.Retire(ctx, 1, "root")
+		done <- err
+	}()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		var blocked bool
+		if err := w.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE $1 = ANY (pg_blocking_pids(pid)))`, pid).
+			Scan(&blocked); err != nil {
+			t.Fatal(err)
+		}
+		if blocked {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the apply never waited for the token mode")
+		}
+		select {
+		case err := <-done:
+			t.Fatalf("the apply did not wait for the token mode: %v", err)
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+	if err := off.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; !errors.Is(err, store.ErrRetireNeedsTokens) {
+		t.Fatalf("the apply after tokens went off: %v", err)
+	}
+	if s := w.keyState(t, key); s.revokedAt != nil {
+		t.Fatalf("a key was revoked with tokens off: %+v", s)
+	}
+	if n := w.count(t, `SELECT count(*) FROM key_retirements`); n != 0 {
+		t.Fatalf("%d retirements recorded", n)
 	}
 }

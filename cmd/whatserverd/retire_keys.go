@@ -14,19 +14,21 @@ import (
 // plan, 7.2): an operator's command, never a migration, since self-hosted
 // installations run the same migrations. It refuses unless the contract
 // is on and tokens are on. The dry run prints, per workspace, every live
-// key (prefix, class, what it would do, scope, name, the service it acts
-// as, its creator's sub or address, its last use) and every standing
-// service account (remove, or kept and why), and writes nothing; the
-// owner reads it, through the platform, before the apply. The apply
-// revokes the keys of class rest and cli, removes the services, and
+// key (prefix, what it would do, class, origin, scope, name, the service
+// it acts as, its creator's sub or address, its last use) and every
+// standing service account (remove, or kept and why), and writes nothing;
+// the owner reads it, through the platform, before the apply. The apply
+// revokes the keys of class rest and cli, and those in an MCP shape that
+// no consent issued (origin rest or cli), removes the services, and
 // records the run (key_retirements); -confirm must be the dry run's count
 // of keys to revoke. Run again, it revokes nothing, and may remove a
 // service kept before. Its log holds counts, prefixes and service names
-// only.
+// only. It holds every workspace's row until it commits, so captures wait
+// for that fraction of a second.
 
 // keptWhy says why a standing service account is kept.
 var keptWhy = map[string]string{
-	store.KeptNoRetiredKey: "no retired key acted as it",
+	store.KeptNoRetiredKey: "no retired key acted as it, nor a revoked old MCP token",
 	store.KeptSparedKey:    "a spared key acts as it",
 	store.KeptSoleReader:   "sole reader of a number (no other human holder)",
 }
@@ -97,7 +99,10 @@ func printRetirement(out io.Writer, r store.KeyRetirement, apply bool) {
 			if k.Retire {
 				did = revoke
 			}
-			actsAs, creator, used := "-", "-", "never"
+			origin, actsAs, creator, used := "-", "-", "-", "never"
+			if k.Origin != "" {
+				origin = k.Origin
+			}
 			if k.ActsAs != "" {
 				actsAs = k.ActsAs
 			}
@@ -107,8 +112,8 @@ func printRetirement(out io.Writer, r store.KeyRetirement, apply bool) {
 			if k.LastUsedAt != nil {
 				used = k.LastUsedAt.UTC().Format(time.RFC3339)
 			}
-			p("  key %s  %s  class %s  scope %s  name %q  acts as %s  creator %s  last used %s", k.Prefix, did, k.Class, k.Scope, k.Name,
-				actsAs, creator, used)
+			p("  key %s  %s  class %s  origin %s  scope %s  name %q  acts as %s  creator %s  last used %s", k.Prefix, did, k.Class, origin,
+				k.Scope, k.Name, actsAs, creator, used)
 		}
 		for _, s := range w.Services {
 			if s.Remove {

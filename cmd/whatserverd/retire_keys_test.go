@@ -76,7 +76,7 @@ func TestRetireKeysCommand(t *testing.T) {
 	}
 	dry := out.String()
 	for _, want := range []string{"dry run, nothing written", `workspace ` + tenant.String() + ` "Piloto A"`,
-		"key " + prefix + "  revoke  class rest  scope read  name \"orders\"  acts as erp  creator owner@acme.test  last used never",
+		"key " + prefix + "  revoke  class rest  origin rest  scope read  name \"orders\"  acts as erp  creator owner@acme.test  last used never",
 		"service erp (" + erp.ID.String() + ")  remove", "keys to revoke: 1;", "apply with: whatserverd tokens retire-keys -apply -confirm 1"} {
 		if !strings.Contains(dry, want) {
 			t.Errorf("the dry run lacks %q:\n%s", want, dry)
