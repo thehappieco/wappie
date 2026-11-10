@@ -2434,8 +2434,8 @@ a retired key acted as only where no spared key acts as it and every number
 it holds a key of, at an epoch not retired, keeps another holder who is
 human: a person (user and membership not of role service), active, with
 Read, and no deadline. That is stricter than `sole_key_holders`, where two
-standing services, or a disabled person, shield each other
-(`everyGrantKeepsAHumanHolderTx`, which 12b's M2L reuses). A service kept
+standing services shield each other (`everyGrantKeepsAHumanHolderTx`,
+which 12b's M2L reuses). A service kept
 for want of such a holder is listed in the retirement's report, so a later
 run removes it once one exists, even after the keys are deleted. Nothing
 is stranded and no notice is raised.

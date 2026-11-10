@@ -377,9 +377,8 @@ func retireWorkspaceTx(ctx context.Context, tx pgx.Tx, w *RetireWorkspace, apply
 // who is human: the user and the membership not of role service, the
 // membership active with no deadline, the user active, with Read on the
 // number, and no connection's account (the plan's 7.2, step 3). Stricter
-// than sole_key_holders (0051), where two standing services, or a disabled
-// person, shield each other; a token identity is never a member, so never
-// a holder here. A connection's account is a service account, so the
+// than sole_key_holders (0051), where two standing services shield each
+// other; a token identity is never a member, so never a holder here. A connection's account is a service account, so the
 // role already leaves it out; it is named anyway, as the plan and
 // sole_key_holders name it. An account with no such grant has none to
 // keep. The

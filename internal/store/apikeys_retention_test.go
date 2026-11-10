@@ -128,16 +128,15 @@ func quarantineAll(ctx context.Context, t *testing.T, f *aiFixture, device uuid.
 // 13 months whose connection is still active stays, and is counted.
 func TestAKeysConnectionGoesWithIt(t *testing.T) {
 	f := newAIFixture(t)
+	deleted := linkedNumber(t, f.pool, f.tenant, "deleted", "5511900001111", "100000000001111")
+	moved := linkedNumber(t, f.pool, f.tenant, "moved", "5511900002222", "100000000002222")
 	ctx := context.Background()
 	devices := store.NewDevices(f.pool)
-	number := func(label, pn, lid string) uuid.UUID {
-		t.Helper()
-		id := linkedNumber(t, f.pool, f.tenant, label, pn, lid)
+	for _, id := range []uuid.UUID{deleted, moved} {
 		f.archiveKey(ctx, t, id, 1)
 		f.ownerReads(ctx, t, f.owner, id)
-		return id
 	}
-	live, deleted, moved := f.device, number("deleted", "5511900001111", "100000000001111"), number("moved", "5511900002222", "100000000002222")
+	live := f.device
 	ai, _ := f.consentAI(ctx, t, f.owner, f.aiKeys(ctx, t, f.owner), nil, withDevices(live, deleted, moved))
 	var messages []uuid.UUID
 	for _, d := range []uuid.UUID{live, deleted, moved} {

@@ -423,11 +423,11 @@ func TestRetireIsIdempotent(t *testing.T) {
 }
 
 // retireTables is what a retirement may write, row by row.
-func (w *retireWorld) retireTables(t *testing.T) string {
+func (w *retireWorld) retireTables(ctx context.Context, t *testing.T) string {
 	t.Helper()
 	var out string
-	w.scoped(t, func(tx pgx.Tx) error {
-		return tx.QueryRow(context.Background(), `SELECT concat_ws('|',
+	inTenantTx(ctx, t, w.pool, w.tenant, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `SELECT concat_ws('|',
 			(SELECT string_agg(concat_ws(',', prefix, revoked_at, revoke_reason), ';' ORDER BY prefix) FROM api_keys),
 			(SELECT string_agg(concat_ws(',', user_id, role, status), ';' ORDER BY user_id) FROM workspace_memberships),
 			(SELECT string_agg(concat_ws(',', device_id, user_id, epoch), ';' ORDER BY device_id, user_id, epoch) FROM device_key_grants),
@@ -446,7 +446,7 @@ func TestRetireDryRunWritesNothing(t *testing.T) {
 	w.reads(t, w.owner, c.number)
 	w.key(t, "deploy bot", store.ScopeFull, &w.owner, nil, nil, nil)
 	w.tokensOn(t)
-	before := w.retireTables(t)
+	before := w.retireTables(ctx, t)
 	plan, err := w.apiKeys.RetirePlan(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -454,7 +454,7 @@ func TestRetireDryRunWritesNothing(t *testing.T) {
 	if plan.Revoke != 2 || plan.Removed != 1 || !plan.AppliedAt.IsZero() {
 		t.Fatalf("the plan: %+v", plan)
 	}
-	if after := w.retireTables(t); after != before {
+	if after := w.retireTables(ctx, t); after != before {
 		t.Fatalf("the dry run wrote:\n%s\n%s", before, after)
 	}
 	w.apply(t)
@@ -467,7 +467,7 @@ func TestRetireRefusesWhileTokensAreOff(t *testing.T) {
 	w := newRetireWorld(t)
 	ctx := context.Background()
 	w.key(t, "deploy bot", store.ScopeFull, &w.owner, nil, nil, nil)
-	before := w.retireTables(t)
+	before := w.retireTables(ctx, t)
 	refused := func(state string) {
 		t.Helper()
 		if _, err := w.apiKeys.RetirePlan(ctx); !errors.Is(err, store.ErrRetireNeedsTokens) {
@@ -476,7 +476,7 @@ func TestRetireRefusesWhileTokensAreOff(t *testing.T) {
 		if _, err := w.apiKeys.Retire(ctx, 1, "root"); !errors.Is(err, store.ErrRetireNeedsTokens) {
 			t.Errorf("%s: the apply: %v", state, err)
 		}
-		if after := w.retireTables(t); after != before {
+		if after := w.retireTables(ctx, t); after != before {
 			t.Errorf("%s: something was written", state)
 		}
 	}
@@ -495,7 +495,7 @@ func TestRetireRefusesWhileTokensAreOff(t *testing.T) {
 	if _, err := w.apiKeys.Retire(ctx, 2, "root"); !errors.As(err, &count) || count.Confirm != 2 || count.Revoke != 1 {
 		t.Fatalf("a wrong count: %v", err)
 	}
-	if after := w.retireTables(t); after != before {
+	if after := w.retireTables(ctx, t); after != before {
 		t.Fatal("a wrong count wrote")
 	}
 }

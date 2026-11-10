@@ -29,6 +29,8 @@ import (
 
 // apiKeyKeep is how long an ended key is kept after its end, in
 // PostgreSQL's months.
+//
+//nolint:gosec // G101: an interval, not a credential
 const apiKeyKeep = `interval '13 months'`
 
 // endedKey is a key (k) whose end is apiKeyKeep before cut, the pass's
