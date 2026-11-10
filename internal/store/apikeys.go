@@ -550,7 +550,9 @@ type APIKeyInfo struct {
 //
 // Revoked keys stay in the list rather than disappearing. A key that was
 // revoked last week is part of the answer to "what could have reached this
-// archive", and hiding it turns an audit into a guess.
+// archive", and hiding it turns an audit into a guess. They stay listed for
+// 13 months after their end (the revocation or the expiry, whichever came
+// first); then the hourly pass deletes them (RetainAPIKeys).
 func (a *APIKeys) List(ctx context.Context, tenantID string) ([]APIKeyInfo, error) {
 	// api_keys itself carries no row-level policy, because resolving a key to a
 	// tenant is what decides the tenant in the first place — so the WHERE below
