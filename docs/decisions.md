@@ -2070,9 +2070,10 @@ locally (whatever the membership's status) or in their stored document,
 the actor must be an owner on both sides, else `not_authorized`. The
 target's role is read fail-closed, so a person the two sides disagree on
 counts as an owner. Wappie's own permissions screen refuses an admin the
-same way (`ErrOwnerTarget`, 403 `not_authorized`); `grant.revoke`, which
-changes no flag, keeps its own rule. Since F4 that rule lets an admin end
-an owner's own connections through it (DS48, asked of the platform).
+same way (`ErrOwnerTarget`, 403 `not_authorized`). Since F4 the socket's
+`grant.revoke`, which changes no flag, refuses an admin on an owner too,
+read fail-closed the same way, with a `not_authorized` frame (DS48, the
+platform's answer).
 
 **DS19. The drop** removes `before \ after` from the current flags, so a
 flag raised since stays, as the platform's reference app does. When
@@ -2203,8 +2204,8 @@ when the number is deleted or moved out, on a revoke, or at its expiry.
 A content one or an AI integration cannot renew without Read, so it
 lasts at most its consented lifetime (90 days at most); a metadata one
 never renews and lasts up to its own (a year at most, for a tested web
-client). The platform answered: they end once, at the upgrade, in F4's
-sweep (DS48, its once-marker still open).
+client). The platform answered: the check at every start ends them, from
+F4 on (DS48).
 
 Every consent, metadata included, and every renewal is refused
 (`ErrMCPKeyUnsuitable`, HTTP 422 `key_unsuitable`) unless the person
@@ -2228,9 +2229,9 @@ nothing narrows a live integration's key any more.
 0061's third rule, a `grant.revoke` alone that leaves the person no
 grant at the number's current epoch, is F4 (DS48).
 
-**DS48. A grant revoked alone takes Read; the upgrade's sweep** (the
-platform's decision 0061, its third rule, QF3, and the platform's answer
-on F4's scope; F4).
+**DS48. A grant revoked alone takes Read; the check at every start**
+(the platform's decision 0061, its third rule, QF3; the platform's answer
+on F4's scope; and its answers F1 to F5 on wappie#74; F4).
 
 The socket's `grant.revoke` deletes the person's grants on the number,
 at every epoch, as before. A revoke that deleted one leaves them no
@@ -2242,17 +2243,25 @@ and every AI integration they created that held the number, whole,
 `grantTakenTx`, then F3's `leaveOwnConnectionsTx`). Their readers are
 told after the commit, within one 5-second bound, as the screen and the
 console's acts tell them (best effort; the 30-second re-tell is the
-backstop). A revoke that finds no grant ends nothing. A refusal
-(`last_device_reader`) changes nothing. Another person's connections,
-workspace API keys and legacy MCP tokens keep what they were given,
+backstop). A revoke that finds no grant ends nothing. A refusal changes
+nothing. Another person's connections, workspace API keys and their
+`acts_as` accounts, and legacy MCP tokens keep what they were given,
 whoever gave it (0032, 0053).
 
 A dormant grant (the Read flag already off) gives no Read, so its revoke
-takes none and ends nothing. Wappie's screen without Read deletes the
-same grant and ends nothing too (DS47), and the parity test holds the
-two together. 0061 says the rule applies "even when their Read flag
-stays"; we read it as needing Read before the act. A connection left on
-such a number is the sweep's (below).
+takes none and ends nothing (the platform's F3). The flag is cleared on
+one path only, `setDevicePermissionTx`, which ends the connections when
+it takes Read. The 0023 trigger and a move to Personal only write it
+true, and the other writes delete whole rows after the person's
+connections ended. `TestReadFlagClearedOnlyBySetDevicePermission` pins
+this. From a dormant grant the paths differ in one way. The screen's PUT
+without Read and the console's `item.flags_drop` of read delete the
+grant too; when they leave no flag at all, they end the person's
+connections on the number, as an access removal does (DS47). With send
+or manage kept they end nothing, as a dormant grant's revoke does. Only
+`grant.revoke` changes no flag, so only it can leave a connection from
+before 0061 on a number with no flag left: the check at the next start
+ends it (below).
 
 The rule looks after the act at what is left: a grant at the number's
 current epoch, its archive key not retired. So a grant replaced in the
@@ -2266,33 +2275,98 @@ connection or an AI integration then needs a reseal or a renewal anyway.
 A metadata connection does not: it never reseals (0042) or renews, and
 its key's check (`AllowsDevice`) asks nothing of the person's grant. So
 a person left out of a rotation would keep a metadata connection until
-it expires, up to a year. No code rotates a key today:
-`CreateArchiveKey` runs only at epoch 1 (pairing, `device-key`, which
-refuses a second key, and the demo seed), and nothing sets
-`retired_at`. Whoever builds rotation settles this with the platform. A
-`grant.revoke` during a rotation, when the person holds only the old
-epoch's grant, takes the key they would be sealed again from: it counts.
+it expires, up to a year. No code rotates or retires a key, and none
+will until the platform decides how: `CreateArchiveKey` runs only at
+epoch 1 (pairing, `device-key`, which refuses a second key, and the demo
+seed), and nothing sets `retired_at`. A `grant.revoke` during a
+rotation, when the person holds only the old epoch's grant, takes the
+key they would be sealed again from: it counts.
 
-Who may revoke is unchanged: an owner or an admin (`requireAdmin`).
-DS18 left `grant.revoke` out of Q58's rule because it changes no flag.
-Since F4 an admin's `grant.revoke` on an owner also ends the owner's own
-connections and integrations that held the number, while the screen and
-the flags acts refuse an admin on an owner (`ErrOwnerTarget`). Before F4
-the same act already took the owner's key. Asked of the platform: keep
-this, or refuse an admin on an owner here too, read fail-closed as DS18
-reads it.
+**Who may revoke** (the platform's F2). `grant.revoke` reads its actor's
+role again under the workspace's lock (`lockWorkspaceManager`): a
+socket's role can be stale. The actor must be an active owner or admin
+of an active workspace, as 0040 asks of every act on access; otherwise
+`ErrMembershipForbidden`. Only an owner changes an owner's access (DS18,
+the owner's Q58, the platform's 0060): an admin whose target
+`ownerTargetTx` reads as an owner, fail-closed, is refused with
+`ErrOwnerTarget`, before the last-reader check and the delete, a live
+grant or a dormant one alike. The socket answers both with a
+`not_authorized` frame, not an HTTP 403; before F4 both fell through to
+`internal`. A workspace or a membership that is not active is refused
+the same way. `RevokeGrant`, the error-only form, takes the actor too.
+
+Wappie's own screen revokes the key with `grant.revoke` before its PUT
+(the web app's `changeDevicePermission`). An admin who unticked an
+owner's Read would have lost the owner's key before the PUT was refused.
+The screen now disables Read on an owner's row for a viewer who is not
+an owner, as it disables Manage on an owner's or an admin's row; the
+server refuses the revoke in any case.
+
+**A connection's own account** (the platform's F2, built in F4). A lone
+`grant.revoke` on an account a connection names (`service_user_id`)
+narrowed the connection without ending it, since
+`leaveOwnConnectionsTx` matches `created_by` only: the state 0061
+removes. The revoke now locks that connection before the account's rows
+(the tenants row, then the connection, then its own rows) and, when it
+deleted a grant, ends it whole, `access_lost`, in the same transaction.
+Its reader is told after the commit. Wappie chose to end it rather than
+refuse: a refusal would leave no way to take a copy back short of the
+connection's own revoke.
+
+`PutGrant` refuses a grant to a live connection's own account on a
+number its key does not name or its person does not read
+(`ErrConnectionAccountGrant`). The check at every start counts each
+grant of the account as a number the connection holds, so such a grant
+would end the connection at the next start. `grant.add` and a pairing's
+grants answer `not_authorized`, the code `grant.add` gives an actor who
+may not share (its `conflict` means a wrong epoch or a number with no
+key). `device-key`'s grants are refused the same way. A workspace API
+key's `acts_as` account stays as 0053 leaves it.
+
+**The archive reset** (the platform's F5). `ResetArchive`, the
+operator's `reset-archive`, counts as Read taken away from everyone
+(0061's third rule): it deletes every grant and leaves none at a
+number's current epoch, which is neither a rotation nor a replacement.
+It used to end nothing. It runs on the command line while the server
+keeps running, so no start follows it. After `device-key` gave a kept
+number a new key, sealed to the accounts named, a live metadata
+connection of a person not named again read the new metadata for up to
+a year (`AllowsDevice` asks nothing of the grant). Without
+`-keep-devices` the cascade emptied `api_key_devices`, so no check could
+find those connections. Now the reset:
+
+1. takes the workspace's lock first (`lockWorkspaceAccess`), which
+   `endMCPConnectionTx` needs and which puts the reset in the lock order
+   (`reader_safety.go`), so a consent recorded at the same time comes
+   before it, and ends with it, or after it, and is refused;
+2. ends every live connection of the workspace, any kind, pending,
+   active or reseal, revoked and `access_lost`, through
+   `endMCPConnectionTx`, before its deletes: a plain select by
+   workspace, not the check's join;
+3. returns the count, which the command prints. A running server's
+   `WatchRevocations` tells the readers.
+
+The tests found two more things, fixed with it. With `-keep-devices` the
+reset left the journal (`events`) and the receipts, which the
+workspace's sequence numbered, and set the sequence back to 0, so the
+next message failed on `events_pkey`; they go with the rest now. A
+consent whose key no longer names any number (its numbers deleted by
+the reset, or moved out) passed `consenterReadsTx` with nothing to
+check; it is refused now. Taking the tenants row first also ends a
+deadlock with ingest, which takes that row (`nextSeq`) before the chat
+rows the reset deletes.
 
 Every path that deletes or invalidates a person's grant, and why it is
 or is not the lone revoke:
 
-- `Keys.RevokeGrant` (`grant.revoke`): the lone revoke. The flag stays,
-  so nothing else would end the connections. It counts, as above.
+- `Keys.RevokeGrantEnded` (`grant.revoke`): the lone revoke. The flag
+  stays, so nothing else would end the connections. It counts, as
+  above. On a connection's own account it ends that connection.
 - `setDevicePermissionTx` with its keys dropped (the screen's PUT
   without Read, `item.flags_drop` of read, `item.access_remove`): the
   Read flag goes with the grants. F3 already ends the connections when
   Read goes or no flag is left (DS47). With Read gone before, there was
-  no Read to take; it ends nothing, as a lone revoke of that dormant
-  grant does.
+  no Read to take.
 - `UpdateMember` to disabled and `removeMember`: every grant and
   permission of the person in the workspace goes after
   `endConnectionsOfMemberTx` ended all their connections
@@ -2309,121 +2383,104 @@ or is not the lone revoke:
   workspaces have foreign keys that cascade to their grants, but no code
   deletes either. None is an act on one person's grant; nothing is left
   to end.
-- `ResetArchive` (the operator's reset of a workspace's archive): every
-  archive key and grant goes and, with the numbers kept, their epoch
-  goes back to 0. An operator discarding the archive, closer to a
-  rotation than to a revoke. Not counted: it ends no connection itself.
-  It leaves every number of the workspace read by nobody, so a sweep
-  that runs after it ends every live connection there (below).
+- `ResetArchive`: every archive key and grant goes. It counts as Read
+  taken away from everyone and ends every live connection first, as
+  above.
 - `CreateArchiveKey` at a new epoch (a rotation): every grant of the
   old epoch stops being current without being deleted. 0061: it does
   not count.
-- `retired_at` on an archive key: nothing sets it today.
+- `retired_at` on an archive key: nothing sets it.
 - `PutGrant`'s upsert: a grant's sealed key replaced at the same epoch,
   in place. Not a removal.
 
-The sweep. The connections already live whose person no longer reads
-one of their numbers end once, at the upgrade, whole, `access_lost`, and
-their readers are told (`EndConnectionsWithoutRead`). They are what the
-rules before left: a metadata consent that asked no Read before 0061, a
-content connection or AI integration whose person lost Read before F3,
-and a connection whose person lost their grant to a `grant.revoke`
-before F4. Every kind and every live status counts: metadata, content
-and AI; pending, active and reseal. A connection holds a number as
+**The check at every start** (the platform's F1). No marker and no
+migration: `serve` runs `EndConnectionsWithoutRead` at every start, in a
+goroutine once the HTTP listener is bound (by then the process it
+replaces has let go of the port, and its sockets are ending). Never
+`setupWith`, which the command line runs too, and it never fails the
+start. It ends, whole and `access_lost`, every live connection whose
+person does not read one of the numbers it holds: metadata, content and
+AI; pending, active and reseal. A connection holds a number as
 `leaveOwnConnectionsTx` counts it: its key's row, or its service
 account's permission or grant on it. Its person reads the number as
 `consenterReadsTx` asks of a consent: the Read flag, a grant at the
 number's current epoch, its key not retired, the number not deleted.
-Each workspace runs in one transaction under its tenants row lock, the
-connections in id order, each ended through `endMCPConnectionTx` as a
-revoke ends it. It waits at most 5 seconds for each lock in a workspace
-(`lock_timeout`). A busy workspace fails with `ErrWorkspaceBusy`, named
-in the error; the others go on. The sweep returns what it ended also
-when a workspace failed. The pilot holds no live
-connection: the sweep is for self-hosted installations that upgrade
-later.
 
-A number with no archive key at its current epoch is read by nobody. It
-is a keyless number added from the command line, or any number of a
-workspace after `ResetArchive` with its numbers kept (epoch 0). The
-sweep ends every live connection that names one, as `consenterReadsTx`
-refuses a consent on one. Keyless numbers exist mainly on self-hosted
-installations. Asked of the platform: confirm, or skip numbers with no
-key at all.
+It locks nothing in the steady state. The tenants row is also ingest's
+sequence lock (`nextSeq`), and the check runs while the start's history
+work ingests. So each workspace's candidates are read first without the
+workspace's lock. Only a workspace with a candidate is locked: one
+transaction under its tenants row, waiting at most 5 seconds for each
+lock (`lock_timeout`), the candidates read again and ended in id order,
+each through `endMCPConnectionTx` as a revoke ends it. A busy workspace
+is left as it was for the next start; the others go on.
 
-A rotation does not count. The sweep keeps a connection whose person
-waits for a rotated number's new key: they keep the Read flag and hold a
-grant at an earlier epoch of the number, its archive key not retired,
+It logs each end at Warn, ids only: the workspace, the connection, and,
+for a number nobody reads, its kind and remedy. It logs each busy
+workspace at Warn too. The readers are told within one 5-second bound
+(`TellRevoked`); `WatchRevocations` is the backstop.
+
+It is an invariant check. The first pass after F4 ends what the rules
+before left: a metadata consent that asked no Read before 0061, a
+content connection or AI integration whose person lost Read before F3,
+and a connection whose person lost their grant to a `grant.revoke`
+before F4. After that first pass, an end means an older binary served a
+reset or a lone revoke, or a path missed one. Why every start rather
+than once: F4 does not wait for R4, a rollback needs no down-step, and
+the check also heals a busy workspace, a lone revoke served by an older
+binary and anything a path missed. Several servers need nothing more:
+the next start closes a window that a server on the release before
+leaves. Before F4 goes live on the pilot, its candidates are counted
+read-only first.
+
+**A number nobody reads** (the platform's F4: one definition of Read,
+no carve-out). The check ends every live connection that holds such a
+number, as `consenterReadsTx` refuses a consent on one. There are two
+kinds, and the start's log line names each with its remedy:
+
+- Keyless, no archive key at all (epoch 0): `reset-archive
+  -keep-devices` from a binary before F4, a pairing cut off between
+  `CreateWithID` and `CreateArchiveKey`, or a row older than 0009.
+  Remedy: `whatserverd device-key -device <id> -grant <email>`, then a
+  new consent.
+- Orphan, a key and no grant to anyone (`wsctl pair -orphan`, or
+  `device-key` with no account). Remedy: a grant sealed with the
+  printed key, or delete the number and pair it again with `-grant`
+  (`device-key` refuses a number that has a key).
+
+A rotation does not count. The check keeps a connection whose person
+waits for a rotated number's new key: they keep the Read flag and hold
+a grant at an earlier epoch of the number, its archive key not retired,
 and none at the current one. Once that old key is retired, or the old
-grant is gone (a `grant.revoke`), they no longer wait. Nothing sets
-`retired_at` today, so a person left out of a finished rotation would
-wait for good; for a pass that runs once, that is fine.
-
-Still open: the sweep's once-marker. It must run once per database. No
-table holds a done-marker without stretching its meaning:
-`contract_state` and `contract_settings_state` have only typed columns;
-`security_events`, `item_events` and `mcp_connection_notices` check
-their kinds; `mcp_reader_state` is the readers' sealed state and checks
-its names. A row in `schema_migrations` for a version the binary does
-not know stops an older binary at start ("newer than this build"), so a
-rollback would fail. Wappie's boot work keeps no marker today: its
-backfills are idempotent (`backfillChatIdentities`, `linkPhoneNumbers`),
-and one-time data work rode in a migration's SQL (0050 to 0052).
-Migrations 0053 and 0054 belong to other branches. So the sweep is built
-and tested, and no start calls it, until the platform chooses:
-
-- A. A new migration after 0053 and 0054 with a one-row marker, as
-  0052's `label_cutover_at` is a cutover a migration sets and the code
-  reads. The migration inserts it as done when no live connection
-  exists, so a fresh install and the pilot never run a pass. Otherwise
-  the server reads it at start, runs the pass, then sets it with
-  `UPDATE … SET done_at = now() WHERE done_at IS NULL`, holding no lock
-  on it during the pass. Two servers starting together may both run
-  the pass; that is safe, and the tenants lock ends each connection
-  once. The marker is set when the pass finishes, also when a workspace
-  failed: those workspaces are logged at Error by id, and an operator
-  can run the pass again. Set only after a clean pass, one workspace
-  that always fails would make every start sweep again, which is D.
-  The down-step drops the marker, so upgrading again sweeps again.
-- B. The same marker added to 0053 or 0054, with those branches.
-- C. The sweep written in a migration's SQL, so the migrations' ledger
-  is the marker. It is then exactly once, crash-safe, and safe with
-  several servers and with a restore. The cost: `endMCPConnectionTx`
-  and `removeServiceAccountTx` written again in SQL, row-level security
-  turned off and on around it, and one transaction over every
-  workspace. Readers still learn: `WatchRevocations` tells attested
-  readers again every 30 seconds for a day, and the hosted reader reads
-  the ledger on every token.
-- D. A pass at every start, relying on the rotation skip. It is not
-  once. Today it differs from once in one case: after `ResetArchive`
-  with the numbers kept, the next start ends every live connection in
-  that workspace. No code rotates or retires a key yet; once some does,
-  a pass at every start would also end connections 0061 does not count.
-
-Wiring, once the marker exists: in `serve` only, not in `setupWith`,
-which the command-line commands also run. In a goroutine once the HTTP
-listener is bound: by then the process it replaces has closed its
-listener and its sockets are ending, so a lone revoke served by the old
-binary after the pass is unlikely. Readers told within one bound, as
-`tellEnded` does, or left to `WatchRevocations`. A failure never stops
-the start (as `checkDeletionLedger`, not `backfillChatIdentities`). It
-logs counts and connection ids only. In a rolling deploy with several
-servers, one still on the release before can serve a lone `grant.revoke`
-after the pass; that person's connections then end as they would have
-before F4 (at expiry, or when their access to the number is removed).
+grant is gone (a `grant.revoke`), they no longer wait. Until the
+platform decides on rotation, this skip stands and nothing sets
+`retired_at`.
 
 Tests: `TestGrantRevokeEndsOwnConnections`,
 `TestGrantRevokeTakesNothing` (a revoke that finds no grant, a dormant
-grant, the last key, an old epoch deleted, a grant replaced) and
-`TestGrantRevokeRotation` (store). `TestConsoleParityOwnConnections`
-runs the socket's lone `grant.revoke` as a fourth path, with the same
-rows left, the same readers told and the Read flag kept, and a dormant
-grant's revoke beside the screen's PUT from the same state (wsapi).
-`TestConnectionsWithoutReadSweep`,
-`TestConnectionsWithoutReadSweepHeldByService` (a number held only by
-the service account's grant, or only by its permission) and
-`TestConnectionsWithoutReadSweepBusyWorkspace` (store).
-`TestOwnConnectionsLockOrder` races a lone revoke and the sweep, with
-leftovers of its own to end every round, against F3's paths (store).
-`TestServeWiresReaders` checks the socket server tells serve's readers
-(cmd/whatserverd).
+grant, the last key, an old epoch deleted, a grant replaced),
+`TestGrantRevokeRotation`, `TestGrantRevokeOwnerOnly`,
+`TestGrantRevokeConnectionAccount` and `TestGrantAddConnectionAccount`
+(store). `TestConsoleParityOwnConnections` runs the socket's lone
+`grant.revoke` as a fourth path, with the same rows left, the same
+readers told and the Read flag kept, and a dormant grant's revoke beside
+the screen's PUT from the same state; `TestConsoleParityFlags` refuses
+an admin's `grant.revoke` of an owner as the screen and the acts refuse
+their drop and remove; `TestGrantFramesConnectionAccount` (wsapi).
+`TestResetArchiveEndsConnections` (a consent and a renewal after the
+reset refused; after `-keep-devices` and a new key granted to another
+account, the old metadata key refused; without `-keep-devices`, ended
+too) (store). `TestConnectionsWithoutReadSweep`,
+`TestConnectionsWithoutReadSweepHeldByService`,
+`TestConnectionsWithoutReadSweepBusyWorkspace`,
+`TestConnectionsWithoutReadSweepLocksNothing` and
+`TestConnectionsWithoutReadSweepNobodyReads` (an epoch-0 number, an
+orphan number, a workspace an older binary reset, one this binary
+reset) (store). `TestReadFlagClearedOnlyBySetDevicePermission` (store).
+`TestOwnConnectionsLockOrder` races a lone revoke and the check, with
+leftovers of its own to end every round, against F3's paths;
+`TestResetArchiveLockOrder` races the reset against ingest, consents, a
+renewal, a lone revoke, the check and the rest (store).
+`TestCheckReadAtStart` and `TestServeRunsReadCheck` check the start's
+lines, whom it tells and where it runs; `TestServeWiresReaders` checks
+the socket server tells serve's readers (cmd/whatserverd).

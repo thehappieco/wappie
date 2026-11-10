@@ -922,8 +922,11 @@ since on Wappie's screen (the owner's Q7), and its tightenings never
 answer `state_changed`. Only an owner, by the local role and the
 document's both, changes the flags of an owner (local, or named owner
 by their document): an admin is `not_authorized` here and 403
-`not_authorized` on Wappie's own screen (the owner's Q58); `grant.revoke`,
-which changes no flag, keeps its own rule. When Read goes (the stored
+`not_authorized` on Wappie's own screen (the owner's Q58). The socket's
+`grant.revoke`, which changes no flag, reads its actor's role again
+under the workspace's lock and refuses an admin on an owner the same
+way, read fail-closed, with a `not_authorized` frame (DS48). When Read
+goes (the stored
 row had it: a drop of read, a remove, the screen's PUT without Read) or
 no flag is left (a remove, the screen's PUT with every flag false, a
 drop of the last flag left, send or manage, which deletes no key),
@@ -942,24 +945,27 @@ other) ends nothing, on the screen as in the acts, and nor does a
 refusal (`last_reader`, an admin on an owner). A connection already live
 whose person has no Read on a number it holds (given before 0061, or
 left by a lost Read before F3 or a lone `grant.revoke` before F4) ends
-once, at the upgrade, whole and `access_lost`, its readers told; a
-person waiting for a rotated number's new key keeps theirs (DS48). That
-sweep is built and tested, and no start runs it until its once-marker is
-chosen; until then such a connection ends when their access there is
-removed (a remove, or their last flag going), on the number's deletion
-or move, on a revoke or at its expiry (DS47). Every consent, metadata
-included, and every renewal must name only numbers its person reads at
-that moment (the flag and a grant at the current epoch): one prepared
-before their Read went and recorded after is refused (`key_unsuitable`,
-HTTP 422). A `grant.revoke` alone, which leaves the Read flag, counts as
-Read taken away when the person has the flag and it leaves them no
-grant at the number's current epoch (0061): in its transaction it ends
-their connections that held the number the same way, and their readers
-are told after the commit. A rotation of the number's key, a grant
-replaced in the same transaction and a dormant grant's revoke (no Read
-flag) do not count (DS48). After a `ran` that wrote, this process's
-sockets check their access at once; the others within their access
-loop.
+at the check every start runs, whole and `access_lost`, its readers
+told; a person waiting for a rotated number's new key keeps theirs
+(DS48). So does one on a number nobody reads: one with no archive key,
+or one whose key nobody holds. Every consent, metadata included, and
+every renewal must name at least one number, and only numbers its
+person reads at that moment (the flag and a grant at the current
+epoch): one prepared before their Read went and recorded after is
+refused (`key_unsuitable`, HTTP 422). A `grant.revoke` alone,
+which leaves the Read flag, counts as Read taken away when the person
+has the flag and it leaves them no grant at the number's current epoch
+(0061): in its transaction it ends their connections that held the
+number the same way, and their readers are told after the commit. A
+rotation of the number's key, a grant replaced in the same transaction
+and a dormant grant's revoke (no Read flag) do not count (DS48). A
+`grant.revoke` of a connection's own account ends that connection
+whole, and `grant.add` gives that account only a number its key names
+and its person reads (`not_authorized` otherwise). The operator's
+`reset-archive` counts as Read taken away from everyone: it ends every
+live connection of the workspace first (DS48). After a `ran` that
+wrote, this process's sockets check their access at once; the others
+within their access loop.
 
 The runners live in `internal/numberacts`, beside the relink, and reach
 the socket server through `internal/wsapi/console_hooks.go`; parity tests

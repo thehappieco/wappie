@@ -218,7 +218,7 @@ The hourly maintenance of every server process purges each deleted number once i
 
 What the purge leaves: the pairs of contacts' phone numbers and WhatsApp LIDs that the number taught whatsmeow. whatsmeow keeps them in one cache shared by every number of the server (`whatsmeow_lid_map`), with no link to the session that learned them, so a pair cannot be told apart from the same pair learned by another number. The owner accepted this residual on 2026-10-13; a later release prunes, at each purge, the pairs no remaining number references.
 
-A workspace with deleted numbers refuses `reset-archive` until each is recovered or purged. A move to Personal never takes a deleted number: it cannot be found.
+A workspace with deleted numbers refuses `reset-archive` until each is recovered or purged. A reset takes everyone's Read, so before its deletes it ends every live assistant connection and AI integration of the workspace, `access_lost` ([DS48](decisions.md)). A move to Personal never takes a deleted number: it cannot be found.
 
 No platform call runs inside the store transaction of a deletion, a recovery, a stop or a move to Personal. In a team the platform names, each asks the contract's freshness hook before its transaction, never inside it: a deletion, a recovery and a person's stop for the actor (a GET when their document is over an hour old), a move for the mover always ([freshness](contract.md#freshness)). In this release the hook only logs what it would refuse; nothing waits on it but its GET, bounded to 5 seconds.
 
