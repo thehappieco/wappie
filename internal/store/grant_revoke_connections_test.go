@@ -242,3 +242,104 @@ func TestGrantRevokeOwnerOnly(t *testing.T) {
 	}
 	w.left(t, "an owner on an owner", s, ended)
 }
+
+// TestGrantRevokeConnectionAccount: a lone grant.revoke of a connection's
+// own account (its service_user_id) on a number would narrow the
+// connection, the state 0061 removes. It ends that connection whole,
+// access_lost, in the same transaction, its other numbers with it, and
+// returns it for its reader to be told. The person's other connections,
+// their Read and a legacy token's standing account are not touched; a
+// revoke of the account on a number it holds no grant on ends nothing.
+func TestGrantRevokeConnectionAccount(t *testing.T) {
+	ctx := context.Background()
+	w := newOwnWorld(t)
+	person, _ := w.actor(t, "admin", "admin")
+	s := w.own(t, person, "Account")
+
+	ended, err := w.keys.RevokeGrantEnded(ctx, w.tenant, w.owner, s.number, s.services[s.only])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ended) != 1 || ended[0] != (store.EndedConnection{ID: s.only, Reader: "enclave"}) {
+		t.Fatalf("ended %+v, want %s", ended, s.only)
+	}
+	// An integration on both numbers, its account's grant on the shared
+	// one revoked: it ends whole, the number with it.
+	ended, err = w.keys.RevokeGrantEnded(ctx, w.tenant, w.owner, w.shared, s.services[s.aiBoth])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ended) != 1 || ended[0] != (store.EndedConnection{ID: s.aiBoth, Reader: "enclave"}) {
+		t.Fatalf("ended %+v, want %s", ended, s.aiBoth)
+	}
+	for _, id := range []string{s.only, s.aiBoth} {
+		if r := w.row(t, id); r.status != "revoked" || r.reason != store.ReasonAccessLost || r.keyLive {
+			t.Fatalf("connection %s %+v", id, r)
+		}
+		if tr := w.trace(t, s.services[id]); tr != (serviceTrace{}) {
+			t.Fatalf("an ended connection's account remains: %+v", tr)
+		}
+	}
+	// A number its account holds no grant on: nothing to narrow.
+	other := w.number(t, "Other")
+	w.reads(t, w.owner, other)
+	if ended, err := w.keys.RevokeGrantEnded(ctx, w.tenant, w.owner, other, s.services[s.both]); err != nil || len(ended) != 0 {
+		t.Fatalf("a revoke of no grant: %v %v", ended, err)
+	}
+	// A legacy token's standing account is named by no connection.
+	if ended, err := w.keys.RevokeGrantEnded(ctx, w.tenant, w.owner, s.number, s.standing); err != nil || len(ended) != 0 {
+		t.Fatalf("a standing account's revoke: %v %v", ended, err)
+	}
+	if !w.allows(t, s.legacy, s.number) {
+		t.Fatal("the legacy token lost the number")
+	}
+	for _, id := range []string{s.both, s.metaBoth, s.aiOnly, s.meta, s.theirs} {
+		if r := w.row(t, id); r.status != "active" || !r.keyLive {
+			t.Fatalf("connection %s %+v", id, r)
+		}
+	}
+	if p := w.stored(t, s.number, person); !p.Read || !p.HasKey {
+		t.Fatalf("the person's Read: %+v", p)
+	}
+}
+
+// TestGrantAddConnectionAccount: a live connection's own account takes a
+// grant only on a number its key names and its person reads
+// (ErrConnectionAccountGrant, DS48), since the check at every start
+// counts each grant of the account as a number the connection holds. A
+// grant again on its own number is taken; a provisional account no
+// connection names yet, and a standing one, take any.
+func TestGrantAddConnectionAccount(t *testing.T) {
+	ctx := context.Background()
+	w := newOwnWorld(t)
+	person, _ := w.actor(t, "admin", "admin")
+	s := w.own(t, person, "Granted")
+	grant := func(device, user uuid.UUID) error {
+		return w.keys.PutGrant(ctx, store.Grant{TenantID: w.tenant, DeviceID: device, UserID: user, Epoch: 1, SealedDSK: []byte("again")}, &w.owner)
+	}
+	account := s.services[s.only]
+	// The shared number: the person reads it, the key does not name it.
+	if err := grant(w.shared, account); !errors.Is(err, store.ErrConnectionAccountGrant) {
+		t.Fatalf("a number its key does not name: %v", err)
+	}
+	if g := w.grantsOf(t, w.shared, account); g != 0 {
+		t.Fatalf("the account holds %d grants on the shared number", g)
+	}
+	// Its own number, sealed again: taken.
+	if err := grant(s.number, account); err != nil {
+		t.Fatalf("its own number again: %v", err)
+	}
+	// Its key names the number, but the person no longer reads it (their
+	// grant lost before F4): refused.
+	w.execOne(t, `DELETE FROM device_key_grants WHERE device_id = $1 AND user_id = $2`, s.number, person)
+	if err := grant(s.number, account); !errors.Is(err, store.ErrConnectionAccountGrant) {
+		t.Fatalf("a number its person does not read: %v", err)
+	}
+	// Accounts no live connection names.
+	provisional := w.prepare(t, person, store.KindContent, w.shared)
+	for name, user := range map[string]uuid.UUID{"a provisional account": provisional.ServiceUserID, "a standing account": s.standing} {
+		if err := grant(s.number, user); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+	}
+}

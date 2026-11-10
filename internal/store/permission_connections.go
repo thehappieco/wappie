@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -36,6 +37,39 @@ func consenterReadsTx(ctx context.Context, tx pgx.Tx, tenant, actor, keyID uuid.
 	}
 	if missing > 0 {
 		return ErrMCPKeyUnsuitable
+	}
+	return nil
+}
+
+// ErrConnectionAccountGrant refuses a grant to a live connection's own
+// account (its service_user_id) on a number its key does not name or its
+// person does not read (DS48).
+var ErrConnectionAccountGrant = errors.New("store: a connection's account takes only a number its key names and its person reads")
+
+// connectionAccountTakesTx refuses, with ErrConnectionAccountGrant, a grant
+// to user on device when user is a live connection's own account and its
+// key does not name the number or the person who consented does not read
+// it, as consenterReadsTx reads it. Such a grant would widen the
+// connection past its consent, and the check at the next start would end
+// the connection for it (EndConnectionsWithoutRead counts every grant of
+// its account as held). Any other account takes any grant. The caller
+// holds the tenants row lock, as a consent does.
+func connectionAccountTakesTx(ctx context.Context, tx pgx.Tx, tenant, user, device uuid.UUID) error {
+	var refused bool
+	err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM mcp_connections c
+		WHERE c.tenant_id = $1 AND c.service_user_id = $2 AND c.status IN ('pending', 'active', 'reseal')
+		  AND (NOT EXISTS (SELECT 1 FROM api_key_devices x WHERE x.api_key_id = c.api_key_id AND x.device_id = $3)
+		    OR NOT EXISTS (SELECT 1 FROM device_permissions p
+			JOIN devices d ON d.id = p.device_id AND d.tenant_id = p.tenant_id AND d.deleted_at IS NULL
+			JOIN device_key_grants g ON g.tenant_id = p.tenant_id AND g.device_id = p.device_id AND g.user_id = p.user_id AND g.epoch = d.current_epoch
+			JOIN device_archive_keys k ON k.device_id = g.device_id AND k.epoch = g.epoch AND k.retired_at IS NULL
+			WHERE p.tenant_id = $1 AND p.user_id = c.created_by AND p.device_id = $3 AND p.can_read)))`,
+		tenant, user, device).Scan(&refused)
+	if err != nil {
+		return err
+	}
+	if refused {
+		return ErrConnectionAccountGrant
 	}
 	return nil
 }

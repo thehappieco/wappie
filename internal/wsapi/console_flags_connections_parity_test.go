@@ -363,3 +363,44 @@ func TestConsoleParityOwnConnections(t *testing.T) {
 		c.endAll(t)
 	}
 }
+
+// TestGrantFramesConnectionAccount: the socket's grant frames on an
+// assistant connection's own account (DS48). A grant.add of a number its
+// key does not name is not_authorized, and nothing is recorded. A
+// grant.revoke of the account's grant on its number ends the connection
+// whole, access_lost, and tells its reader, where it once narrowed it.
+func TestGrantFramesConnectionAccount(t *testing.T) {
+	c := newConnParity(t)
+	ctx := context.Background()
+	person, _ := c.person(t, "caio", "admin")
+	number, shared := c.linkedDevice(t, "Number"), c.linkedDevice(t, "Shared")
+	for _, d := range []uuid.UUID{number, shared} {
+		c.reads(t, c.owner, d)
+		c.reads(t, person, d)
+	}
+	id, account := c.connect(t, person, true, number)
+	owner := wsapi.Hello{Session: c.token}
+
+	f := ask(t, c.console, owner, wsapi.TypeGrantAdd, wsapi.GrantRequest{DeviceID: shared.String(), UserID: account.String(), Epoch: 1,
+		SealedDSK: []byte("sealed")})
+	if got := frameOutcome(t, f, wsapi.TypeReaders); got != kc.CodeNotAuthorized {
+		t.Fatalf("a grant.add of a number its key does not name: %s", got)
+	}
+	if h := c.held(t, shared, account); h.Grants != 0 {
+		t.Fatalf("the account holds %+v on the shared number", h)
+	}
+
+	if got := c.revoke(t, c.token, number, account); got != "ok" {
+		t.Fatalf("the account's grant.revoke: %s", got)
+	}
+	var status, reason string
+	c.scoped(ctx, t, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `SELECT status, coalesce(revoke_reason, '') FROM mcp_connections WHERE id = $1`, id).Scan(&status, &reason)
+	})
+	if status != "revoked" || reason != store.ReasonAccessLost {
+		t.Fatalf("the connection is %s %s", status, reason)
+	}
+	if told := c.told.take(); !slices.Equal(told, []string{"enclave/" + id}) {
+		t.Fatalf("told %v", told)
+	}
+}

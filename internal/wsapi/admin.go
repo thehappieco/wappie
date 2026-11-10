@@ -459,6 +459,13 @@ func (s *session) handleGrantAdd(ctx context.Context, f Frame) {
 			s.replyError(f.ReqID, ErrCodeNotFound, "this number is no longer in this workspace")
 			return
 		}
+		if errors.Is(err, store.ErrConnectionAccountGrant) {
+			// An assistant connection's own account: only what it was
+			// consented to (DS48).
+			s.replyError(f.ReqID, ErrCodeNotAuthorized,
+				"an assistant connection's account takes only a number its key names and its person reads")
+			return
+		}
 		s.log.Error("recording a grant failed", "device", dev.ID, "error", err)
 		s.replyError(f.ReqID, ErrCodeInternal, "could not record the grant")
 		return
