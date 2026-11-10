@@ -281,14 +281,16 @@ func (s *snapshotSender) run(ctx context.Context) {
 	}
 }
 
-// send measures one workspace, gives the snapshot its snapshot_seq, checks
-// it, sends it and records what the platform answered. It reports false
-// when no outcome could be stored, and the snapshot is due as it was.
+// send measures one workspace and gives the snapshot its snapshot_seq in
+// the same transaction (so it shows every act below its seq), checks it,
+// sends it and records what the platform answered. It reports false when
+// no outcome could be stored, and the snapshot is due as it was.
 func (s *snapshotSender) send(ctx context.Context, next store.ContractSnapshotDue) bool {
 	l, m := s.l, s.l.Members
 	c, ws := m.Contract, next.Workspace
-	read, err := c.Snapshot(ctx, ws)
-	if err != nil {
+	read, ok, err := c.SnapshotNumbered(ctx, ws)
+	switch {
+	case err != nil:
 		if ctx.Err() != nil {
 			return true
 		}
@@ -296,20 +298,11 @@ func (s *snapshotSender) send(ctx context.Context, next store.ContractSnapshotDu
 		// Recorded against the due time and the seq it was chosen with.
 		_, ok := s.record(ctx, ws, next.Seq, next.DueAt, store.SnapshotFailed, "database")
 		return ok
-	}
-	seq, ok, err := c.SnapshotSeq(ctx, ws, read.MeasuredAt)
-	switch {
-	case err != nil:
-		if ctx.Err() != nil {
-			return true
-		}
-		l.log().Warn("contract: could not give a snapshot its seq", "workspace", ws, "error", err)
-		_, ok := s.record(ctx, ws, next.Seq, next.DueAt, store.SnapshotFailed, "database")
-		return ok
 	case !ok:
 		// Parked meanwhile: nothing goes.
 		return true
 	}
+	seq := read.Seq
 	snap := SnapshotOf(read, seq)
 	if why, rule := snapshotRule(snap); why != "" {
 		class := "local_invalid:" + why

@@ -2,6 +2,14 @@ package store_test
 
 import (
 	"context"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"maps"
+	"os"
+	"regexp"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -24,7 +32,7 @@ func (w *delWorld) recordLocal(t *testing.T, c *store.Contract) {
 	if _, err := w.pool.Exec(ctx, `INSERT INTO contract_workspaces (workspace_id, kind) VALUES ($1, 'team')`, w.tenant); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok, err := c.SnapshotSeq(ctx, w.tenant, time.Now()); err != nil || !ok {
+	if _, ok, err := c.SnapshotSeqForTest(ctx, w.tenant, time.Now()); err != nil || !ok {
 		t.Fatalf("the snapshot's seq: %v %v", ok, err)
 	}
 }
@@ -237,7 +245,7 @@ func TestNumbersCanLink(t *testing.T) {
 	if _, ok, err := c.NumbersOf(ctx, other); err != nil || ok {
 		t.Fatalf("a workspace with no snapshot yet: %v %v", ok, err)
 	}
-	if _, _, err := c.SnapshotSeq(ctx, other, time.Now()); err != nil {
+	if _, _, err := c.SnapshotSeqForTest(ctx, other, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	if n, ok, err := c.NumbersOf(ctx, other); err != nil || !ok || n.Local || n.CanLink || len(n.Items) != 0 || len(n.Pending) != 0 {
@@ -252,6 +260,105 @@ func TestNumbersCanLink(t *testing.T) {
 	}
 }
 
+// TestWorkspaceClockWriters: the workspace's one clock is written in three
+// places, each its transaction's first statement under the record's lock
+// (the plan's 3.5, DS3): snapshot_seq by the sender's snapshot read
+// (Contract.SnapshotNumbered), sections_seq by the numbers read
+// (Contract.NumbersOf) and by every act (actSeqTx). A document numbered
+// anywhere else, after it was measured, could miss an act that committed
+// in between (the platform's check of fcffb55, finding 3), so no code
+// does: tests number one so with SnapshotSeqForTest, and test files are
+// not scanned.
+func TestWorkspaceClockWriters(t *testing.T) {
+	set := regexp.MustCompile(`(?i)(\bSET\s+|,\s*)(\w+\.)?(snapshot_seq|sections_seq)\s*=`)
+	want := map[string]string{"Contract.SnapshotNumbered": "snapshot_seq", "Contract.NumbersOf": "sections_seq", "actSeqTx": "sections_seq"}
+	got := map[string]string{}
+	for _, root := range []string{"../../cmd", "../../internal"} {
+		files, err := goFiles(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, path := range files {
+			if strings.HasSuffix(path, "_test.go") {
+				continue
+			}
+			writers, err := clockWriters(path, set)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for name, column := range writers {
+				if !strings.HasPrefix(path, "../../internal/store/") {
+					name = path + ": " + name
+				}
+				if got[name] != "" && got[name] != column {
+					column = got[name] + " and " + column
+				}
+				got[name] = column
+			}
+		}
+	}
+	if !maps.Equal(got, want) {
+		t.Fatalf("the clock's writers: %v, want %v", got, want)
+	}
+}
+
+// clockWriters names each function of a Go file (with its receiver's type
+// for a method) whose string literals set a column set matches, with the
+// column; a literal outside any function is named for its file.
+func clockWriters(path string, set *regexp.Regexp) (map[string]string, error) {
+	src, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	file, err := parser.ParseFile(token.NewFileSet(), path, src, 0)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]string{}
+	scan := func(name string, node ast.Node) error {
+		var err error
+		ast.Inspect(node, func(n ast.Node) bool {
+			lit, ok := n.(*ast.BasicLit)
+			if !ok || lit.Kind != token.STRING || err != nil {
+				return true
+			}
+			text, uerr := strconv.Unquote(lit.Value)
+			if uerr != nil {
+				err = uerr
+				return false
+			}
+			for _, m := range set.FindAllStringSubmatch(text, -1) {
+				out[name] = strings.ToLower(m[3])
+			}
+			return true
+		})
+		return err
+	}
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok {
+			if err := scan("the package level of "+path, decl); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		name := fn.Name.Name
+		if fn.Recv != nil && len(fn.Recv.List) == 1 {
+			typ := fn.Recv.List[0].Type
+			if star, ok := typ.(*ast.StarExpr); ok {
+				typ = star.X
+			}
+			if id, ok := typ.(*ast.Ident); ok {
+				name = id.Name + "." + name
+			}
+		}
+		if err := scan(name, fn); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
 // TestSnapshotSeqAboveSections: the snapshot's and the sections' seqs rise
 // on one clock, each above the other's last.
 func TestSnapshotSeqAboveSections(t *testing.T) {
@@ -260,7 +367,7 @@ func TestSnapshotSeqAboveSections(t *testing.T) {
 	c := store.NewContract(w.pool)
 	w.recordLocal(t, c)
 	ahead := time.Now().Add(time.Hour)
-	snap, _, err := c.SnapshotSeq(ctx, w.tenant, ahead)
+	snap, _, err := c.SnapshotSeqForTest(ctx, w.tenant, ahead)
 	if err != nil || snap != ahead.UnixMilli() {
 		t.Fatalf("a snapshot measured ahead: %d %v", snap, err)
 	}
@@ -272,13 +379,14 @@ func TestSnapshotSeqAboveSections(t *testing.T) {
 	if n2.Seq != n.Seq+1 {
 		t.Fatalf("the next section: %d after %d", n2.Seq, n.Seq)
 	}
-	if next, _, err := c.SnapshotSeq(ctx, w.tenant, time.Now()); err != nil || next != n2.Seq+1 {
+	if next, _, err := c.SnapshotSeqForTest(ctx, w.tenant, time.Now()); err != nil || next != n2.Seq+1 {
 		t.Fatalf("a snapshot after the sections: %d %v, want %d", next, err, n2.Seq+1)
 	}
 }
 
-// TestSectionSeqKeepsSnapshotOutcome: a section's seq given between
-// SnapshotSeq and SnapshotSent leaves the snapshot's outcome recorded.
+// TestSectionSeqKeepsSnapshotOutcome: a section's seq given between a
+// snapshot's seq and its SnapshotSent leaves the snapshot's outcome
+// recorded.
 func TestSectionSeqKeepsSnapshotOutcome(t *testing.T) {
 	ctx := context.Background()
 	w := newDelWorld(t)
@@ -286,7 +394,7 @@ func TestSectionSeqKeepsSnapshotOutcome(t *testing.T) {
 	w.recordLocal(t, c)
 	for _, outcome := range []store.ContractSnapshotOutcome{store.SnapshotFailed, store.SnapshotAccepted} {
 		measured := time.Now()
-		seq, _, err := c.SnapshotSeq(ctx, w.tenant, measured)
+		seq, _, err := c.SnapshotSeqForTest(ctx, w.tenant, measured)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -328,7 +436,7 @@ func TestSectionSent(t *testing.T) {
 		}
 		return r
 	}
-	due, ok, err := c.NextSection(ctx)
+	due, ok, err := c.NextSection(ctx, []string{store.SectionNumbers})
 	if err != nil || !ok || due.Workspace != w.tenant || due.Section != store.SectionNumbers || !due.Due {
 		t.Fatalf("the first due: %+v %v %v", due, ok, err)
 	}
@@ -371,7 +479,7 @@ func TestSectionSent(t *testing.T) {
 	if _, ok, err := c.NumbersOf(ctx, w.tenant); err != nil || ok {
 		t.Fatalf("a parked section read: %v %v", ok, err)
 	}
-	if _, ok, _ := c.NextSection(ctx); ok {
+	if _, ok, _ := c.NextSection(ctx, []string{store.SectionNumbers}); ok {
 		t.Fatal("a parked section is due")
 	}
 	// The leader's start releases it for one try.
@@ -492,5 +600,41 @@ func TestSectionsRecovered(t *testing.T) {
 		if i == 3 && parked == nil {
 			t.Error("the park is released")
 		}
+	}
+}
+
+// TestNextSectionSkipsUnknown (DS25): a section row the caller does not
+// render (a later binary's mcp, due first) is never picked; the numbers
+// row is, before and after it is sent. A caller that renders both picks
+// the one due first.
+func TestNextSectionSkipsUnknown(t *testing.T) {
+	ctx := context.Background()
+	w := newDelWorld(t)
+	c := store.NewContract(w.pool)
+	w.recordLocal(t, c)
+	if _, err := w.pool.Exec(ctx, `INSERT INTO contract_sections (workspace_id, section, due_at)
+		VALUES ($1, 'mcp', clock_timestamp() - interval '1 hour')`, w.tenant); err != nil {
+		t.Fatal(err)
+	}
+	numbers := []string{store.SectionNumbers}
+	due, ok, err := c.NextSection(ctx, numbers)
+	if err != nil || !ok || due.Section != store.SectionNumbers || !due.Due {
+		t.Fatalf("the first due: %+v %v %v", due, ok, err)
+	}
+	n := w.numbers(ctx, t, c)
+	if rec, err := c.SectionSent(ctx, w.tenant, store.SectionNumbers, n.Seq, n.MeasuredAt, store.SnapshotAccepted, "", snapshotTimes); err != nil ||
+		!rec.Recorded {
+		t.Fatalf("the numbers sent: %+v %v", rec, err)
+	}
+	due, ok, err = c.NextSection(ctx, numbers)
+	if err != nil || !ok || due.Section != store.SectionNumbers || due.Due {
+		t.Fatalf("after the numbers were sent: %+v %v %v", due, ok, err)
+	}
+	due, ok, err = c.NextSection(ctx, []string{store.SectionNumbers, "mcp"})
+	if err != nil || !ok || due.Section != "mcp" || !due.Due {
+		t.Fatalf("a caller that renders mcp: %+v %v %v", due, ok, err)
+	}
+	if _, ok, err := c.NextSection(ctx, nil); err != nil || ok {
+		t.Fatalf("a caller that renders nothing: %v %v", ok, err)
 	}
 }

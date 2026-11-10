@@ -133,8 +133,14 @@ func (c *Contract) PersonOf(ctx context.Context, sub uuid.UUID) (ContractPerson,
 				if err := scope(ctx, tx, ws, uuid.Nil); err != nil {
 					return err
 				}
-				if active, err := activeMemberTx(ctx, tx, ws, *out.User); err != nil || !active {
+				active, err := activeMemberTx(ctx, tx, ws, *out.User)
+				if err != nil {
 					return err
+				}
+				if !active {
+					// This workspace's notices stay hidden; the next ones
+					// are still read, and every one sorted.
+					continue
 				}
 				if err := withQuarantine(ctx, tx, func() error {
 					return personNoticesTx(ctx, tx, ws, *out.User, &out.Notices)

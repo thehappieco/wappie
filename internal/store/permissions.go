@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"whatserver2/internal/pg"
@@ -101,18 +102,58 @@ func devicePermissionTx(ctx context.Context, tx pgx.Tx, tenant, user, device uui
 func (u *Users) StoredDevicePermission(ctx context.Context, tenant, user, device uuid.UUID) (DevicePermission, error) {
 	out := DevicePermission{DeviceID: device, UserID: user}
 	err := pg.InTenantTx(ctx, u.pool, tenant.String(), func(tx pgx.Tx) error {
-		return tx.QueryRow(ctx, `SELECT coalesce(p.can_read, false), coalesce(p.can_send, false), coalesce(p.can_manage, false),
-			EXISTS (SELECT 1 FROM device_key_grants g JOIN device_archive_keys k ON k.device_id = g.device_id AND k.epoch = g.epoch AND k.retired_at IS NULL
-			         WHERE g.tenant_id = $1 AND g.device_id = $3 AND g.user_id = $2)
-			FROM (SELECT 1) one LEFT JOIN device_permissions p ON p.tenant_id = $1 AND p.device_id = $3 AND p.user_id = $2`,
-			tenant, user, device).Scan(&out.Read, &out.Send, &out.Manage, &out.HasKey)
+		var err error
+		out, err = storedDevicePermissionTx(ctx, tx, tenant, user, device)
+		return err
 	})
 	return out, err
 }
 
+// storedDevicePermissionTx is StoredDevicePermission in a transaction the
+// caller holds for the tenant. It never reads devices, so a deleted
+// number's row reads as a live one's.
+func storedDevicePermissionTx(ctx context.Context, tx pgx.Tx, tenant, user, device uuid.UUID) (DevicePermission, error) {
+	out := DevicePermission{DeviceID: device, UserID: user}
+	err := tx.QueryRow(ctx, `SELECT coalesce(p.can_read, false), coalesce(p.can_send, false), coalesce(p.can_manage, false),
+			EXISTS (SELECT 1 FROM device_key_grants g JOIN device_archive_keys k ON k.device_id = g.device_id AND k.epoch = g.epoch AND k.retired_at IS NULL
+			         WHERE g.tenant_id = $1 AND g.device_id = $3 AND g.user_id = $2)
+			FROM (SELECT 1) one LEFT JOIN device_permissions p ON p.tenant_id = $1 AND p.device_id = $3 AND p.user_id = $2`,
+		tenant, user, device).Scan(&out.Read, &out.Send, &out.Manage, &out.HasKey)
+	return out, err
+}
+
+// ErrOwnerTarget is a change of an owner's flags by an admin: only an owner
+// changes an owner's (the owner's answer to the platform's Q58). It is an
+// ErrMembershipForbidden, so Wappie's screen answers it 403 not_authorized;
+// the console's acts answer not_authorized.
+var ErrOwnerTarget = fmt.Errorf("%w: only an owner changes an owner's flags", ErrMembershipForbidden)
+
+// ownerTargetTx reports whether user is an owner of tenant, by the local
+// membership (whatever its status) or by their stored account document
+// (whatever its status or generation): read fail-closed, so a role the two
+// sides disagree on counts as an owner's.
+func ownerTargetTx(ctx context.Context, tx pgx.Tx, tenant, user uuid.UUID) (bool, error) {
+	var owner bool
+	err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM workspace_memberships WHERE tenant_id = $1 AND user_id = $2 AND role = 'owner')
+		OR EXISTS (SELECT 1 FROM platform_identities p JOIN contract_accounts a ON a.sub = p.sub,
+			jsonb_array_elements(CASE WHEN jsonb_typeof(a.doc->'workspaces') = 'array' THEN a.doc->'workspaces' ELSE '[]'::jsonb END) w
+			WHERE p.user_id = $2 AND w->>'id' = $1::text AND w->>'role' = 'owner')`, tenant, user).Scan(&owner)
+	return owner, err
+}
+
 func (u *Users) SetDevicePermission(ctx context.Context, tenant, actor uuid.UUID, p DevicePermission) error {
-	return pg.InTenantTx(ctx, u.pool, tenant.String(), func(tx pgx.Tx) error {
-		if _, err := lockWorkspaceManager(ctx, tx, tenant, actor); err != nil {
+	_, err := u.SetDevicePermissionEnded(ctx, tenant, actor, p)
+	return err
+}
+
+// SetDevicePermissionEnded is SetDevicePermission, and the person's own
+// connections it ended (Read going, or no flag left, ends those that held
+// the number, DS47), for their readers to be told after the commit.
+func (u *Users) SetDevicePermissionEnded(ctx context.Context, tenant, actor uuid.UUID, p DevicePermission) ([]EndedConnection, error) {
+	var ended []EndedConnection
+	err := pg.InTenantTx(ctx, u.pool, tenant.String(), func(tx pgx.Tx) error {
+		role, err := lockWorkspaceManager(ctx, tx, tenant, actor)
+		if err != nil {
 			return err
 		}
 		var exists bool
@@ -123,24 +164,72 @@ func (u *Users) SetDevicePermission(ctx context.Context, tenant, actor uuid.UUID
 		if !exists {
 			return ErrNotFound
 		}
-		if !p.Read {
-			if err := requireRemainingReader(ctx, tx, tenant, p.UserID, &p.DeviceID); err != nil {
+		if role != "owner" {
+			owner, err := ownerTargetTx(ctx, tx, tenant, p.UserID)
+			if err != nil {
 				return err
 			}
-		}
-		_, err := tx.Exec(ctx, `INSERT INTO device_permissions(tenant_id,device_id,user_id,can_read,can_send,can_manage)
-   VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(tenant_id,device_id,user_id) DO UPDATE
-   SET can_read=excluded.can_read,can_send=excluded.can_send,can_manage=excluded.can_manage`, tenant, p.DeviceID, p.UserID, p.Read, p.Send, p.Manage)
-		if err != nil {
-			return err
+			if owner {
+				return ErrOwnerTarget
+			}
 		}
 		// Read revocation removes the envelope too. Re-enabling requires an
 		// explicit client-side grant by somebody who still holds the archive key.
-		if !p.Read {
-			_, err = tx.Exec(ctx, `DELETE FROM device_key_grants WHERE tenant_id=$1 AND device_id=$2 AND user_id=$3`, tenant, p.DeviceID, p.UserID)
-		}
+		ended, err = setDevicePermissionTx(ctx, tx, tenant, p, !p.Read)
 		return err
 	})
+	if err != nil {
+		return nil, err
+	}
+	return ended, nil
+}
+
+// setDevicePermissionTx is the write of a permission change, shared by
+// Wappie's own screen (SetDevicePermission) and the console's flags acts
+// (contract_flags_acts.go): the row upserted to p's flags; with dropKeys,
+// first requireRemainingReader (ErrLastDeviceReader), then every grant of
+// p.UserID on the number deleted, at every epoch. When Read goes (the
+// stored row had it) or no flag is left (the access removed), every one of
+// p.UserID's own connections and integrations that holds the number ends
+// whole, access_lost (leaveOwnConnectionsTx, DS47, the platform's 0061),
+// and they come back for their readers to be told. That hangs on the flags
+// written, not on dropKeys: the console's drop of send or manage that
+// leaves no flag deletes no key (DS19, and its freshness asks nothing,
+// DS23) but ends them as the screen's PUT with no flag does. A change with
+// Read already gone that keeps send or manage (a raise, a drop of the
+// other) ends none, on the screen as in the acts. The caller holds the
+// workspace's lock (the tenants row) and has checked the number and the
+// person. A deleted number's row is written only inside withQuarantine:
+// 0036's archive_device_owner refuses it otherwise (WS002).
+func setDevicePermissionTx(ctx context.Context, tx pgx.Tx, tenant uuid.UUID, p DevicePermission, dropKeys bool) ([]EndedConnection, error) {
+	if dropKeys {
+		if err := requireRemainingReader(ctx, tx, tenant, p.UserID, &p.DeviceID); err != nil {
+			return nil, err
+		}
+	}
+	var hadRead bool
+	if !p.Read {
+		if err := tx.QueryRow(ctx, `SELECT coalesce((SELECT can_read FROM device_permissions
+			WHERE tenant_id = $1 AND device_id = $2 AND user_id = $3), false)`, tenant, p.DeviceID, p.UserID).Scan(&hadRead); err != nil {
+			return nil, err
+		}
+	}
+	_, err := tx.Exec(ctx, `INSERT INTO device_permissions(tenant_id,device_id,user_id,can_read,can_send,can_manage)
+   VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(tenant_id,device_id,user_id) DO UPDATE
+   SET can_read=excluded.can_read,can_send=excluded.can_send,can_manage=excluded.can_manage`, tenant, p.DeviceID, p.UserID, p.Read, p.Send, p.Manage)
+	if err != nil {
+		return nil, err
+	}
+	if dropKeys {
+		if _, err := tx.Exec(ctx, `DELETE FROM device_key_grants WHERE tenant_id=$1 AND device_id=$2 AND user_id=$3`, tenant, p.DeviceID, p.UserID); err != nil {
+			return nil, err
+		}
+	}
+	// Read did not go and a flag is left: the connections stay.
+	if p.Read || !hadRead && (p.Send || p.Manage) {
+		return nil, nil
+	}
+	return leaveOwnConnectionsTx(ctx, tx, tenant, p.UserID, p.DeviceID)
 }
 
 func (u *Users) DevicePermissions(ctx context.Context, tenant, actor, device uuid.UUID) ([]DevicePermission, error) {

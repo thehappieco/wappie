@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	kc "github.com/thehappieco/kit/contract"
 	"github.com/thehappieco/kit/jcs"
+	"go.mau.fi/whatsmeow/types"
 
 	"whatserver2/internal/pg"
 	"whatserver2/internal/store"
@@ -88,7 +89,7 @@ func numbersRead(t *testing.T) (store.ContractNumbers, map[string]uuid.UUID) {
 func (w *world) numbersOf(t *testing.T, ws uuid.UUID) store.ContractNumbers {
 	t.Helper()
 	ctx := context.Background()
-	if _, ok, err := w.contract.SnapshotSeq(ctx, ws, time.Now()); err != nil || !ok {
+	if _, ok, err := w.contract.SnapshotNumbered(ctx, ws); err != nil || !ok {
 		t.Fatalf("a snapshot's seq: %v %v", ok, err)
 	}
 	read, ok, err := w.contract.NumbersOf(ctx, ws)
@@ -172,7 +173,8 @@ func TestNumbersDocMatchesTheKit(t *testing.T) {
 			t.Errorf("%s: can_resume %v, want %v", name, got, want)
 		}
 	}
-	for name, want := range map[string]bool{"phone": true, "banned": true, "deleted": true, "online": false, "by a person": false} {
+	for name, want := range map[string]bool{"phone": true, "banned": true, "deleted": true, "pairing row": true, "online": false,
+		"by a person": false, "new": false} {
 		if got := row(name).ReadOnly; got != want {
 			t.Errorf("%s: read_only %v, want %v", name, got, want)
 		}
@@ -281,10 +283,12 @@ func TestSettingsEncoding(t *testing.T) {
 			t.Fatal(err)
 		}
 		// read lists no kind; on the numbers kinds the commands releases
-		// run, item.sync_now among them since the frame asks Read too (DS13).
+		// run, item.sync_now among them since the frame asks Read too (DS13),
+		// and the three flags kinds (DS46).
 		want := []string{}
 		if mode == store.SettingsOn {
-			want = []string{kc.OpItemRename, kc.OpItemSyncStop, kc.OpItemSyncResume, kc.OpItemSyncNow, kc.OpItemRegistrationDelete}
+			want = []string{kc.OpItemRename, kc.OpItemSyncStop, kc.OpItemSyncResume, kc.OpItemSyncNow, kc.OpItemRegistrationDelete,
+				kc.OpItemFlagsRaise, kc.OpItemFlagsDrop, kc.OpItemAccessRemove}
 		}
 		if doc.Accepts == nil || !slices.Equal(doc.Accepts, want) {
 			t.Errorf("%s: accepts %#v", mode, doc.Accepts)
@@ -403,6 +407,54 @@ func TestNumbersDeletedRow(t *testing.T) {
 	unpaused := store.ContractNumber{ID: uuid.New(), Status: "online", Known: true, Deleted: true}
 	if r := numberRow(unpaused); r.Capture != "paused" || !r.ReadOnly || r.PausedBy != nil {
 		t.Fatalf("a deleted row not paused: %+v", r)
+	}
+}
+
+// TestNumbersUnknownIdentityReadOnly (the platform's check of fcffb55,
+// finding 5): a number whose identity Wappie never learned (it connected
+// for a pairing that never linked) is read_only as the section reads it
+// from the database, so the console holds back its sync now, which Wappie
+// refuses not_linked, and its stop, whose pause it could not lift
+// (can_resume false). Once linked, it is not.
+func TestNumbersUnknownIdentityReadOnly(t *testing.T) {
+	w := newSnapshotWorld(t)
+	ctx := context.Background()
+	devices := store.NewDevices(w.pool)
+	d, err := devices.Create(ctx, w.team.String(), "Vendas RJ", wa.ModePassive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unknown := uuid.MustParse(d.ID)
+	for _, status := range []wa.Status{wa.StatusOnline, wa.StatusOffline} {
+		if err := devices.SetStatus(ctx, w.team.String(), d.ID, status, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rowOf := func(what string, id uuid.UUID) kc.NumberRow {
+		t.Helper()
+		doc, err := numbersDoc(w.numbersOf(t, w.team), store.SettingsOn, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, r := range rowsOf(t, doc).Items {
+			if r.ID == id.String() {
+				return r
+			}
+		}
+		t.Fatalf("%s: no row", what)
+		return kc.NumberRow{}
+	}
+	if r := rowOf("never linked", unknown); !r.ReadOnly || r.CanResume || r.Capture != "on" || r.Connection != "offline" {
+		t.Fatalf("a number never linked: %+v", r)
+	}
+	if r := rowOf("linked", w.device); r.ReadOnly {
+		t.Fatalf("a linked number: %+v", r)
+	}
+	if err := devices.SetIdentity(ctx, w.team.String(), d.ID, wa.Identity{PN: types.JID{User: "5511998765432", Server: types.DefaultUserServer}}); err != nil {
+		t.Fatal(err)
+	}
+	if r := rowOf("linked since", unknown); r.ReadOnly {
+		t.Fatalf("a number linked since: %+v", r)
 	}
 }
 

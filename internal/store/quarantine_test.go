@@ -788,8 +788,9 @@ func TestQuarantineScopeHasOneDoor(t *testing.T) {
 		// list-deleted), which has no owner to check.
 		"Devices.ListAllDeleted": true,
 		// The contract's access snapshot, which lists a deleted number
-		// until its purge (README 8).
-		"Contract.Snapshot": true,
+		// until its purge (README 8): its read, Contract.Snapshot, and the
+		// sender's, Contract.SnapshotNumbered.
+		"snapshotTx": true,
 		// The contract's events: a replayed row, which keeps no label,
 		// takes its deleted number's until the purge (the plan's 4.11).
 		"replayedLabelsTx": true,
@@ -803,6 +804,11 @@ func TestQuarantineScopeHasOneDoor(t *testing.T) {
 		// until its purge as the snapshot does, and the person's document,
 		// whose deletion notices find their number (step 12a).
 		"Contract.NumbersOf": true, "Contract.PersonOf": true,
+		// The console's flags acts (step 12b's F1, DS21): a drop and a
+		// remove run on a deleted number of the workspace. The number's
+		// read, and on a deleted one the permission write, which 0036's
+		// ownership trigger checks against devices.
+		"flagsNumberTx": true, "writeFlagsTx": true,
 	}
 	const guc = "app.device_quarantine"
 	var found []string

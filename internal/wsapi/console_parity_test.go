@@ -421,6 +421,17 @@ func TestConsoleParityRename(t *testing.T) {
 	if f, c := p.numberRow(t, frame), p.numberRow(t, console); f.Label != "Vendas SP" || c.Label != f.Label {
 		t.Fatalf("the labels: the frame's %q, the runner's %q", f.Label, c.Label)
 	}
+	// The one divergence (DS10): a label Wappie sets aside. The frame
+	// stores it, as Wappie's own screens take it; the runner refuses it,
+	// since the console sees only the label the snapshot publishes, null.
+	before = "Vendas SP"
+	co = p.outcome(p.runner.Rename(ctx, p.command(t, kc.OpItemRename, manager, managerSub), console, &before, "Número sem nome"))
+	if fo := rename(managerToken, frame, "Número sem nome"); fo != "ok" || co != kc.CodeNotAuthorized {
+		t.Fatalf("a label set aside: the frame %s, the runner %s", fo, co)
+	}
+	if f, c := p.numberRow(t, frame), p.numberRow(t, console); f.Label != "Número sem nome" || c.Label != "Vendas SP" {
+		t.Fatalf("a label set aside: the frame's %q, the runner's %q", f.Label, c.Label)
+	}
 }
 
 func TestConsoleParitySyncNow(t *testing.T) {

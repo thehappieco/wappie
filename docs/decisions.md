@@ -1778,11 +1778,23 @@ never moves the seq a snapshot in flight records its outcome by. A
 document takes its seq first, in its own REPEATABLE READ measuring
 transaction (an act holding the record makes it run again, and it then
 sees the act); an act takes its seq first, under its record. So a section
-at or above a result's seq shows it. The snapshot is measured, then
-numbered, which leaves a rename's residual for one send, bounded by 0051's
-label trigger; and a section's `snapshot_seq` is the last one numbered,
-which may be a snapshot whose send failed: the console's "shown" check
-reads the platform's own kept seq, so that is harmless. A person's
+at or above a result's seq shows it. The sender's snapshot does the same
+(`SnapshotNumbered`, since the platform's check of fcffb55, finding 3):
+12a measured it, then numbered it, so a rename that committed in between
+left one snapshot above the result with the old label (the residual the
+plan bounded by 0051's label trigger), and the console showed the rename
+done beside the old name until the next one. Past its seq the snapshot
+measures read-only, so its seq is its one write. Because the numbers and
+the snapshot reads hold the record while they measure, they fail on each
+other, on an act and on the event sender's record: a read that fails so
+tries again after a random pause of n times 2 to 7 ms after its n-th
+failure, eight tries in all (12a's five, at once, ran out within a burst
+of acts). Every act updates the record, never only locks it: a read that
+waits on a lock alone keeps the view it took before the wait. No code
+numbers a document after measuring it (`TestWorkspaceClockWriters`). And
+a section's `snapshot_seq` is the last one numbered, which may be a
+snapshot whose send failed: the console's "shown" check reads the
+platform's own kept seq, so that is harmless. A person's
 document does the same on `contract_persons.seq`, with `sent_seq` for its
 outcome's compare-and-set.
 
@@ -1907,9 +1919,33 @@ sync now is `connect_failed` and a resume is the supervisor's. Each act
 reads its number by the command's workspace beside the row-level
 security, so a fault in either still finds nothing of another workspace.
 
-**DS10. A rename to a label Wappie sets aside runs.** A placeholder, an id
-or the number itself is stored, as the frame stores it, and the snapshot
-publishes `null` for it: `label_changed` cannot carry `null`.
+**DS10. A rename to a label Wappie sets aside is refused.** A
+placeholder, an opaque or legacy id, or a name holding the number's own
+digits, as typed or as the contract cleans it, is `not_authorized`, and
+nothing is stored. 12a ran it and stored it, as the frame does, and the snapshot
+published `null`: the console showed the rename done and the number
+unnamed (the platform's check of fcffb55, finding 4). `label_changed`
+would say it best ("Wappie keeps the name another way"), but its
+`detail.cleaned` must be a label the kit's `ValidLabel` takes, never
+empty or `null`, and `item.rename`'s `after` is always a label (the
+spec's 14.7), so no answer says "published as unnamed". Of the codes
+`item.rename` may answer, `not_authorized` is the one that is true: the
+spec's 14.9 reads "the actor's role or the app's rule does not allow it",
+and Wappie's rule (the spec's 8.1: the app sets aside placeholders, ids
+and the number itself) does not allow that name as a number's label; it
+is final, as a retry would meet the same rule, and nothing changed, so
+the number keeps the name the console drew. `state_changed` (a race),
+`app_only` (Wappie's own screen would store it and the console would
+still show it unnamed) and `invalid_value` (not one of `item.rename`'s
+codes) are not. The check runs on the label as typed, as the spec's 8.1
+sets aside before the cleaning: the number itself ("+55 11 90000-0001",
+or its bare digits) and a UUID of digits clean to "…" and the last four
+digits, which a check of the cleaned label alone offered back as a
+`label_changed` (the review of the follow-ups), where the frame's copy of
+the same text publishes `null`. It runs on the cleaned label too, before
+`label_changed`, so a confirmation never offers a name that would then
+be refused. The frame still stores such a label, as Wappie's own screens
+take it: the one divergence of the rename's parity test.
 
 **DS11. Sign-out everywhere ends what began before it.**
 `person.sign_out_everywhere` ends the actor's session families whose first
@@ -1937,13 +1973,32 @@ spec's 14.2 says, where the plan had the whole section `local_invalid`; a
 section that still fails is. A parked snapshot does not hold back its
 workspace's section, which has its own park. A numbers row carries no
 label (the snapshot's is the number's). 0052 nulled the labels of the item events not yet sent, once.
+A row is `read_only` when its number is logged out or banned (the spec's
+14.3), deleted (the platform's commitment), or no identity of it is
+stored (a pairing that connected and never linked; the platform's check
+of fcffb55, finding 5): Wappie holds no session it could start for it,
+the "no session to the number" of the spec's 14.9 `read_only`. The rule
+reads what is stored, so it also takes a number that did link but whose
+identity Wappie failed to save at the pairing and at every connection
+since (the device holds it in memory only, with an ERROR each time): very
+rare, and while it captures the console holds back Pausar on it, which
+Wappie's own screen still offers. Its sync
+now is `not_linked`, and a stop would leave a pause the console cannot
+lift (`can_resume` false, a resume `state_changed`), so the console holds
+both back, as on a logged-out number, and sends the person to Wappie
+("Abrir no Wappie", `not_linked`'s way out too). There its start, its
+pairing retry (it connected) and its relink (no identity stored to
+compare the scan with, the spec's 14.13) all refuse it: an owner deletes
+it and links the phone as a new number. Once its identity is known the
+row changes (0052's trigger watches `lid` and `pn`).
 The person's notices (the commands release) are the unseen ones of
 platform workspaces where Wappie lets the person in (membership, account
 and workspace active, the membership not expired: a disabled member sees
 no notice of the team in the console, as on Wappie's own page), the newest
-300, each versioned as `SeenNotice` acknowledges it, their label cut over
-at render (one stored before 0052 is kept only when today's rule gives the
-same), and a notice deleted sends the person's document again, as does a
+300 (more sends the document `truncated`, as a list cut to fit; no
+ERROR, the bound is the spec's), each versioned as `SeenNotice`
+acknowledges it, their label cut over at render (one stored before 0052
+is kept only when today's rule gives the same), and a notice deleted sends the person's document again, as does a
 change in a workspace where they hold one, and an account's status
 (everyone's). An act makes the documents it shows in due at once, a parked
 one too, for one try: a park would otherwise keep the console from ever
@@ -2006,6 +2061,187 @@ may retry for a minute and a half, and puts the pause back when it fails:
 a mark inside that window would say resumed of a number paused again. A
 number paused again is left: its notice is open. A workspace with no
 notice to mark takes no lock for the repair.
+
+## The console's flags kinds (2026-11-09)
+
+Step 12b gives the console's `numbers` section three more kinds:
+`item.flags_raise`, `item.flags_drop` and `item.access_remove`, a
+person's `read`, `send` and `manage` on a number. No migration: the ledger
+takes any kind, and the flags, grants, triggers and protection rule exist.
+F1 built the acts on Wappie's own permission write and the runners; F2
+wires them into the executor and lists them. The platform's answers to Q1
+to Q6 and the owner's to Q7, Q8 and Q58 are applied. These decisions are
+numbered on from DS17 (DS26 to DS45 belong to the later sections of 12b).
+
+**DS18. Who.** The flags kinds need `RuleAdmin`: owner or admin locally
+and in the stored document, both (DS15). An owner's flags are only an
+owner's (the owner's answer to Q58): where the target is an owner,
+locally (whatever the membership's status) or in their stored document,
+the actor must be an owner on both sides, else `not_authorized`. The
+target's role is read fail-closed, so a person the two sides disagree on
+counts as an owner. Wappie's own permissions screen refuses an admin the
+same way (`ErrOwnerTarget`, 403 `not_authorized`); `grant.revoke`, which
+changes no flag, keeps its own rule.
+
+**DS19. The drop** removes `before \ after` from the current flags, so a
+flag raised since stays, as the platform's reference app does. When
+`read` goes, every grant of the person on the number goes, at every
+epoch, even when the flag was already gone (no dormant key, 0040). It is
+never `state_changed`: Wappie keeps no time per flag (the spec's 14.6),
+so a drop retried late may undo a raise made since on Wappie's own
+screen (the owner kept this, Q7).
+
+**DS20. The remove** sets every flag false and keeps the row, so a key
+shared later does not bring back read and send through
+`grant_initial_permissions`; every grant of the person on the number
+goes, a key holder's without read too. The person stays in the snapshot
+with `can: []` (Q1).
+
+**DS21. Deleted numbers.** Drop and remove run on a deleted number of
+the workspace, read under quarantine for that one statement (and the row
+written under it, which 0036's ownership trigger needs); `sole_key_holders`
+still protects its last holder (`last_reader`). A raise there is
+`state_changed`, as the platform's own retry answers it; another
+workspace's number or a gone one is `not_found`. Wappie's own screen
+finds no deleted number; that difference is pinned by the parity test.
+
+**DS22. The target person.** Not linked or not followed: `not_held`,
+judged on a seq, also when `based_on.docs` leaves them out. For a raise,
+a target Wappie holds as not active locally (a suspended or expired
+membership, a disabled local account, a stored document disabled or
+closed, or a disablement seen later than the document's own) is a final
+`not_found`, judged read-only before the freshness, so it is never
+`memberships_unconfirmed`: no retry lifts a suspension (the platform's
+Q6). For a drop or a remove, `ran` only when there is no membership row
+at all; a suspended or expired one still has its flags and grants
+removed.
+
+**DS23. Freshness.** A raise asks `RequireWidening` for the actor and the
+target (in a team both, a GET for a stale one; in a personal workspace
+the actor's stored status). A drop of read, and a remove, ask
+`RequireBackups` when the target reads the number or holds its key, in a
+team only. Both run before the act, outside any write transaction;
+`last_reader` is judged inside it. A refusal is `memberships_unconfirmed`,
+a retry; a drop or remove delivered again waits instead.
+
+**DS24. No seal, no connections.** `grant_needed` is never answered: the
+kit refuses a raise of read, and Wappie's send and manage need no seal.
+A person's MCP connections and AI integrations keep their copy of the
+number's key after their Read goes, as on Wappie's own screen
+([mcp-enclave](mcp-enclave.md) 15.15). The owner answered Q8 yes, for the
+person's own connections and integrations only: F3 ends those that held
+the number, whole, on the screen and in the acts alike (DS47, the
+platform's decision 0061).
+
+**DS25. A binary sends only the sections it renders.** The sender picks
+only rows of the sections this binary renders (`NextSection`'s filter,
+`numbers` today), and 0054's and 0055's down-steps delete the rows they
+added, so a binary rolled back below a section never loops sending
+`numbers` for a row it cannot render.
+
+**DS46. The flags kinds go live with R3's deploy, after the platform's
+notice.** There is no switch: a binary lists the kinds it runs from its
+start, the settings mode being `on` already. `WS_CONTRACT_FLAGS` was
+dropped, since it would mean editing the pilot's `runtime.env`, and a
+binaries-only rollback is as cheap. F2 merges only when R3's kit is ready,
+so no earlier release, step 7's stage A included, carries the kinds
+unannounced. Their rollback is the release before's binaries, after
+telling the platform: a drop or a remove in flight then waits
+(`kind_not_accepted` is a retry for a tightening), a raise in flight ends
+final.
+
+**DS47. A person's lost Read ends their own connections that held the
+number** (the owner's answer to Q8, relayed by the platform, final, and
+the platform's decision 0061, which amends 0060 on what ends and what a
+consent needs; F3). When a person's Read on a number goes, or their
+access to it is removed, on Wappie's permissions screen or through the
+console's `item.flags_drop` (of read, or of the last flag left) or
+`item.access_remove`, the one write both use (`setDevicePermissionTx`)
+also ends, in the same transaction, every live MCP connection the person
+consented to (metadata or content, any client) and every AI integration
+they created in that workspace that holds the number (its key names it,
+or its service account has a permission or a grant on it): whole,
+`access_lost`, also when it holds other numbers. Each ends as a revoke ends it
+(`endMCPConnectionTx`): its key revoked, its drafts still waiting for a
+person revoked, on every number, and for content and AI its service
+account removed with its permissions and grants on every number. Its
+reader is told after the commit as `Revoke` and `RevokeAI` tell it (best
+effort; the 30-second re-tell is the backstop). Another person's
+connections, workspace API keys with no connection behind them, and
+legacy MCP tokens keep what they were given, whoever gave it (0032,
+0053).
+
+Why whole (0061): a connection or integration narrowed to the numbers
+left could never renew, since a renewal must name exactly its key's
+numbers while the reader's record and an AI integration's `ai_config`
+(whose `cfg_tags` cover every number it was sealed over) still name the
+one taken off, and Wappie's check would then show the integration as not
+verified: it would linger in a state that looks broken. A media
+connection's attachment caches also answer by the numbers its sealed
+record names until it ends ([mcp-enclave](mcp-enclave.md) 16.9). The
+person consents again for the numbers they still read. A deletion and a
+move out already end such connections the same way. F3's first build
+(`212e8ed`) took the number off and ended only a connection left with no
+number or with attachments; 0061 replaced that before any release.
+
+The write decides when it applies, from the flags it writes, so the
+screen and the acts agree by construction: when Read goes (the stored
+row had it), or when no flag is left (an access removal:
+`item.access_remove`, the screen's PUT with every flag false, or the
+console's `item.flags_drop` of the last flag left, send or manage, with
+Read gone already). That last drop deletes no key (DS19; its freshness
+asks nothing, DS23), yet ends the connections as the screen's PUT with
+no flag does; F3's first build ended them only on a write that dropped
+keys, so the console's drop of the last flag ended none (found in
+review, fixed before any release). A change that keeps send or manage
+while Read was already gone (a raise, a drop of the other flag, a drop
+of read) ends nothing, and nor does a raise, a drop of send or manage
+with Read kept, one that finds the flag gone already (it writes
+nothing), or a refusal (`last_reader`, an admin on an owner). The
+screen's PUT without Read still deletes a dormant grant, as before
+([contract](contract.md), the flags kinds).
+
+Connections already live with no Read behind them are not swept. Before
+0061 a metadata consent asked no Read (an admin could give one on any
+number of the workspace), and before F3 a lost Read left a content
+connection or an AI integration as it was. Such a connection, whose
+person has no Read on a number its key names, has no Read for a drop of
+read to take: it ends when the person's access to that number is
+removed (a remove, the screen's PUT with no flag, a drop of their last
+flag), when the number is deleted or moved out, on a revoke, or at its
+expiry. A content one or an AI integration cannot renew without Read,
+so it lasts at most its consented lifetime (90 days at most); a metadata
+one never renews and lasts up to its own (a year at most, for a tested
+web client). Whether R3 ends them once, at its first start
+(`access_lost`, readers told), is asked of the platform; until it
+answers, they are kept.
+
+Every consent, metadata included, and every renewal is refused
+(`ErrMCPKeyUnsuitable`, HTTP 422 `key_unsuitable`) unless the person
+consenting reads every number of its key at that moment: Read, the flag
+and a grant at the number's current epoch, not retired (0053). A
+metadata connection needs it as a token needs Read for metadata (0053);
+otherwise the person could consent again at once to what losing Read
+just ended. Consent, renewal and the drop all hold the workspace's
+tenants row, so a consent the console prepared before the drop and
+recorded after it is refused, and no live connection of the person
+reaches the number. A metadata connection has no renewal of its own in
+Wappie (it never reseals): a reconnection, replacing one or not, is a
+new consent, held to the same rule.
+
+Locks keep 3.2's order: the person's permission, membership and grants,
+then their connections in id order (`FOR UPDATE`), then each
+connection's own rows, as a revoke takes them. The AI pick still asks
+for the number on the row's key as well as in its `ai_config`, though
+nothing narrows a live integration's key any more.
+
+Still open (0061's third rule, a small follow-up PR, F4, after R3 and
+not holding it): an act that revokes a person's grant on a number and
+leaves them none at its current epoch counts as Read taken away, even
+with the Read flag kept; Wappie's socket `grant.revoke` is such an act
+and today leaves the person's connections as they were. A rotation of
+the number's key, which sends connections to `reseal`, and a grant
+replaced in the same transaction do not count.
 
 ## Platform tokens in Wappie (step 7)
 

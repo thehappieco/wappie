@@ -310,6 +310,8 @@ func TestRaiseNotice(t *testing.T) {
 	f.verify(ctx, t, member)
 	// secondOwner never confirmed an address: no e-mail goes there.
 	_ = secondOwner
+	// The admin consents, so reads the number (DS47).
+	f.ownerReads(ctx, t, admin, f.device)
 
 	key, err := f.keys.IssueActingAsForDevices(ctx, f.tenant.String(), "admin's", store.ScopeRead, &admin, nil, []uuid.UUID{f.device}, ptr(time.Now().Add(20*time.Minute)))
 	if err != nil {

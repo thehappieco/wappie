@@ -511,9 +511,9 @@ func TestSectionDuringSnapshot(t *testing.T) {
 		}
 		return ok
 	})
-	next, ok, err := w.contract.SnapshotSeq(ctx, w.team, time.Now().Add(-time.Hour))
-	if err != nil || !ok || next <= section.StateSeq {
-		t.Fatalf("the next snapshot's seq %d, the section's %d: %v %v", next, section.StateSeq, ok, err)
+	next, ok, err := w.contract.SnapshotNumbered(ctx, w.team)
+	if err != nil || !ok || next.Seq <= section.StateSeq {
+		t.Fatalf("the next snapshot's seq %d, the section's %d: %v %v", next.Seq, section.StateSeq, ok, err)
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"whatserver2/internal/crypto/seal"
 	"whatserver2/internal/store"
 )
 
@@ -18,20 +19,52 @@ import (
 
 type mcpFixture struct {
 	*archive
-	owner uuid.UUID
-	keys  *store.APIKeys
-	conns *store.MCPConnections
+	owner  uuid.UUID
+	keys   *store.APIKeys
+	conns  *store.MCPConnections
+	users  *store.Users
+	grants *store.Keys
 }
 
+// newMCPFixture is a workspace whose device has an archive key and whose
+// owner reads it, its grant and read permission: every consent, metadata
+// included, names only numbers its person reads (DS47).
 func newMCPFixture(t *testing.T) *mcpFixture {
 	t.Helper()
+	ctx := context.Background()
 	a := newArchive(t)
 	var unsafeRole bool
-	if err := a.pool.QueryRow(context.Background(), `SELECT rolsuper OR rolbypassrls FROM pg_roles WHERE rolname=current_user`).Scan(&unsafeRole); err != nil || unsafeRole {
+	if err := a.pool.QueryRow(ctx, `SELECT rolsuper OR rolbypassrls FROM pg_roles WHERE rolname=current_user`).Scan(&unsafeRole); err != nil || unsafeRole {
 		t.Fatalf("ordinary RLS role required: %v %v", unsafeRole, err)
 	}
 	owner, _ := transferOwner(t, a, "owner")
-	return &mcpFixture{archive: a, owner: owner, keys: store.NewAPIKeys(a.pool), conns: store.NewMCPConnections(a.pool)}
+	f := &mcpFixture{archive: a, owner: owner, keys: store.NewAPIKeys(a.pool), conns: store.NewMCPConnections(a.pool),
+		users: store.NewUsers(a.pool), grants: store.NewKeys(a.pool)}
+	f.archiveKey(ctx, t, f.device, 1)
+	f.ownerReads(ctx, t, f.owner, f.device)
+	return f
+}
+
+func (f *mcpFixture) archiveKey(ctx context.Context, t *testing.T, device uuid.UUID, epoch uint16) {
+	t.Helper()
+	pub, _, err := seal.GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.grants.CreateArchiveKey(ctx, f.tenant, device, epoch, pub); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// ownerReads gives a person the device's grant and read permission.
+func (f *mcpFixture) ownerReads(ctx context.Context, t *testing.T, person, device uuid.UUID) {
+	t.Helper()
+	if err := f.grants.PutGrant(ctx, store.Grant{TenantID: f.tenant, DeviceID: device, UserID: person, Epoch: 1, SealedDSK: []byte("a person's grant")}, &f.owner); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.users.SetDevicePermission(ctx, f.tenant, f.owner, store.DevicePermission{DeviceID: device, UserID: person, Read: true, Send: true}); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // provisionalKey issues the key the console mints before consent: read-only,
@@ -59,6 +92,7 @@ func TestCreateConnectionInvariants(t *testing.T) {
 	ctx := context.Background()
 	foreign := newTenant(t, f.pool, "Foreign")
 	admin, _ := transferOwner(t, f.archive, "admin")
+	f.ownerReads(ctx, t, admin, f.device)
 
 	t.Run("foreign key", func(t *testing.T) {
 		key, err := f.keys.IssueScoped(ctx, foreign, "theirs", store.ScopeRead, nil)

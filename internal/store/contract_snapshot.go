@@ -37,6 +37,9 @@ const (
 // email or a phone number.
 type ContractSnapshot struct {
 	Workspace uuid.UUID
+	// Seq is its snapshot_seq, taken in the transaction that read it
+	// (SnapshotNumbered); 0 for one Snapshot read, numbered by nothing.
+	Seq int64
 	// MeasuredAt is the database's clock in the transaction that read it.
 	MeasuredAt time.Time
 	// Local: Wappie has a workspace of this id. Without one the snapshot is
@@ -102,28 +105,91 @@ const snapshotQuotaSQL = `coalesce(t.storage_paused_at IS NOT NULL OR (t.storage
 // how many backups without a sub it counts. A deleted number is reported
 // as a live one is until its purge: its readers, holders and protected
 // are as they were (its permissions and grants stay), and its state and
-// purge date say it is deleted.
+// purge date say it is deleted. It numbers nothing (Seq 0), and nothing
+// may number it after the measurement (TestWorkspaceClockWriters): the
+// sender's is SnapshotNumbered. Tests read with it the snapshot of a
+// workspace no document recorded, which SnapshotNumbered does not read.
 func (c *Contract) Snapshot(ctx context.Context, workspace uuid.UUID) (ContractSnapshot, error) {
 	var out ContractSnapshot
 	err := pgx.BeginTxFunc(ctx, c.pool, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
 		out = ContractSnapshot{Workspace: workspace, Items: []ContractSnapshotItem{}, Labels: map[label.Class]int{}}
-		if _, err := tx.Exec(ctx, `SELECT set_config($1, $2, true)`, pg.TenantGUC, workspace.String()); err != nil {
+		if err := tx.QueryRow(ctx, `SELECT clock_timestamp()`).Scan(&out.MeasuredAt); err != nil {
 			return err
 		}
-		var status string
-		var quota bool
-		if err := tx.QueryRow(ctx, `SELECT clock_timestamp(), t.id IS NOT NULL, coalesce(t.status, ''), `+snapshotQuotaSQL+`
-			FROM (SELECT $1::uuid AS id) w LEFT JOIN tenants t ON t.id = w.id`, workspace).Scan(&out.MeasuredAt, &out.Local, &status, &quota); err != nil {
-			return err
-		}
-		if !out.Local {
-			return nil
-		}
-		return withQuarantine(ctx, tx, func() error {
-			return snapshotItemsTx(ctx, tx, workspace, out.MeasuredAt, status == "active", quota, &out)
-		})
+		return snapshotTx(ctx, tx, &out)
 	})
 	return out, err
+}
+
+// snapshotSeqTaken, nil but in a test, runs in SnapshotNumbered's
+// transaction while it holds the record with its seq taken, before it
+// measures.
+var snapshotSeqTaken func(tx pgx.Tx)
+
+// SnapshotNumbered is Snapshot as the sender sends it: one REPEATABLE READ
+// transaction whose first statement gives it its snapshot_seq under the
+// record's lock (the plan's 3.5, as NumbersOf takes a section's seq). An
+// act holding the record (a rename, a stop or a resume: each console act
+// updates the record first, actSeqTx) makes it wait, and it then fails
+// with a serialization error and runs again (retrySerialization), with a
+// view that sees the act, at a higher seq; an act that comes after it
+// waits for it, and takes a higher seq. So a snapshot at or above a
+// result's seq shows the act: a snapshot measured before a rename's commit
+// is never numbered after it. The seq is the measurement's milliseconds,
+// or one more than the last snapshot's or section's, whichever is higher;
+// then the transaction is read-only, as Snapshot's is. False when the
+// workspace is parked, and nothing is to be sent.
+func (c *Contract) SnapshotNumbered(ctx context.Context, workspace uuid.UUID) (ContractSnapshot, bool, error) {
+	var out ContractSnapshot
+	var ok bool
+	err := retrySerialization(ctx, func() error {
+		out, ok = ContractSnapshot{Workspace: workspace, Items: []ContractSnapshotItem{}, Labels: map[label.Class]int{}}, false
+		return pgx.BeginTxFunc(ctx, c.pool, pgx.TxOptions{IsoLevel: pgx.RepeatableRead}, func(tx pgx.Tx) error {
+			err := tx.QueryRow(ctx, `WITH now AS (SELECT clock_timestamp() AS t)
+				UPDATE contract_workspaces w SET snapshot_seq = greatest(`+clockMillisSQL+`, w.snapshot_seq + 1, w.sections_seq + 1)
+				FROM now WHERE w.workspace_id = $1 AND w.parked_at IS NULL
+				RETURNING w.snapshot_seq, now.t`, workspace).Scan(&out.Seq, &out.MeasuredAt)
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+			// The seq is its one write: it measures read-only, as the
+			// unnumbered read does, so nothing in the quarantine scope
+			// can write.
+			if _, err := tx.Exec(ctx, `SET TRANSACTION READ ONLY`); err != nil {
+				return err
+			}
+			if snapshotSeqTaken != nil {
+				snapshotSeqTaken(tx)
+			}
+			ok = true
+			return snapshotTx(ctx, tx, &out)
+		})
+	})
+	return out, ok, err
+}
+
+// snapshotTx reads out's workspace into out in tx, a REPEATABLE READ
+// transaction that has read out.MeasuredAt: scoped to the workspace, with
+// deleted numbers visible.
+func snapshotTx(ctx context.Context, tx pgx.Tx, out *ContractSnapshot) error {
+	if _, err := tx.Exec(ctx, `SELECT set_config($1, $2, true)`, pg.TenantGUC, out.Workspace.String()); err != nil {
+		return err
+	}
+	var status string
+	var quota bool
+	if err := tx.QueryRow(ctx, `SELECT t.id IS NOT NULL, coalesce(t.status, ''), `+snapshotQuotaSQL+`
+		FROM (SELECT $1::uuid AS id) w LEFT JOIN tenants t ON t.id = w.id`, out.Workspace).Scan(&out.Local, &status, &quota); err != nil {
+		return err
+	}
+	if !out.Local {
+		return nil
+	}
+	return withQuarantine(ctx, tx, func() error {
+		return snapshotItemsTx(ctx, tx, out.Workspace, out.MeasuredAt, status == "active", quota, out)
+	})
 }
 
 // snapshotItemsTx fills out's items from the workspace's tables, read in
@@ -378,23 +444,6 @@ func (c *Contract) SnapshotsDirty(ctx context.Context, ids []uuid.UUID, all bool
 			WHERE w.workspace_id = l.workspace_id`, all, ids, debounce)
 		return err
 	})
-}
-
-// SnapshotSeq gives the snapshot of workspace measured at measured its
-// snapshot_seq, stored before it is sent: the measurement's milliseconds,
-// or one more than the last snapshot's or section's, whichever is higher,
-// so it rises strictly for the workspace across leaders and a clock that
-// steps back, on one clock with the sections (README 8; 0052's
-// sections_seq, DS3). False when the workspace is parked meanwhile, and
-// nothing is to be sent.
-func (c *Contract) SnapshotSeq(ctx context.Context, workspace uuid.UUID, measured time.Time) (int64, bool, error) {
-	var seq int64
-	err := c.pool.QueryRow(ctx, `UPDATE contract_workspaces SET snapshot_seq = greatest($2::bigint, snapshot_seq + 1, sections_seq + 1)
-		WHERE workspace_id = $1 AND parked_at IS NULL RETURNING snapshot_seq`, workspace, measured.UnixMilli()).Scan(&seq)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return 0, false, nil
-	}
-	return seq, err == nil, err
 }
 
 // ContractSnapshotOutcome is what became of a snapshot sent.

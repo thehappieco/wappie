@@ -203,6 +203,10 @@ type app struct {
 	// mcp is the assistant connector's handler, nil unless it is enabled;
 	// serve starts its reader health checks.
 	mcp *mcpauth.Handler
+	// readers reaches mcp's readers for a permission change's ended
+	// connections, from the screen and the contract's acts both, which are
+	// built before it (DS47).
+	readers mcpReaders
 	// switches are each workspace's own assistant switches, with the
 	// operator's configuration beneath them: every gate on text,
 	// attachments, drafts and AI asks them (docs/mcp-enclave.md §19.35).
@@ -916,6 +920,7 @@ func (a *app) authHandler() *authapi.Handler {
 		Devices: a.devices, Limits: a.limits, SetupLimits: a.setups, Log: a.log, Passkeys: a.passkeys,
 		WorkspaceSessionLimits: a.workspaceSessions,
 		PublicSignup:           a.cfg.Signup.Enabled,
+		Readers:                &a.readers,
 		Platform:               a.platform, LocalLogin: a.cfg.Platform.LocalLogin,
 	}
 	// Never a typed nil: a nil Membership is the contract's absence.
@@ -928,6 +933,20 @@ func (a *app) authHandler() *authapi.Handler {
 		h.SendWorkspaceInvite = sender.WorkspaceInvite
 	}
 	return h
+}
+
+// mcpReaders tells the readers through the MCP routes' handler, which
+// routes builds after the contract's acts and the auth routes take this:
+// nothing until then, nor in a process without MCP, where the readers'
+// re-tell is all there is.
+type mcpReaders struct {
+	h atomic.Pointer[mcpauth.Handler]
+}
+
+func (r *mcpReaders) TellRevoked(ctx context.Context, reader, id string) {
+	if h := r.h.Load(); h != nil {
+		h.TellRevoked(ctx, reader, id)
+	}
 }
 
 func (a *app) routes() http.Handler {
@@ -1030,6 +1049,7 @@ func (a *app) routes() http.Handler {
 			a.mcp.PublicOrigin, a.mcp.RelaySecret = a.cfg.MCP.PublicOrigin, a.cfg.MCP.RelaySecret
 		}
 		a.mcp.Mount(mux)
+		a.readers.h.Store(a.mcp)
 		// The console's AI routes: a person's keychain, the authorizations,
 		// the jobs they ask for, the results and the usage. Off, only what
 		// lets a person see and delete what they hold answers.

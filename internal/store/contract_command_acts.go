@@ -270,11 +270,11 @@ func actSectionDueTx(ctx context.Context, tx pgx.Tx, workspace uuid.UUID) error 
 // RunRename is item.rename (the plan's 6.3; the frame is device.rename):
 // the number live, the actor's RuleManage, params.before against the label
 // Wappie publishes (label.Contract, never the one stored: state_changed),
-// the new label as the contract cleans it (label_changed with the cleaned
-// text otherwise), then the label stored as the frame stores it. A label
-// Wappie sets aside (a placeholder, an id, the number itself) is stored
-// all the same, and the snapshot publishes null (DS10). The snapshot and
-// the numbers section are due now.
+// a label Wappie would set aside, as typed or as cleaned (a placeholder,
+// an id, the number itself: not_authorized, nothing stored, DS10), the new
+// label as the contract cleans it (label_changed with the cleaned text
+// otherwise), then the label stored as the frame stores it. The snapshot
+// and the numbers section are due now.
 func (c *Contract) RunRename(ctx context.Context, run ContractRun, item uuid.UUID, before *string, after string) (ContractAct, error) {
 	return c.numbersAct(ctx, run, func(tx pgx.Tx) (actWrite, error) {
 		var stored, pn string
@@ -301,6 +301,19 @@ func (c *Contract) RunRename(ctx context.Context, run ContractRun, item uuid.UUI
 			// A label the contract leaves nothing of: the console offers
 			// none (the kit's ValidLabel), so its state was not Wappie's.
 			return refusedWith(kc.CodeStateChanged), nil
+		case label.Contract(after, pn, item.String()) == nil, label.Contract(cleaned, pn, item.String()) == nil:
+			// A name Wappie sets aside, as typed or as cleaned: the
+			// snapshot would publish null for it, the console would show
+			// the rename done and the number unnamed. As typed first, as
+			// the spec's 8.1 sets aside before the cleaning: the number
+			// itself ("+55 11 90000-0001") and an id of digits clean to
+			// "…" and four digits ("…0001"), which a label_changed would
+			// offer where the frame's copy of the same text publishes
+			// null. label_changed cannot say null (its detail.cleaned is
+			// a label the kit's ValidLabel takes), so it is Wappie's rule
+			// that refuses it (the spec's 8.1 and 14.9, DS10), before a
+			// label_changed that would offer it.
+			return refusedWith(kc.CodeNotAuthorized), nil
 		case cleaned != after:
 			w := refusedWith(kc.CodeLabelChanged)
 			w.result.Detail, err = json.Marshal(map[string]string{"cleaned": cleaned})
@@ -663,23 +676,48 @@ type ContractCommandFacts struct {
 	// Versions are the stored document versions of the current
 	// generation, of the subs asked.
 	Versions map[uuid.UUID]int64
+	// Subs are the actor's and each sub asked's link and document, as
+	// User and Followed are the actor's (step 12b: R1 for a target person).
+	Subs map[uuid.UUID]ContractSubFacts
 	// Recorded, Kind and Status are the workspace's record (Status ""
 	// before a document set it); Local: Wappie has a workspace of its id.
 	Recorded, Local bool
 	Kind, Status    string
 }
 
-// CommandFacts reads what R1 to R3 judge a row by: actor's link and
-// document, the stored versions of subs, and workspace's record (nil for a
-// person's kind).
+// ContractSubFacts is one sub's link and document, as R1 reads them.
+type ContractSubFacts struct {
+	// User is the local account linked to the sub, nil for none; Followed:
+	// Wappie follows the sub with a document.
+	User     *uuid.UUID
+	Followed bool
+}
+
+// CommandFacts reads what R1 to R3 judge a row by: the link and document
+// of actor and of each of subs, the stored versions of subs, and
+// workspace's record (nil for a person's kind).
 func (c *Contract) CommandFacts(ctx context.Context, actor uuid.UUID, subs []uuid.UUID, workspace *uuid.UUID) (ContractCommandFacts, error) {
-	out := ContractCommandFacts{Versions: map[uuid.UUID]int64{}}
+	out := ContractCommandFacts{Versions: map[uuid.UUID]int64{}, Subs: map[uuid.UUID]ContractSubFacts{}}
 	err := readOnly(ctx, c, func(tx pgx.Tx) error {
-		if err := tx.QueryRow(ctx, `SELECT (SELECT user_id FROM platform_identities WHERE sub = $1),
-			EXISTS (SELECT 1 FROM contract_accounts WHERE sub = $1 AND doc IS NOT NULL)`, actor).Scan(&out.User, &out.Followed); err != nil {
+		rows, err := tx.Query(ctx, `SELECT q.sub, (SELECT user_id FROM platform_identities WHERE sub = q.sub),
+			EXISTS (SELECT 1 FROM contract_accounts WHERE sub = q.sub AND doc IS NOT NULL)
+			FROM unnest($1::uuid[]) AS q(sub)`, append([]uuid.UUID{actor}, subs...))
+		if err != nil {
 			return err
 		}
-		rows, err := tx.Query(ctx, `SELECT a.sub, a.version FROM contract_accounts a JOIN contract_state s ON a.generation = s.generation
+		if err := forEachRow(rows, func(row pgx.Rows) error {
+			var sub uuid.UUID
+			var f ContractSubFacts
+			if err := row.Scan(&sub, &f.User, &f.Followed); err != nil {
+				return err
+			}
+			out.Subs[sub] = f
+			return nil
+		}); err != nil {
+			return err
+		}
+		out.User, out.Followed = out.Subs[actor].User, out.Subs[actor].Followed
+		rows, err = tx.Query(ctx, `SELECT a.sub, a.version FROM contract_accounts a JOIN contract_state s ON a.generation = s.generation
 			WHERE a.sub = ANY ($1) AND a.version IS NOT NULL`, subs)
 		if err != nil {
 			return err

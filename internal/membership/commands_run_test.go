@@ -1,6 +1,7 @@
 package membership
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -47,7 +48,8 @@ func (w *world) generation(t *testing.T) uuid.UUID {
 
 // row is a ledger row to take as decoded: kind in ws (nil for a person's)
 // by actor, its target and params, drawn from docs; again for one
-// delivered again.
+// delivered again. Its section and producer are the kit's for its kind
+// (numbers and Wappie's, or the person's, when the kit has none).
 type row struct {
 	kind           string
 	ws             *uuid.UUID
@@ -74,6 +76,10 @@ func (w *world) take(t *testing.T, r row) uuid.UUID {
 	} else {
 		wseq = &rowSeq
 	}
+	if k, ok := kc.CommandKindOf(App, r.kind); ok {
+		section = k.Section
+	}
+	producer := cmp.Or(kc.SectionProducer(App, section), store.ProducerWappie)
 	if r.gen == uuid.Nil {
 		r.gen = w.generation(t)
 	}
@@ -95,10 +101,10 @@ func (w *world) take(t *testing.T, r row) uuid.UUID {
 		r.params = "{}"
 	}
 	if _, err := w.pool.Exec(context.Background(), `INSERT INTO contract_commands (id, generation, cseq, workspace_id, wseq, kind, section, actor,
-		target, params, based_on_seq, based_on_docs, issued_at, body, body_key, signed_at, again)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 1, $11, $12, '{}', $13, clock_timestamp(), $14)`,
+		target, params, based_on_seq, based_on_docs, issued_at, body, body_key, signed_at, again, producer)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 1, $11, $12, '{}', $13, clock_timestamp(), $14, $15)`,
 		id, r.gen, rowSeq, r.ws, wseq, r.kind, section, r.actor, r.target, []byte(r.params), rawDocs, r.issued, make([]byte, 32),
-		r.again); err != nil {
+		r.again, producer); err != nil {
 		t.Fatal(err)
 	}
 	return id
@@ -122,10 +128,12 @@ const renameParams = `{"before":{"label":"Vendas"},"after":{"label":"Vendas SP"}
 
 // TestRunChecksOrder: R0 to R5 in their order, each answered with its code
 // and the seq it was judged on (none for a person's not_held): a kind the
-// mode does not run (read: all; on: item.flags_raise), an actor Wappie does
-// not hold, a document not yet applied (memberships_behind, retry_after
-// 5), a workspace not recorded, a closed team, a deleted number and
-// another workspace's (not_found, before any role); then a rename runs.
+// mode does not run (read: all, a flags kind too; on: Wappie Cloud's
+// installation.add, since every v0.10.1 Wappie kind is run in time), an
+// actor Wappie does not hold, a document not yet applied
+// (memberships_behind, retry_after 5), a workspace not recorded, a closed
+// team, a deleted number and another workspace's (not_found, before any
+// role); then a rename runs.
 func TestRunChecksOrder(t *testing.T) {
 	w := newSnapshotWorld(t)
 	ctx := context.Background()
@@ -147,7 +155,11 @@ func TestRunChecksOrder(t *testing.T) {
 	check("read", read, rename, kc.CodeKindNotAccepted, true)
 	raise := rename
 	raise.kind, raise.params = kc.OpItemFlagsRaise, `{"before":{"can":["read"]},"after":{"can":["read","send"]}}`
-	check("a kind this binary does not run, in on", on, raise, kc.CodeKindNotAccepted, true)
+	raise.target = fmt.Sprintf(`{"item":%q,"person":%q}`, w.device, w.sub)
+	check("a flags kind, in read", read, raise, kc.CodeKindNotAccepted, true)
+	add := row{kind: kc.OpInstallationAdd, ws: &w.team, actor: w.sub, params: `{"before":{"origin":null},"after":{"origin":"https://cloud.example"}}`,
+		docs: docs}
+	check("a kind this binary does not run, in on", on, add, kc.CodeKindNotAccepted, true)
 
 	stranger := uuid.New()
 	unheld := rename
@@ -236,7 +248,7 @@ func TestExecutorRowStuck(t *testing.T) {
 	for _, ws := range []uuid.UUID{w.team, w.home} {
 		eventually(t, soon, "the sections listing the kinds", func() bool {
 			doc, ok := w.fake.Settings("wappie", ws.String(), kc.SectionNumbers)
-			return ok && len(doc.Accepts) == 5
+			return ok && len(doc.Accepts) == len(runs[kc.SectionNumbers])
 		})
 	}
 	issue := func(ws, device uuid.UUID, before, after string) string {
@@ -295,7 +307,7 @@ func TestExecutorResumesAtStart(t *testing.T) {
 	stop := run(t, w.settingsLeader(w.members, logs, settingsTimes()))
 	eventually(t, soon, "the section listing the kinds", func() bool {
 		doc, ok := w.fake.Settings("wappie", w.team.String(), kc.SectionNumbers)
-		return ok && len(doc.Accepts) == 5
+		return ok && len(doc.Accepts) == len(runs[kc.SectionNumbers])
 	})
 	id := w.rename(t, w.team, w.device, w.sub)
 	eventually(t, soon, "a failed run", func() bool {
@@ -543,7 +555,7 @@ func TestSettingsOnEndToEnd(t *testing.T) {
 	run(t, w.settingsLeader(w.members, logs, settingsTimes()))
 	eventually(t, soon, "the section listing the kinds", func() bool {
 		doc, ok := w.fake.Settings("wappie", w.team.String(), kc.SectionNumbers)
-		return ok && len(doc.Accepts) == 5
+		return ok && len(doc.Accepts) == len(runs[kc.SectionNumbers])
 	})
 	eventually(t, soon, "the person's document listing the kinds", func() bool {
 		doc, ok := w.fake.PersonSettings("wappie", w.sub.String())

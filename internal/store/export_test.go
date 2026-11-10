@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -41,3 +42,21 @@ func SetStrandLockTimeoutForTest(t testing.TB, d time.Duration) {
 // kit's vectors of a record as that app receives it (wire-tokens.json's
 // Mailie case).
 func (t *Tokens) SetAppForTest(app string) { t.app = app }
+
+// SnapshotSeqForTest numbers a snapshot of workspace measured at measured,
+// outside the measurement: the greater of measured's milliseconds and one
+// more than the last snapshot's or section's, false when the workspace is
+// parked. It is 12a's measure-then-number, which let a snapshot measured
+// before an act's commit be numbered after it (the platform's check of
+// fcffb55, finding 3), so no code but a test's numbers one so: the sender
+// numbers its snapshot where it measures it (SnapshotNumbered). Tests use
+// it to set the workspace's clock from a time of their own.
+func (c *Contract) SnapshotSeqForTest(ctx context.Context, workspace uuid.UUID, measured time.Time) (int64, bool, error) {
+	var seq int64
+	err := c.pool.QueryRow(ctx, `UPDATE contract_workspaces SET snapshot_seq = greatest($2::bigint, snapshot_seq + 1, sections_seq + 1)
+		WHERE workspace_id = $1 AND parked_at IS NULL RETURNING snapshot_seq`, workspace, measured.UnixMilli()).Scan(&seq)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, false, nil
+	}
+	return seq, err == nil, err
+}

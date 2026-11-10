@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -13,8 +14,10 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"whatserver2/internal/crypto/seal"
 	"whatserver2/internal/migrate"
 	"whatserver2/internal/obs"
 	"whatserver2/internal/pgtest"
@@ -50,8 +53,8 @@ func newSettingsWorld(t *testing.T) settingsWorld {
 	if _, err := pool.Exec(ctx, `INSERT INTO contract_workspaces (workspace_id, kind) VALUES ($1, 'team')`, w.ws); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := w.c.SnapshotSeq(ctx, w.ws, time.Now()); err != nil {
-		t.Fatal(err)
+	if _, ok, err := w.c.SnapshotNumbered(ctx, w.ws); err != nil || !ok {
+		t.Fatalf("the snapshot: %v %v", ok, err)
 	}
 	return w
 }
@@ -174,12 +177,208 @@ func TestNumbersReadSerializesWithAct(t *testing.T) {
 	}
 }
 
+// TestSnapshotReadSerializesWithAct: the snapshot as the sender reads it
+// is numbered in its measuring transaction, as the numbers read is. A
+// rename holding the record makes it wait; once the rename commits the
+// read runs again and shows the new label at a higher seq. A read holding
+// the record makes the act wait, and the act's seq comes above the read's.
+// A parked workspace's snapshot is not read.
+func TestSnapshotReadSerializesWithAct(t *testing.T) {
+	ctx := context.Background()
+	w := newSettingsWorld(t)
+	label := func(s ContractSnapshot) string {
+		if len(s.Items) != 1 || s.Items[0].Label == nil {
+			return ""
+		}
+		return *s.Items[0].Label
+	}
+
+	act, err := w.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = act.Rollback(ctx) }()
+	actSeq, err := actSeqTx(ctx, act, w.ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := act.Exec(ctx, `SELECT set_config('app.tenant_id', $1, true)`, w.ws.String()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := act.Exec(ctx, `UPDATE devices SET label = 'Vendas SP' WHERE id = $1`, w.device); err != nil {
+		t.Fatal(err)
+	}
+	type read struct {
+		s   ContractSnapshot
+		ok  bool
+		err error
+	}
+	done := make(chan read, 1)
+	go func() {
+		s, ok, err := w.c.SnapshotNumbered(ctx, w.ws)
+		done <- read{s, ok, err}
+	}()
+	until(t, "the snapshot to wait on the act", func() bool { return blocking(t, w.pool, act.Conn().PgConn().PID()) })
+	if err := act.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	r := <-done
+	if r.err != nil || !r.ok || r.s.Seq <= actSeq || label(r.s) != "Vendas SP" {
+		t.Fatalf("the snapshot after the act at %d: %+v %v %v", actSeq, r.s, r.ok, r.err)
+	}
+	var stored int64
+	if err := w.pool.QueryRow(ctx, `SELECT snapshot_seq FROM contract_workspaces WHERE workspace_id = $1`, w.ws).Scan(&stored); err != nil ||
+		stored != r.s.Seq {
+		t.Fatalf("the stored snapshot_seq %d, the snapshot's %d: %v", stored, r.s.Seq, err)
+	}
+
+	// The read holds the record; the act waits and takes a higher seq.
+	taken, release := make(chan struct{}), make(chan struct{})
+	snapshotSeqTaken = func(pgx.Tx) {
+		close(taken)
+		<-release
+	}
+	defer func() { snapshotSeqTaken = nil }()
+	go func() {
+		s, ok, err := w.c.SnapshotNumbered(ctx, w.ws)
+		done <- read{s, ok, err}
+	}()
+	<-taken
+	snapshotSeqTaken = nil
+	conn, err := w.pool.Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Release()
+	pid := conn.Conn().PgConn().PID()
+	acted := make(chan error, 1)
+	var secondSeq int64
+	go func() {
+		acted <- pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
+			var err error
+			if secondSeq, err = actSeqTx(ctx, tx, w.ws); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(ctx, `SELECT set_config('app.tenant_id', $1, true)`, w.ws.String()); err != nil {
+				return err
+			}
+			_, err = tx.Exec(ctx, `UPDATE devices SET label = 'Vendas RJ' WHERE id = $1`, w.device)
+			return err
+		})
+	}()
+	until(t, "the act to wait on the snapshot", func() bool { return blocked(t, w.pool, pid) })
+	close(release)
+	r = <-done
+	if err := <-acted; err != nil || r.err != nil || !r.ok || secondSeq <= r.s.Seq || label(r.s) != "Vendas SP" {
+		t.Fatalf("an act after a snapshot at %d (%q): %d %v %v", r.s.Seq, label(r.s), secondSeq, err, r.err)
+	}
+
+	if _, err := w.pool.Exec(ctx, `UPDATE contract_workspaces SET parked_at = clock_timestamp() WHERE workspace_id = $1`, w.ws); err != nil {
+		t.Fatal(err)
+	}
+	if s, ok, err := w.c.SnapshotNumbered(ctx, w.ws); err != nil || ok || s.Seq != 0 {
+		t.Fatalf("a parked workspace's snapshot: %+v %v %v", s, ok, err)
+	}
+}
+
+// TestSnapshotMeasuresReadOnly: past its seq, the snapshot's transaction
+// is read-only, as the unnumbered read's is: a write in its quarantine
+// scope fails (25006) rather than commit with the seq, and it measures as
+// before.
+func TestSnapshotMeasuresReadOnly(t *testing.T) {
+	ctx := context.Background()
+	w := newSettingsWorld(t)
+	var mode string
+	var write error
+	snapshotSeqTaken = func(tx pgx.Tx) {
+		if err := tx.QueryRow(ctx, `SELECT current_setting('transaction_read_only')`).Scan(&mode); err != nil {
+			t.Error(err)
+		}
+		write = pgx.BeginFunc(ctx, tx, func(sp pgx.Tx) error {
+			if _, err := sp.Exec(ctx, `SELECT set_config('app.tenant_id', $1, true)`, w.ws.String()); err != nil {
+				return err
+			}
+			_, err := sp.Exec(ctx, `UPDATE devices SET label = 'Stray' WHERE id = $1`, w.device)
+			return err
+		})
+	}
+	defer func() { snapshotSeqTaken = nil }()
+	s, ok, err := w.c.SnapshotNumbered(ctx, w.ws)
+	snapshotSeqTaken = nil
+	var pgErr *pgconn.PgError
+	if mode != "on" || !errors.As(write, &pgErr) || pgErr.Code != "25006" {
+		t.Fatalf("past its seq the snapshot's transaction is read-only %q, a write in it: %v", mode, write)
+	}
+	if err != nil || !ok || len(s.Items) != 1 || s.Items[0].Label == nil || *s.Items[0].Label != "Vendas" {
+		t.Fatalf("the snapshot: %+v %v %v", s, ok, err)
+	}
+	var stored int64
+	if err := w.pool.QueryRow(ctx, `SELECT snapshot_seq FROM contract_workspaces WHERE workspace_id = $1`, w.ws).Scan(&stored); err != nil ||
+		stored != s.Seq {
+		t.Fatalf("the stored snapshot_seq %d, the snapshot's %d: %v", stored, s.Seq, err)
+	}
+}
+
+// TestRetrySerializationPaces: a read that keeps failing on the record is
+// tried eight times in all, with a pause before each try again of at least
+// 2 ms times the failures so far (the writers queued on the record go
+// first); one that gets through on its last try is through; a deadlock is
+// tried again the same way and any other error is not; and a context done
+// ends the waits, with the failure and the context's error.
+func TestRetrySerializationPaces(t *testing.T) {
+	ctx := obs.WithLogger(context.Background(), slog.New(slog.DiscardHandler))
+	for _, code := range []string{"40001", "40P01"} {
+		failed := &pgconn.PgError{Code: code}
+		var at []time.Time
+		err := retrySerialization(ctx, func() error {
+			at = append(at, time.Now())
+			return failed
+		})
+		if !errors.Is(err, failed) || len(at) != 8 {
+			t.Fatalf("%s: %d tries, %v", code, len(at), err)
+		}
+		for n := 1; n < len(at); n++ {
+			if gap := at[n].Sub(at[n-1]); gap < time.Duration(2*n)*time.Millisecond {
+				t.Fatalf("%s: the try after %d failures came %v after the one before", code, n, gap)
+			}
+		}
+	}
+	tries := 0
+	if err := retrySerialization(ctx, func() error {
+		if tries++; tries < 8 {
+			return &pgconn.PgError{Code: "40001"}
+		}
+		return nil
+	}); err != nil || tries != 8 {
+		t.Fatalf("through on the last try: %d tries, %v", tries, err)
+	}
+	tries = 0
+	other := errors.New("another error")
+	if err := retrySerialization(ctx, func() error { tries++; return other }); !errors.Is(err, other) || tries != 1 {
+		t.Fatalf("another error: %d tries, %v", tries, err)
+	}
+	tries = 0
+	done, cancel := context.WithCancel(ctx)
+	failed := &pgconn.PgError{Code: "40001"}
+	err := retrySerialization(done, func() error {
+		tries++
+		cancel()
+		return failed
+	})
+	if tries != 1 || !errors.Is(err, failed) || !errors.Is(err, context.Canceled) {
+		t.Fatalf("a context done: %d tries, %v", tries, err)
+	}
+}
+
 // TestSettingsLockOrder: Restart at the same time as an act, a take, a
-// numbers read, a new sub's document store, a person read, a refusal, a
-// failed run, a results post clearing results_error, a trim and a mode
-// switch, round after round. Nothing deadlocks, each commits (or, for a
-// take, finds the state moved), and an act's result of the generation
-// before is dropped.
+// numbers read, the sender's snapshot read and its outcome, the event
+// sender's batch and its failure, a new sub's document store, a person
+// read, a refusal, a failed run, a results post clearing results_error, a
+// trim and a mode switch, round after round. Nothing deadlocks, each
+// commits (or, for a take, finds the state moved: the numbers and the
+// snapshot reads, which hold the record as they measure, retry one
+// another and the act as retrySerialization paces them, and never run out
+// of tries), and an act's result of the generation before is dropped.
 func TestSettingsLockOrder(t *testing.T) {
 	ctx := context.Background()
 	w := newSettingsWorld(t)
@@ -206,6 +405,9 @@ func TestSettingsLockOrder(t *testing.T) {
 		person, gen); err != nil {
 		t.Fatal(err)
 	}
+	// The act also takes Read off a consenter whose connection reaches the
+	// number alone, which ends it (DS47), each round.
+	consenter, connect := w.consenter(t)
 
 	var logs bytes.Buffer
 	var logMu sync.Mutex
@@ -230,6 +432,7 @@ func TestSettingsLockOrder(t *testing.T) {
 		if round%2 == 1 {
 			mode = SettingsOn
 		}
+		connect()
 		next := uuid.New()
 		calls := map[string]func() error{
 			"a reset": func() error {
@@ -254,6 +457,9 @@ func TestSettingsLockOrder(t *testing.T) {
 					if _, err := tx.Exec(lctx, `UPDATE devices SET label = $2 WHERE id = $1`, w.device, fmt.Sprintf("Vendas %d", round)); err != nil {
 						return err
 					}
+					if _, err := setDevicePermissionTx(lctx, tx, w.ws, DevicePermission{DeviceID: w.device, UserID: consenter}, true); err != nil {
+						return err
+					}
 					if err := finishCommandTx(lctx, tx, id, CommandResult{Outcome: CommandRan, StateSeq: &seq}); err != nil {
 						return err
 					}
@@ -274,6 +480,23 @@ func TestSettingsLockOrder(t *testing.T) {
 			},
 			"a numbers read": func() error {
 				_, _, err := w.c.NumbersOf(lctx, w.ws)
+				return err
+			},
+			"a snapshot read": func() error {
+				s, ok, err := w.c.SnapshotNumbered(lctx, w.ws)
+				if err != nil || !ok {
+					return err
+				}
+				_, err = w.c.SnapshotSent(lctx, w.ws, s.Seq, s.MeasuredAt, SnapshotAccepted, "",
+					ContractSnapshotTimes{Every: time.Hour, BackoffMin: time.Second, BackoffMax: time.Minute})
+				return err
+			},
+			"an event batch": func() error {
+				b, err := w.c.EventBatch(lctx, w.ws, 100)
+				if err != nil {
+					return err
+				}
+				_, err = w.c.EventsFailed(lctx, w.ws, b.ReadAt, "transport", ContractEventTimes{BackoffMin: time.Second, BackoffMax: time.Minute})
 				return err
 			},
 			"a new sub's document": func() error {
@@ -348,11 +571,70 @@ func TestSettingsLockOrder(t *testing.T) {
 		if stale != 0 {
 			t.Fatalf("round %d: %d results of an old generation not dropped", round, stale)
 		}
+		var live int
+		if err := w.pool.QueryRow(ctx, `SELECT count(*) FROM mcp_connections WHERE created_by = $1 AND status IN ('pending', 'active', 'reseal')`,
+			consenter).Scan(&live); err != nil {
+			t.Fatal(err)
+		}
+		if live != 0 {
+			t.Fatalf("round %d: the act left %d of the consenter's connections live", round, live)
+		}
 	}
 	logMu.Lock()
 	defer logMu.Unlock()
 	if strings.Contains(logs.String(), "deadlocked") {
 		t.Fatalf("a deadlock, retried:\n%s", logs.String())
+	}
+}
+
+// consenter is an admin of the world's workspace, and connect gives them
+// Read on its number again and a live connection that reaches it alone. An
+// owner reads it too, so their Read can always go.
+func (w settingsWorld) consenter(t *testing.T) (uuid.UUID, func()) {
+	t.Helper()
+	ctx := context.Background()
+	users, keys, apiKeys, conns := NewUsers(w.pool), NewKeys(w.pool), NewAPIKeys(w.pool), NewMCPConnections(w.pool)
+	person := func(role string) uuid.UUID {
+		u, err := users.Create(ctx, NewUser{TenantID: w.ws, Email: role + "-" + uuid.NewString()[:8] + "@acme.test", Role: role, AuthKey: "test",
+			KDFSalt: make([]byte, 16), KDFParams: DefaultKDFParams(), PublicKey: make([]byte, 32), WrappedUSK: []byte("wrapped")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return u.ID
+	}
+	owner, consenter := person("owner"), person("admin")
+	pub, _, err := seal.GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := keys.CreateArchiveKey(ctx, w.ws, w.device, 1, pub); err != nil {
+		t.Fatal(err)
+	}
+	reads := func(user uuid.UUID) {
+		if err := keys.PutGrant(ctx, Grant{TenantID: w.ws, DeviceID: w.device, UserID: user, Epoch: 1, SealedDSK: []byte("grant")}, &owner); err != nil {
+			t.Fatal(err)
+		}
+		if err := users.SetDevicePermission(ctx, w.ws, owner, DevicePermission{DeviceID: w.device, UserID: user, Read: true}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reads(owner)
+	return consenter, func() {
+		reads(consenter)
+		in := time.Now().Add(20 * time.Minute)
+		key, err := apiKeys.IssueActingAsForDevices(ctx, w.ws.String(), "assistant", ScopeRead, &consenter, nil, []uuid.UUID{w.device}, &in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		prefix, _, _ := strings.Cut(key, ".")
+		conn, err := conns.Create(ctx, w.ws, consenter, CreateMCPConnection{RequestID: uuid.NewString(), KeyPrefix: prefix, ClientName: "Claude",
+			RedirectHost: "claude.ai", DeviceCount: 1, ReaderKID: "0123456789abcdef", ExpiresAt: time.Now().Add(90 * 24 * time.Hour)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := conns.Activate(ctx, HostedReader, conn.ID); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 

@@ -1005,7 +1005,17 @@ as today) refuses with `ErrMCPKeyUnsuitable` unless:
 - its `device_permissions` are exactly the key's devices, each read-only
   (`can_read`, not `can_send`, not `can_manage`);
 - its `device_key_grants` are exactly one per key device, at that device's
-  current non-retired epoch.
+  current non-retired epoch;
+- the actor reads every key device: `can_read`, and a grant at its current
+  non-retired epoch (DS47, §15.15; an AI authorization and a renewal
+  alike), so a consent prepared before the actor's Read went is refused.
+
+The metadata branch is held to the last rule too (the platform's decision
+0061): every consent, metadata included, names only numbers the actor
+reads at that moment, as a token needs Read for metadata (0053); otherwise
+the person could consent again at once to what losing Read just ended. A
+metadata connection has no renewal of its own; a reconnection is a new
+consent. Refused with `ErrMCPKeyUnsuitable` (HTTP 422 `key_unsuitable`).
 
 It then inserts the row, extends the key to `expires_at` (as today) and sets
 the service membership's `expires_at` to the connection's.
@@ -1039,6 +1049,7 @@ a `DELETE` of grants removes zero rows under FORCE RLS, silently):
 | `Status` finding access gone (below) | `access_lost` |
 | a number's deletion (`device.delete`, [devices.md](devices.md#deletion-and-recovery)), or a restore's replay excluding it again: every live connection whose key names the number, any kind | `access_lost` |
 | a move to Personal ([device-personal-transfer.md](device-personal-transfer.md)): the mover's own live connections to the number, any kind | `access_lost` |
+| a person's Read on a number taken, or no flag left them on it (Wappie's permissions screen, the console's `item.flags_drop` of read or of the last flag left, and `item.access_remove`; DS47, the platform's 0061): every live connection they consented to and every AI integration they created that holds the number, any kind, whole, one holding other numbers too | `access_lost` |
 
 `ExpireServiceAccounts(ctx, pool)`, run beside `ExpireMCPConnections`, applies
 `removeServiceAccountTx` per tenant to every membership past `expires_at` that
@@ -1324,9 +1335,52 @@ the lifecycle with connection ids, reasons and counts.
 
 ### 15.15 Open points
 
-- A consenting human who loses read permission on, or the grant for, one
-  number keeps the connection reading it until revoked; 2b ends connections on
-  leaving and disablement only, as the card says.
+- Closed for a person's own connections by DS47 (the owner's Q8 and the
+  platform's decision 0061, [contract](contract.md)): when a person's
+  Read on a number goes, or no flag is left them on it, on Wappie's
+  permissions screen or through the console's `item.flags_drop` (of read,
+  or of the last flag left, send or manage, which deletes no key) or
+  `item.access_remove`, the same transaction (`setDevicePermissionTx`,
+  deciding from the flags it writes) ends every live connection they
+  consented to (metadata or content) and every AI integration they
+  created in the workspace that holds the number, whole, `access_lost`,
+  one that also holds other numbers too: its key revoked, its drafts
+  still waiting revoked, and its service account removed with its
+  permissions and grants on every number, as a revoke ends it. Its
+  reader is told after the commit, as a revoke tells it; the 30-second
+  re-tell is the backstop. Narrowed to the numbers
+  left, it could never renew (a renewal must name exactly the key's
+  numbers, while the reader's record and an AI integration's
+  `ai_config`, whose `cfg_tags` cover every number it was sealed over,
+  still name the one taken off) and would linger as not verified; a
+  media connection's result cache (10 minutes) and text cache (1 hour)
+  also answer by the numbers its sealed record names (§16.5 steps 2, 5
+  and 6) until an end, a reseal or attachments switched off wipe them
+  (§16.9). The person consents again for the numbers they still read.
+  Another person's connections, workspace API keys (no connection behind
+  them) and legacy MCP tokens keep the number. Every consent, metadata
+  included, and every renewal is refused (`key_unsuitable`) unless its
+  person reads every number of its key, with a grant at the current
+  epoch; consent, renewal and the drop all hold the workspace's tenants
+  row, so a consent prepared before the drop and recorded after it is
+  refused.
+- Not swept (asked of the platform): a connection already live whose
+  person has no Read on a number its key names, a metadata one given
+  before 0061 (it asked no Read then) or a content one or AI integration
+  left by a lost Read before F3. With no Read to take, a drop of read
+  never reaches it; it ends when the person's access to that number is
+  removed (a remove, the screen's PUT with no flag, a drop of their last
+  flag), on the number's deletion or move, on a revoke, or at its expiry
+  (a content or AI one cannot renew without Read). Whether R3 ends them
+  once at its first start (`access_lost`, readers told) is the
+  platform's to say; until then they are kept (DS47).
+- Still open (0061's third rule; a small follow-up after R3): a
+  `grant.revoke` alone that leaves the person no grant at the number's
+  current epoch counts as Read taken away, even with the Read flag kept,
+  and will end their connections the same way. Today the socket's
+  `grant.revoke` leaves them as they were. A rotation of the number's key
+  (connections go to `reseal`) and a grant replaced in the same
+  transaction do not count.
 - How each host presents `reconsent_required` and its link (UNCONFIRMED;
   elicitation is 2d).
 
@@ -5693,8 +5747,11 @@ record's memory and told to Go by §18.11's alert route, for the console.
 **Who may ask** (decision 3; Go decides, `store.PickAIAuthorization(ctx,
 tenant, requester, device, feature, origin)`). The candidates are the
 workspace's `ai` rows that are `active`, unexpired, not paused, with
-`ai_config.features[device][feature]` present, the function not in
-`ai_off` or `WS_AI_OFF_FEATURES`, its provider not in
+`ai_config.features[device][feature]` present and the device still on
+the row's key (`ai_config` keeps every number its tags were sealed over;
+a creator's Read taken off a number ends their integrations that held
+it, DS47, §15.15, so this only holds the pick to the key), the
+function not in `ai_off` or `WS_AI_OFF_FEATURES`, its provider not in
 `WS_AI_OFF_PROVIDERS`, and `AIAllowed(tenant)`. One is admitted when:
 
 - it is the requester's own (`created_by = requester`), and its

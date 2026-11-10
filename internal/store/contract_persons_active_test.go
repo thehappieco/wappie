@@ -17,7 +17,9 @@ import (
 // not expired; a membership disabled or expired, a disabled account or a
 // suspended workspace shows none, and the workspace's change wakes the
 // document of every holder of an unseen notice there, not only of a pause
-// notice.
+// notice. A workspace that shows none hides only its own: another one
+// after it in tenant_id order still lists its notices, and the notices of
+// every workspace come newest first.
 func TestPersonOfActiveMembershipsOnly(t *testing.T) {
 	ctx := context.Background()
 	w := newDelWorld(t)
@@ -85,5 +87,41 @@ func TestPersonOfActiveMembershipsOnly(t *testing.T) {
 	exec(`UPDATE tenants SET status = 'suspended' WHERE id = $1`, w.tenant)
 	if got := ids("a suspended workspace"); len(got) != 0 {
 		t.Fatalf("a suspended workspace still lists %v", got)
+	}
+
+	// A second platform workspace, after the suspended one in tenant_id
+	// order: its notices are listed all the same, and the notices of both,
+	// once the first is active again, newest first.
+	other := uuid.MustParse("ffffffff-ffff-7fff-bfff-ffffffffffff")
+	if _, err := w.pool.Exec(ctx, `INSERT INTO tenants (id, name) VALUES ($1, 'other')`, other); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.pool.Exec(ctx, `INSERT INTO contract_workspaces (workspace_id, kind) VALUES ($1, 'team')`, other); err != nil {
+		t.Fatal(err)
+	}
+	inTenantTx(ctx, t, w.pool, other, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `INSERT INTO workspace_memberships (tenant_id, user_id, role) VALUES ($1, $2, 'member')`, other, member)
+		return err
+	})
+	older := w.notice(t, other, uuid.New(), member, store.NoticeNumberMovedOut, &w.owner, "raised_at = raised_at - interval '1 hour'")
+	newer := w.notice(t, other, uuid.New(), member, store.NoticeNumberMovedOut, &w.owner, "")
+	inOrder := func(what string) []int64 {
+		t.Helper()
+		p, ok, err := c.PersonOf(ctx, sub)
+		if err != nil || !ok {
+			t.Fatalf("%s: the person: %v %v", what, ok, err)
+		}
+		got := []int64{}
+		for _, n := range p.Notices {
+			got = append(got, n.ID)
+		}
+		return got
+	}
+	if got := inOrder("an active workspace after a suspended one"); !slices.Equal(got, []int64{newer, older}) {
+		t.Fatalf("an active workspace after a suspended one lists %v, want %v", got, []int64{newer, older})
+	}
+	exec(`UPDATE tenants SET status = 'active' WHERE id = $1`, w.tenant)
+	if got, want := inOrder("both workspaces active"), []int64{newer, stranded, deleted, older}; !slices.Equal(got, want) {
+		t.Fatalf("both workspaces list %v, want %v (newest first)", got, want)
 	}
 }

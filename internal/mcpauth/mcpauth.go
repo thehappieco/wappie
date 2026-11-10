@@ -1137,7 +1137,7 @@ func (h *Handler) connectionError(w http.ResponseWriter, err error) {
 		fail(w, http.StatusBadRequest, "bad_request", "the consent's client does not hold together")
 	case errors.Is(err, store.ErrMCPKeyUnsuitable), errors.Is(err, store.ErrInvalidKey):
 		fail(w, http.StatusUnprocessableEntity, "key_unsuitable",
-			"the key must be read-only, restricted to named numbers, be live and carry a provisional deadline; for metadata it carries no service account, for content it acts as the connection's own")
+			"the key must be read-only, restricted to named numbers the person consenting reads, be live and carry a provisional deadline; for metadata it carries no service account, for content it acts as the connection's own")
 	case errors.Is(err, store.ErrInvalidExpiry):
 		fail(w, http.StatusBadRequest, "bad_request", "expires_at must be in the future and within a year")
 	case errors.Is(err, store.ErrMCPConnectionState):
