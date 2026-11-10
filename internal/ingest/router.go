@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 	"go.mau.fi/whatsmeow/types/events"
@@ -35,11 +36,24 @@ type ArchiveKeys interface {
 	ArchiveKey(ctx context.Context, tenant, device uuid.UUID) (seal.PublicKey, uint16, error)
 }
 
+// ContentKeys is the key store a router's sealers use (store.Keys).
+// CreateContentKeyFor makes a content key only while pub is still the
+// number's current archive key at epoch, checked in the same transaction,
+// else store.ErrArchiveKeyChanged (DS49).
+type ContentKeys interface {
+	seal.KeyStore
+	CreateContentKeyFor(ctx context.Context, tenant, device uuid.UUID, epoch uint16, pub seal.PublicKey,
+		sealFn func(id uint32) ([]byte, error)) (uint32, error)
+}
+
 // RouterConfig wires a router.
 type RouterConfig struct {
 	Lookup   DeviceLookup
 	Keys     ArchiveKeys
-	KeyStore seal.KeyStore
+	KeyStore ContentKeys
+	// Now is the sealers' clock, which says when a content key is due.
+	// Tests only; nil is the wall clock.
+	Now      func() time.Time
 	Messages *store.Messages
 	// Receipts archives acknowledgements. Optional: a deployment that only
 	// wants the message archive can leave it out, and receipt events are then
@@ -306,6 +320,14 @@ func (r *Router) handleMessage(ctx context.Context, deviceID string, evt *events
 // exist when the process starts: a device paired before its key was generated
 // is a normal state, and it fails here with a clear message rather than at boot
 // with an obscure one.
+//
+// The pipeline keeps the key it was built with. Three things drop it, so
+// that the next message builds it again from the key as it is now (DS49):
+// a notice that the number's key changed (Forget, ForgetWorkspace and
+// ForgetAll, which serve calls on store.ArchiveKeyChannel), a content key
+// refused because the key changed (pinnedKeys), and any other failed seal.
+// The mutex is held while the key is read, so a notice that lands while a
+// pipeline is built waits, and drops it.
 func (r *Router) pipelineFor(ctx context.Context, tenant, device uuid.UUID) (*Pipeline, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -321,20 +343,63 @@ func (r *Router) pipelineFor(ctx context.Context, tenant, device uuid.UUID) (*Pi
 	if err != nil {
 		return nil, err
 	}
-	sealer, err := seal.NewSealerWithArchiveTenant(tenant, archiveTenant, device, pub, epoch, r.cfg.KeyStore)
+	var opts []seal.SealerOption
+	if r.cfg.Now != nil {
+		opts = append(opts, seal.WithClock(r.cfg.Now))
+	}
+	sealer, err := seal.NewSealerWithArchiveTenant(tenant, archiveTenant, device, pub, epoch,
+		PinnedKeys(r.cfg.KeyStore, pub), opts...)
 	if err != nil {
 		return nil, err
 	}
-	p, err := New(Config{
+	var p *Pipeline
+	p, err = New(Config{
 		Tenant: tenant, Sealer: sealer, Messages: r.cfg.Messages,
 		Bus: r.cfg.Bus, Media: r.cfg.Media, Metrics: r.cfg.Metrics,
 		Phones: r.cfg.Phones, Log: r.log,
+		SealFailed: func() { r.drop(device, p) },
 	})
 	if err != nil {
 		return nil, err
 	}
 	r.pipelines[device] = p
 	return p, nil
+}
+
+// pinnedKeys is one pipeline's key store. Each content key it makes is
+// sealed to the archive key the pipeline was built with, so it makes one
+// only while that is still the number's current key. A pipeline built
+// before reset-archive -keep-devices and device-key, which gives the
+// number a new key at the same epoch, is refused here
+// (store.ErrArchiveKeyChanged) rather than filing a content key sealed to
+// the old key under the new one, which nobody could open (DS49). The
+// refusal is a failed seal, so the router drops the pipeline.
+type pinnedKeys struct {
+	ContentKeys
+	pub seal.PublicKey
+}
+
+// PinnedKeys is keys for a sealer that seals to pub: each content key it
+// makes is checked against the number's current archive key (pinnedKeys).
+// The command line's reproject seals with it too.
+func PinnedKeys(keys ContentKeys, pub seal.PublicKey) seal.KeyStore {
+	return pinnedKeys{ContentKeys: keys, pub: pub}
+}
+
+// CreateContentKey makes a content key for the pinned archive key only.
+func (k pinnedKeys) CreateContentKey(ctx context.Context, tenant, device uuid.UUID, epoch uint16,
+	sealFn func(id uint32) ([]byte, error)) (uint32, error) {
+	return k.CreateContentKeyFor(ctx, tenant, device, epoch, k.pub, sealFn)
+}
+
+// drop forgets p, when it is still device's pipeline: one built since
+// stays.
+func (r *Router) drop(device uuid.UUID, p *Pipeline) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.pipelines[device] == p {
+		delete(r.pipelines, device)
+	}
 }
 
 // IngestOutbound archives a message this server sent.
@@ -371,11 +436,31 @@ func (r *Router) IngestOutbound(ctx context.Context, tenant uuid.UUID, deviceID 
 }
 
 // Forget drops a device's cached pipeline, so the next event rebuilds it.
-// Used after a key rotation, where the epoch and public key both change.
+// Used when the number is let go of, and when its archive key changed: a
+// new key (store.CreateArchiveKey), whose epoch may be the old one's.
 func (r *Router) Forget(device uuid.UUID) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	delete(r.pipelines, device)
+}
+
+// ForgetWorkspace drops the pipelines of every number of tenant: a reset
+// (store.ResetArchive) deleted all their keys.
+func (r *Router) ForgetWorkspace(tenant uuid.UUID) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for device, p := range r.pipelines {
+		if p.tenant == tenant {
+			delete(r.pipelines, device)
+		}
+	}
+}
+
+// ForgetAll drops every pipeline: a key's notice may have been missed.
+func (r *Router) ForgetAll() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	clear(r.pipelines)
 }
 
 func (r *Router) handled(name string) {

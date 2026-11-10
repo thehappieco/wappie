@@ -38,7 +38,7 @@ func (r *Router) SealFor(ctx context.Context, tenant, device, uid uuid.UUID,
 	if err != nil {
 		return nil, 0, err
 	}
-	sealed, keyID, err := pipe.sealer.SealAll(ctx, uid, map[seal.Kind][]byte{kind: value})
+	sealed, keyID, err := pipe.sealAll(ctx, uid, map[seal.Kind][]byte{kind: value})
 	if err != nil {
 		return nil, 0, err
 	}

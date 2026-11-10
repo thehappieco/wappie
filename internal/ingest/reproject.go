@@ -154,7 +154,7 @@ func (r *Router) Reproject(ctx context.Context, tenant, device uuid.UUID,
 		}
 	}
 
-	sealed, keyID, err := pipe.sealer.SealAll(ctx, uid, values)
+	sealed, keyID, err := pipe.sealAll(ctx, uid, values)
 	if err != nil {
 		return ReprojectResult{}, err
 	}

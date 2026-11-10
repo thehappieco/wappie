@@ -157,6 +157,8 @@ type Pipeline struct {
 	metrics  *obs.Metrics
 	phones   PhoneBook
 	log      *slog.Logger
+	// sealFailed is told of every seal that fails (sealAll).
+	sealFailed func()
 }
 
 // Config wires a pipeline.
@@ -172,6 +174,10 @@ type Config struct {
 	// Optional: without it, LID-only senders stay LID-only.
 	Phones PhoneBook
 	Log    *slog.Logger
+	// SealFailed is told when a seal fails. The router drops the pipeline
+	// then, so the next message builds it again from the number's archive
+	// key as it is now (DS49). Optional.
+	SealFailed func()
 }
 
 // PhoneBook answers "whose number is this LID".
@@ -199,8 +205,18 @@ func New(cfg Config) (*Pipeline, error) {
 	return &Pipeline{
 		tenant: cfg.Tenant, sealer: cfg.Sealer, messages: cfg.Messages,
 		bus: cfg.Bus, media: cfg.Media, metrics: cfg.Metrics,
-		phones: cfg.Phones, log: cfg.Log,
+		phones: cfg.Phones, log: cfg.Log, sealFailed: cfg.SealFailed,
 	}, nil
+}
+
+// sealAll seals values for row under one content key. Every seal of a
+// pipeline goes through here, so a failure always reaches sealFailed.
+func (p *Pipeline) sealAll(ctx context.Context, row uuid.UUID, values map[seal.Kind][]byte) (map[seal.Kind][]byte, uint32, error) {
+	sealed, keyID, err := p.sealer.SealAll(ctx, row, values)
+	if err != nil && p.sealFailed != nil {
+		p.sealFailed()
+	}
+	return sealed, keyID, err
 }
 
 // Result reports what one ingest did.
@@ -369,7 +385,7 @@ func (p *Pipeline) seal(ctx context.Context, uid uuid.UUID, env domain.Envelope)
 		return nil, 0, nil
 	}
 
-	sealed, keyID, err := p.sealer.SealAll(ctx, uid, values)
+	sealed, keyID, err := p.sealAll(ctx, uid, values)
 	if err != nil {
 		return nil, 0, fmt.Errorf("ingest: seal content: %w", err)
 	}

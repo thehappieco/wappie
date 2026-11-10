@@ -359,7 +359,7 @@ func carriesMessages(t waHistorySync.HistorySync_HistorySyncType) bool {
 
 // SealChatName seals a conversation's display name.
 func (p *Pipeline) SealChatName(ctx context.Context, chatUID uuid.UUID, name string) ([]byte, uint32, error) {
-	sealed, keyID, err := p.sealer.SealAll(ctx, chatUID,
+	sealed, keyID, err := p.sealAll(ctx, chatUID,
 		map[seal.Kind][]byte{seal.KindContactName: []byte(name)})
 	if err != nil {
 		return nil, 0, fmt.Errorf("ingest: seal chat name: %w", err)

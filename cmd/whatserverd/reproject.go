@@ -16,6 +16,7 @@ import (
 
 	"whatserver2/internal/crypto/seal"
 	"whatserver2/internal/domain"
+	"whatserver2/internal/ingest"
 	"whatserver2/internal/store"
 	"whatserver2/internal/wa/normalize"
 )
@@ -111,7 +112,7 @@ func reproject(args []string) error {
 	if err != nil {
 		return err
 	}
-	sealer, err := seal.NewSealerWithArchiveTenant(tenant, archiveTenant, device, pub, epoch, a.keys)
+	sealer, err := seal.NewSealerWithArchiveTenant(tenant, archiveTenant, device, pub, epoch, ingest.PinnedKeys(a.keys, pub))
 	if err != nil {
 		return err
 	}

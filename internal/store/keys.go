@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -142,12 +143,52 @@ func (k *Keys) HasArchiveKey(ctx context.Context, tenant, device uuid.UUID) (boo
 // leak system-wide volume to clients. Allocating it means reading the current
 // maximum, which two concurrent rotations would otherwise both read — hence the
 // advisory lock, held for the transaction and released on commit.
+//
+// It checks nothing of the key sealFn seals to. Ingest uses
+// CreateContentKeyFor.
 func (k *Keys) CreateContentKey(ctx context.Context, tenant, device uuid.UUID, epoch uint16,
 	sealFn func(id uint32) ([]byte, error)) (uint32, error) {
+	return k.createContentKey(ctx, tenant, device, epoch, nil, sealFn)
+}
+
+// ErrArchiveKeyChanged means a number's archive key is not the one a write
+// was made for. It was deleted (reset-archive), or replaced at the same
+// epoch (device-key after reset-archive -keep-devices). A content key
+// sealed to the old key, or a grant of it, would be filed as the new key's
+// and open nothing (DS49).
+var ErrArchiveKeyChanged = errors.New("store: the number's archive key changed")
+
+// CreateContentKeyFor is CreateContentKey for a sealer that seals to pub. It
+// makes the content key only while pub is still the number's current
+// archive key at epoch, read in the same transaction, else
+// ErrArchiveKeyChanged.
+//
+// The transaction takes the workspace's tenants row (FOR KEY SHARE, which
+// the content key's own foreign key takes anyway) before it reads the key.
+// A reset holds that row (FOR UPDATE) from before its deletes to its
+// commit, so the read sees the key either before the reset or after it.
+// Without it a reset and a device-key could commit between the read and
+// the insert, and the insert's foreign key would find the new key's row.
+func (k *Keys) CreateContentKeyFor(ctx context.Context, tenant, device uuid.UUID, epoch uint16,
+	pub seal.PublicKey, sealFn func(id uint32) ([]byte, error)) (uint32, error) {
+	if !pub.Valid() {
+		return 0, errors.New("store: a content key needs the archive key it is sealed to")
+	}
+	return k.createContentKey(ctx, tenant, device, epoch, pub.Bytes(), sealFn)
+}
+
+// createContentKey is CreateContentKey, with pub's check when pub is set.
+func (k *Keys) createContentKey(ctx context.Context, tenant, device uuid.UUID, epoch uint16,
+	pub []byte, sealFn func(id uint32) ([]byte, error)) (uint32, error) {
 	var id uint32
 	err := pg.InTenantTx(ctx, k.pool, tenant.String(), func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, contentKeyLock(device)); err != nil {
 			return fmt.Errorf("store: lock content key counter: %w", err)
+		}
+		if pub != nil {
+			if err := currentArchiveKeyIsTx(ctx, tx, tenant, device, epoch, pub); err != nil {
+				return err
+			}
 		}
 
 		var next int32
@@ -177,6 +218,32 @@ func (k *Keys) CreateContentKey(ctx context.Context, tenant, device uuid.UUID, e
 		return 0, err
 	}
 	return id, nil
+}
+
+// currentArchiveKeyIsTx returns ErrArchiveKeyChanged unless pub at epoch
+// is device's current archive key, not retired. It takes the tenants row
+// first (FOR KEY SHARE), so a reset is wholly before it or wholly after.
+func currentArchiveKeyIsTx(ctx context.Context, tx pgx.Tx, tenant, device uuid.UUID, epoch uint16, pub []byte) error {
+	var id uuid.UUID
+	if err := tx.QueryRow(ctx, `SELECT id FROM tenants WHERE id = $1 FOR KEY SHARE`, tenant).Scan(&id); err != nil {
+		return fmt.Errorf("store: lock the workspace for a content key: %w", err)
+	}
+	var stored []byte
+	err := tx.QueryRow(ctx, `
+		SELECT k.public_key
+		  FROM device_archive_keys k
+		  JOIN devices d ON d.id = k.device_id AND d.current_epoch = k.epoch
+		 WHERE k.device_id = $1 AND k.epoch = $2 AND k.retired_at IS NULL`, device, int32(epoch)).Scan(&stored)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("%w: device %s has no current key at epoch %d", ErrArchiveKeyChanged, device, epoch)
+	}
+	if err != nil {
+		return fmt.Errorf("store: read the archive key: %w", err)
+	}
+	if !bytes.Equal(stored, pub) {
+		return fmt.Errorf("%w: device %s has another key at epoch %d", ErrArchiveKeyChanged, device, epoch)
+	}
+	return nil
 }
 
 // SealedContentKey returns a stored content key, for a client to unwrap.
