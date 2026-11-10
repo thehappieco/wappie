@@ -51,7 +51,10 @@ const (
 
 // SnapshotOf is the wire's snapshot (README 8) of Wappie's read model,
 // with snapshot_seq seq. Everyone listed is enrolled: a person exists in
-// Wappie only after the sign-in that pins their key (the reply's Q4).
+// Wappie only after the sign-in that pins their key (the reply's Q4). An
+// item's ordinal and tokens go only as the read model has them, which is
+// while the token mode is on (step 7's plan, 6.2): then every item has its
+// tokens, [] for none, and its ordinal unless it has none past 9999.
 func SnapshotOf(s store.ContractSnapshot, seq int64) kc.Snapshot {
 	out := kc.Snapshot{V: kc.SnapshotV, SnapshotSeq: seq, Items: make([]kc.Item, 0, len(s.Items))}
 	for _, it := range s.Items {
@@ -68,24 +71,40 @@ func SnapshotOf(s store.ContractSnapshot, seq int64) kc.Snapshot {
 			item.PurgeAt = &at
 		}
 		for _, p := range it.People {
-			can := []string{}
-			for _, f := range []struct {
-				on   bool
-				name string
-			}{{p.Read, kc.CanRead}, {p.Send, kc.CanSend}, {p.Manage, kc.CanManage}} {
-				if f.on {
-					can = append(can, f.name)
-				}
-			}
-			item.People = append(item.People, kc.Person{Sub: p.Sub.String(), Can: can, Reads: p.Reads, Waiting: p.Waiting,
-				Enrolled: true, HoldsKey: p.HoldsKey})
+			item.People = append(item.People, kc.Person{Sub: p.Sub.String(), Can: canOf(p.Read, p.Send, p.Manage), Reads: p.Reads,
+				Waiting: p.Waiting, Enrolled: true, HoldsKey: p.HoldsKey})
 		}
 		for _, sub := range it.Protected {
 			item.Protected = append(item.Protected, sub.String())
 		}
+		if it.Ordinal != nil {
+			item.Ordinal = kc.Ordinal(*it.Ordinal)
+		}
+		if it.Tokens != nil {
+			item.Tokens = make(kc.ItemTokens, 0, len(it.Tokens))
+			for _, tok := range it.Tokens {
+				item.Tokens = append(item.Tokens, kc.ItemToken{ID: tok.ID.String(), Can: canOf(tok.Read, tok.Send, tok.Manage),
+					Reads: tok.Reads, Waiting: tok.Waiting})
+			}
+		}
 		out.Items = append(out.Items, item)
 	}
 	return out
+}
+
+// canOf is a number's can list: read, send and manage, those set, in that
+// order, and never nil.
+func canOf(read, send, manage bool) []string {
+	can := []string{}
+	for _, f := range []struct {
+		on   bool
+		name string
+	}{{read, kc.CanRead}, {send, kc.CanSend}, {manage, kc.CanManage}} {
+		if f.on {
+			can = append(can, f.name)
+		}
+	}
+	return can
 }
 
 // checkSnapshot says why Wappie would not send snap, or "": more items or

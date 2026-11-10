@@ -49,6 +49,15 @@ type ContractSnapshot struct {
 	Items []ContractSnapshotItem
 	// Labels counts the items' labels by class, never their values.
 	Labels map[label.Class]int
+	// TokenMode: the token mode was on when it was measured. Only then
+	// does each item carry its ordinal and its tokens (step 7's plan,
+	// 6.2): the platform decodes strictly, and tokens on says its side
+	// takes them.
+	TokenMode bool
+	// TokensExpire is the earliest expiry after MeasuredAt of a token it
+	// lists, or nil. An expiry writes nothing, so the sender makes the
+	// next snapshot due then, and the token leaves it.
+	TokensExpire *time.Time
 }
 
 // ContractSnapshotItem is one number of a snapshot.
@@ -71,6 +80,24 @@ type ContractSnapshotItem struct {
 	// Protected are the subs Wappie's rule says the number cannot lose
 	// (sole_key_holders), each among People, in order.
 	Protected []uuid.UUID
+	// Ordinal is the number's place in its workspace (devices.ordinal),
+	// nil past 9999. Tokens are the platform tokens that hold a permission
+	// Wappie applied on it, by id; empty for none, and for a deleted
+	// number. Both are nil while the token mode is off.
+	Ordinal *int
+	Tokens  []ContractSnapshotToken
+}
+
+// ContractSnapshotToken is one token's standing on a number: never a
+// person, so never in People, Protected or OtherBackups.
+type ContractSnapshotToken struct {
+	ID uuid.UUID
+	// The perms Wappie applied; pending, waiting and refused ones are not
+	// listed.
+	Read, Send, Manage bool
+	// Reads: Read and a grant to the token's identity at the number's
+	// current epoch. Waiting: Read without that grant. Never both.
+	Reads, Waiting bool
 }
 
 // ContractSnapshotPerson is one person's standing on a number.
@@ -180,8 +207,10 @@ func snapshotTx(ctx context.Context, tx pgx.Tx, out *ContractSnapshot) error {
 	}
 	var status string
 	var quota bool
-	if err := tx.QueryRow(ctx, `SELECT t.id IS NOT NULL, coalesce(t.status, ''), `+snapshotQuotaSQL+`
-		FROM (SELECT $1::uuid AS id) w LEFT JOIN tenants t ON t.id = w.id`, out.Workspace).Scan(&out.Local, &status, &quota); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT t.id IS NOT NULL, coalesce(t.status, ''), `+snapshotQuotaSQL+`,
+			coalesce((SELECT mode = 'on' FROM contract_token_state), false)
+		FROM (SELECT $1::uuid AS id) w LEFT JOIN tenants t ON t.id = w.id`, out.Workspace).
+		Scan(&out.Local, &status, &quota, &out.TokenMode); err != nil {
 		return err
 	}
 	if !out.Local {
@@ -193,12 +222,13 @@ func snapshotTx(ctx context.Context, tx pgx.Tx, out *ContractSnapshot) error {
 }
 
 // snapshotItemsTx fills out's items from the workspace's tables, read in
-// tx with deleted numbers visible.
+// tx with deleted numbers visible; with the token mode on, their ordinals
+// and tokens too (snapshotTokensTx).
 func snapshotItemsTx(ctx context.Context, tx pgx.Tx, workspace uuid.UUID, at time.Time, active, quota bool, out *ContractSnapshot) error {
 	// The numbers. The predicate is exactly what 0051's devices trigger
 	// wakes on, so a number never enters the snapshot unannounced.
 	rows, err := tx.Query(ctx, `SELECT id, label, coalesce(pn, ''), status, paused, coalesce(pause_cause, ''),
-			deleted_at IS NOT NULL, purge_after
+			deleted_at IS NOT NULL, purge_after, ordinal
 		FROM devices WHERE tenant_id = $1 AND (lid IS NOT NULL OR pn IS NOT NULL OR last_connected_at IS NOT NULL)
 		ORDER BY id`, workspace)
 	if err != nil {
@@ -210,8 +240,12 @@ func snapshotItemsTx(ctx context.Context, tx pgx.Tx, workspace uuid.UUID, at tim
 		var name, pn, status, cause string
 		var paused, deleted bool
 		var purgeAfter *time.Time
-		if err := row.Scan(&it.ID, &name, &pn, &status, &paused, &cause, &deleted, &purgeAfter); err != nil {
+		var ordinal *int
+		if err := row.Scan(&it.ID, &name, &pn, &status, &paused, &cause, &deleted, &purgeAfter, &ordinal); err != nil {
 			return err
+		}
+		if out.TokenMode {
+			it.Ordinal, it.Tokens = ordinal, []ContractSnapshotToken{}
 		}
 		it.Label = label.Contract(name, pn, it.ID.String())
 		it.Hint = label.HintFromPN(pn)
@@ -316,7 +350,7 @@ func snapshotItemsTx(ctx context.Context, tx pgx.Tx, workspace uuid.UUID, at tim
 	if err != nil {
 		return err
 	}
-	return forEachRow(rows, func(row pgx.Rows) error {
+	err = forEachRow(rows, func(row pgx.Rows) error {
 		var device uuid.UUID
 		var n int
 		if err := row.Scan(&device, &n); err != nil {
@@ -324,6 +358,57 @@ func snapshotItemsTx(ctx context.Context, tx pgx.Tx, workspace uuid.UUID, at tim
 		}
 		if i, ok := index[device]; ok {
 			out.Items[i].OtherBackups = n
+		}
+		return nil
+	})
+	if err != nil || !out.TokenMode {
+		return err
+	}
+	return snapshotTokensTx(ctx, tx, workspace, at, index, out)
+}
+
+// snapshotTokensTx lists, on each live number of out, the platform tokens
+// that hold a permission Wappie applied (step 7's plan, 6.2), from the
+// token tables alone, never from device_permissions: a token is never a
+// person. A token is left out once it can never work again: revoked (the
+// belt counts as revoked, as in its usage), expired at the measurement, or
+// unlisted by a reset's pass. A token Wappie stops on its own (an
+// operator's stop, apply_failed, local_rule, creator_disabled_here) is
+// listed, as the acknowledgement reports it suspended. A deleted number
+// lists none: its perms went with its deletion. Tokens are in id order.
+func snapshotTokensTx(ctx context.Context, tx pgx.Tx, workspace uuid.UUID, at time.Time, index map[uuid.UUID]int, out *ContractSnapshot) error {
+	live := newTokenLiveParts("$2", "t.id", "t.tenant_id")
+	rows, err := tx.Query(ctx, `SELECT d.id, t.id, bool_or(p.perm = 'read'), bool_or(p.perm = 'send'), bool_or(p.perm = 'manage'),
+			t.identity_dropped_at IS NULL AND EXISTS (SELECT 1 FROM device_key_grants g
+				WHERE g.user_id = t.identity_user_id AND g.device_id = d.id AND g.epoch = d.current_epoch),
+			least(t.expires_at, (SELECT k.earliest_expires_at FROM contract_token_sticky k WHERE k.token_id = t.id))
+		  FROM contract_token_perms p
+		  JOIN contract_tokens t ON t.id = p.token_id
+		  JOIN devices d ON d.id = p.device_id AND d.tenant_id = $1 AND d.deleted_at IS NULL
+		 WHERE p.tenant_id = $1 AND p.state = 'applied'
+		   AND `+live.NotRevoked+` AND `+live.NotExpired+` AND `+live.Listed+` AND `+live.Belt+`
+		 GROUP BY d.id, t.id
+		 ORDER BY d.id, t.id`, workspace, at)
+	if err != nil {
+		return err
+	}
+	return forEachRow(rows, func(row pgx.Rows) error {
+		var device uuid.UUID
+		var tok ContractSnapshotToken
+		var grant bool
+		var expires time.Time
+		if err := row.Scan(&device, &tok.ID, &tok.Read, &tok.Send, &tok.Manage, &grant, &expires); err != nil {
+			return err
+		}
+		tok.Reads, tok.Waiting = tok.Read && grant, tok.Read && !grant
+		i, ok := index[device]
+		if !ok {
+			// A number not yet linked is no item of the snapshot.
+			return nil
+		}
+		out.Items[i].Tokens = append(out.Items[i].Tokens, tok)
+		if out.TokensExpire == nil || expires.Before(*out.TokensExpire) {
+			out.TokensExpire = &expires
 		}
 		return nil
 	})
