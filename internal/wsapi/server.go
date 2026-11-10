@@ -117,6 +117,11 @@ type Config struct {
 	// Relink links a logged-out number again (the pair frame's relink
 	// branch, relink.go). Nil answers that branch internal.
 	Relink *relink.Service
+	// MCPReaders tells a connection's reader it ended: a grant.revoke
+	// that took a person's Read tells the readers of their own
+	// connections it ended (DS48). Nil tells none here; the readers'
+	// 30-second re-tell is the backstop.
+	MCPReaders MCPReaders
 
 	// subscribeHook, for tests, runs at the subscribe's seams: "granted"
 	// once access is known and before the bus registers the subscription,
@@ -126,6 +131,17 @@ type Config struct {
 	// move that fails, or one that commits and loses its answer.
 	transferHook func(ctx context.Context, source, actor, device, target uuid.UUID) (store.PersonalTransferPreview, error)
 }
+
+// MCPReaders tells a connection's reader it ended (*mcpauth.Handler's
+// TellRevoked), best effort, as the console's revoke does. Not Readers,
+// the access control list a grant's reply carries.
+type MCPReaders interface {
+	TellRevoked(ctx context.Context, reader, id string)
+}
+
+// MCPReaders is who grant.revoke tells (Config.MCPReaders): what serve
+// wired, for its tests.
+func (s *Server) MCPReaders() MCPReaders { return s.cfg.MCPReaders }
 
 // Server serves the websocket endpoint.
 type Server struct {

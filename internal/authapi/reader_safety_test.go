@@ -67,7 +67,7 @@ func TestLastDeviceReaderCannotBeDisabledOrLoseItsEnvelope(t *testing.T) {
 	if code := h.do(t, req, &refusal); code != 409 || refusal.Code != "last_device_reader" {
 		t.Fatalf("refusal=%d %+v", code, refusal)
 	}
-	if err := h.keys.RevokeGrant(ctx, h.tenant, device, reader.ID); !errors.Is(err, store.ErrLastDeviceReader) {
+	if err := h.keys.RevokeGrant(ctx, h.tenant, owner.ID, device, reader.ID); !errors.Is(err, store.ErrLastDeviceReader) {
 		t.Fatalf("revoke=%v", err)
 	}
 	if err := h.users.SetDevicePermission(ctx, h.tenant, owner.ID, store.DevicePermission{DeviceID: device, UserID: reader.ID, Send: true}); !errors.Is(err, store.ErrLastDeviceReader) {
@@ -110,7 +110,7 @@ func TestRevocationPreservesEveryUnretiredArchiveGeneration(t *testing.T) {
 	}
 	// Bob can read the current generation, but cannot recover Alice's older
 	// envelope. Revocation removes all of Alice's generations, so it must fail.
-	if err := h.keys.RevokeGrant(ctx, h.tenant, device, a.ID); !errors.Is(err, store.ErrLastDeviceReader) {
+	if err := h.keys.RevokeGrant(ctx, h.tenant, owner.ID, device, a.ID); !errors.Is(err, store.ErrLastDeviceReader) {
 		t.Fatalf("old generation stranded: %v", err)
 	}
 	if err := h.users.RemoveMember(ctx, h.tenant, owner.ID, a.ID); !errors.Is(err, store.ErrLastDeviceReader) {
@@ -119,7 +119,7 @@ func TestRevocationPreservesEveryUnretiredArchiveGeneration(t *testing.T) {
 	if err := h.keys.PutGrant(ctx, store.Grant{TenantID: h.tenant, DeviceID: device, UserID: b.ID, Epoch: 1, SealedDSK: []byte("old backup")}, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.keys.RevokeGrant(ctx, h.tenant, device, a.ID); err != nil {
+	if err := h.keys.RevokeGrant(ctx, h.tenant, owner.ID, device, a.ID); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -145,7 +145,7 @@ func TestConcurrentAccessRemovalsAlwaysRetainOneReader(t *testing.T) {
 					case "disable":
 						err = h.users.UpdateMember(ctx, h.tenant, owner.ID, user.ID, "member", "disabled")
 					case "revoke":
-						err = h.keys.RevokeGrant(ctx, h.tenant, device, user.ID)
+						err = h.keys.RevokeGrant(ctx, h.tenant, owner.ID, device, user.ID)
 					case "permission":
 						err = h.users.SetDevicePermission(ctx, h.tenant, owner.ID, store.DevicePermission{DeviceID: device, UserID: user.ID})
 					}
@@ -233,7 +233,7 @@ func TestRemovingProvisionalServiceNeverNeedsAnotherReader(t *testing.T) {
 		}
 	}
 	// The person is still the last reader, and still cannot leave.
-	if err := h.keys.RevokeGrant(ctx, h.tenant, device, owner.ID); !errors.Is(err, store.ErrLastDeviceReader) {
+	if err := h.keys.RevokeGrant(ctx, h.tenant, owner.ID, device, owner.ID); !errors.Is(err, store.ErrLastDeviceReader) {
 		t.Fatalf("the owner's envelope: %v", err)
 	}
 }

@@ -51,6 +51,12 @@ type parity struct {
 
 func newParity(t *testing.T) *parity {
 	t.Helper()
+	return newParityWith(t, nil)
+}
+
+// newParityWith is newParity whose socket server tells readers.
+func newParityWith(t *testing.T, readers wsapi.MCPReaders) *parity {
+	t.Helper()
 	pool := pgtest.Fresh(t, migrate.Run)
 	ctx := context.Background()
 	var tenantID string
@@ -85,7 +91,7 @@ func newParity(t *testing.T) *parity {
 	t.Cleanup(func() { registry.StopAll(context.Background()) })
 	server := wsapi.NewServer(wsapi.Config{Keys: keys, Sessions: users, Accounts: users, Devices: devices, Messages: messages,
 		Keys2: store.NewKeys(pool), Receipts: store.NewReceipts(pool), Bus: b, Unlinker: unlinker, Log: slog.New(slog.DiscardHandler),
-		Registry: registry})
+		Registry: registry, MCPReaders: readers})
 	srv := httptest.NewServer(server)
 	t.Cleanup(srv.Close)
 	c := &deletionConsole{

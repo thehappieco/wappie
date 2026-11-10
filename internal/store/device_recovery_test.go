@@ -326,7 +326,7 @@ func TestRequireRemainingReaderCoversDeleted(t *testing.T) {
 	w.reads(t, target, excluded)
 	w.quarantine(t, excluded, target)
 	for _, device := range []uuid.UUID{live, excluded} {
-		if err := w.keys.RevokeGrant(ctx, w.tenant, device, target); !errors.Is(err, store.ErrLastDeviceReader) {
+		if err := w.keys.RevokeGrant(ctx, w.tenant, w.owner, device, target); !errors.Is(err, store.ErrLastDeviceReader) {
 			t.Fatalf("%s: %v", device, err)
 		}
 	}
@@ -335,7 +335,7 @@ func TestRequireRemainingReaderCoversDeleted(t *testing.T) {
 		_, err := tx.Exec(ctx, `DELETE FROM devices WHERE id=$1`, excluded)
 		return err
 	})
-	if err := w.keys.RevokeGrant(ctx, w.tenant, excluded, target); err != nil {
+	if err := w.keys.RevokeGrant(ctx, w.tenant, w.owner, excluded, target); err != nil {
 		t.Fatalf("after the purge: %v", err)
 	}
 }

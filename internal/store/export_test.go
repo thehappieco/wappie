@@ -8,12 +8,37 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"whatserver2/internal/pg"
 )
 
 // EndIfIdle is the idle sweep's re-check of one connection under its row's
 // lock, for the test of a connection renewed after the sweep picked it.
 func (m *MCPConnections) EndIfIdle(ctx context.Context, tenant uuid.UUID, id string) (bool, error) {
 	return m.endIfIdle(ctx, tenant, id)
+}
+
+// GrantTakenForTest runs act in tenant's transaction under the
+// workspace's lock, then grant.revoke's rule for user on device
+// (grantTakenTx), as an act that deletes some of user's grants there, and
+// perhaps puts one back, would: for the tests of the two that take
+// nothing, an old epoch's grant deleted and a grant replaced in the same
+// transaction (DS48).
+func GrantTakenForTest(ctx context.Context, pool *pgxpool.Pool, tenant, user, device uuid.UUID, act func(pgx.Tx) error) ([]EndedConnection, error) {
+	var ended []EndedConnection
+	err := pg.InTenantTx(ctx, pool, tenant.String(), func(tx pgx.Tx) error {
+		if err := lockWorkspaceAccess(ctx, tx, tenant); err != nil {
+			return err
+		}
+		if err := act(tx); err != nil {
+			return err
+		}
+		var err error
+		ended, err = grantTakenTx(ctx, tx, tenant, user, device)
+		return err
+	})
+	return ended, err
 }
 
 // WithQuarantineForTest runs fn in tx with excluded numbers visible: the one
@@ -36,6 +61,14 @@ func SetStrandLockTimeoutForTest(t testing.TB, d time.Duration) {
 	old := strandLockTimeout
 	strandLockTimeout = d
 	t.Cleanup(func() { strandLockTimeout = old })
+}
+
+// SetSweepLockTimeoutForTest sets how long the start's check waits for
+// each lock in a workspace, until the test ends.
+func SetSweepLockTimeoutForTest(t testing.TB, d time.Duration) {
+	old := sweepLockTimeout
+	sweepLockTimeout = d
+	t.Cleanup(func() { sweepLockTimeout = old })
 }
 
 // SnapshotSeqForTest numbers a snapshot of workspace measured at measured,

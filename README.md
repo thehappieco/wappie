@@ -477,11 +477,15 @@ A person can be removed from a tenant's archive across every device:
 
 Their direct conversation, everything they sent in groups, every receipt they
 produced, their contact row and their group memberships go; what other people
-said in those groups stays. `reset-archive` removes a device's attachment
+said in those groups stays. `reset-archive` removes the workspace's attachment
 objects from storage as well, and refuses while a deleted number of the
-workspace waits for its purge. Deleting a number keeps it 30 days, readable by
-nobody and recoverable by an owner; the purge then removes its archive and its
-attachment objects ([device lifecycle](docs/devices.md#deletion-and-recovery)).
+workspace waits for its purge. Stop `wappie-api` before the reset and start it
+after; with `-keep-devices`, after `device-key`, since a running server keeps
+sealing to the old key until it restarts
+([resetting the archive](docs/devices.md#resetting-the-archive)). Deleting a
+number keeps it 30 days, readable by nobody and recoverable by an owner; the
+purge then removes its archive and its attachment objects
+([device lifecycle](docs/devices.md#deletion-and-recovery)).
 
 Logs mask identifiers at every level: a JID keeps its server and last four
 digits, an email its first letter and domain. `WS_LOG_WIRE` puts whatsmeow's own

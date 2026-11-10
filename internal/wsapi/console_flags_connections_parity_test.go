@@ -20,19 +20,22 @@ import (
 	"whatserver2/internal/authapi"
 	"whatserver2/internal/numberacts"
 	"whatserver2/internal/store"
+	"whatserver2/internal/wsapi"
 )
 
 // The person's own connections (the owner's Q8, DS47) through Wappie's
 // own screen and the console's runners: PUT …/permissions without read,
-// item.flags_drop of read and item.access_remove, each on its own number
-// with the same connections, by the same admin, must leave the same rows
-// and tell the readers of the same ended connections. Every one of the
+// item.flags_drop of read and item.access_remove, and the socket's lone
+// grant.revoke (DS48), each on its own number with the same connections,
+// by the same admin, must leave the same rows and tell the readers of the
+// same ended connections. Every one of the
 // person's that held the number ends access_lost whole, one that also
 // reaches another number too (the platform's 0061); another person's
 // connection and a workspace key keep the number. With Read already gone,
 // a raise of send ends nothing on either side, and a change that leaves no
 // flag ends them as a remove does: the screen's PUT with no flag and the
-// console's drop of send, the last flag, alike.
+// console's drop of send, the last flag, alike. A dormant grant's deletion
+// ends nothing, on the screen and through grant.revoke alike.
 
 // tells records the connections a route or a runner told readers about.
 type tells struct {
@@ -57,6 +60,7 @@ func (r *tells) take() []string {
 var (
 	_ authapi.Readers    = (*tells)(nil)
 	_ numberacts.Readers = (*tells)(nil)
+	_ wsapi.MCPReaders   = (*tells)(nil)
 )
 
 // connParity is the flags parity world whose route and runner tell.
@@ -68,8 +72,8 @@ type connParity struct {
 
 func newConnParity(t *testing.T) *connParity {
 	t.Helper()
-	p := newParity(t)
 	told := &tells{}
+	p := newParityWith(t, told)
 	p.runner.Readers = told
 	mux := http.NewServeMux()
 	(&authapi.Handler{Users: p.users, Keys: store.NewKeys(p.pool), Devices: p.devices, AccessChanged: p.srv.RevalidateAccess,
@@ -266,8 +270,15 @@ func TestConsoleParityOwnConnections(t *testing.T) {
 		"a remove": func(s connSet) string {
 			return c.outcome(c.runner.AccessRemove(ctx, c.command(t, kc.OpItemAccessRemove, admin, adminSub), s.number, s.person)) //nolint:contextcheck // the world's helpers run on a context of their own
 		},
+		// The socket's grant.revoke, the Read flag kept: no grant at the
+		// number's epoch is left, so Read is gone (the platform's 0061,
+		// QF3, DS48).
+		"a lone grant.revoke": func(s connSet) string {
+			return frameOutcome(t, ask(t, c.console, wsapi.Hello{Session: adminToken}, wsapi.TypeGrantRevoke,
+				wsapi.GrantRevoke{DeviceID: s.number.String(), UserID: s.person.String()}), wsapi.TypeReaders)
+		},
 	}
-	for _, name := range []string{"the screen without read", "a drop of read", "a remove"} {
+	for _, name := range []string{"the screen without read", "a drop of read", "a remove", "a lone grant.revoke"} {
 		person, _ := c.person(t, strings.ReplaceAll(name, " ", "-"), "admin")
 		s := c.set(t, person, shared, name)
 		if out := paths[name](s); out != "ok" {
@@ -275,6 +286,9 @@ func TestConsoleParityOwnConnections(t *testing.T) {
 		}
 		if got := c.left(t, s); fmt.Sprint(got) != fmt.Sprint(want) {
 			t.Fatalf("%s: left %+v, want %+v", name, got, want)
+		}
+		if h := c.held(t, s.number, person); name == "a lone grant.revoke" && !h.Read {
+			t.Fatalf("%s took the Read flag: %+v", name, h)
 		}
 		c.endAll(t)
 	}
@@ -322,5 +336,92 @@ func TestConsoleParityOwnConnections(t *testing.T) {
 			t.Fatalf("%s: left %+v, want %+v", name, got, gone[name].want)
 		}
 		c.endAll(t)
+	}
+
+	// A dormant grant (the Read flag off, the grant left, before DS47):
+	// the screen without Read and a lone grant.revoke have no Read to
+	// take. Both delete the grant and end nothing (DS48).
+	dormant := map[string]func(s connSet) string{
+		"the screen's raise of send on a dormant grant": func(s connSet) string {
+			return c.put(t, adminToken, s.number, s.person, false, true, false)
+		},
+		"a grant.revoke of a dormant grant": paths["a lone grant.revoke"],
+	}
+	for _, name := range []string{"the screen's raise of send on a dormant grant", "a grant.revoke of a dormant grant"} {
+		person, _ := c.person(t, strings.ReplaceAll(name, " ", "-"), "admin")
+		s := c.set(t, person, shared, name)
+		c.scoped(ctx, t, func(tx pgx.Tx) error {
+			_, err := tx.Exec(ctx, `UPDATE device_permissions SET can_read = false WHERE device_id = $1 AND user_id = $2`, s.number, person)
+			return err
+		})
+		if out := dormant[name](s); out != "ok" {
+			t.Fatalf("%s: %s", name, out)
+		}
+		if got := c.left(t, s); fmt.Sprint(got) != fmt.Sprint(keptGone) {
+			t.Fatalf("%s: left %+v, want %+v", name, got, keptGone)
+		}
+		c.endAll(t)
+	}
+}
+
+// TestGrantFramesConnectionAccount: the socket's grant frames and the
+// screen's PUT on an assistant connection's own account (DS48). A
+// grant.add of a number its key does not name is not_authorized, and so
+// is a PUT of Read there (403); nothing is recorded. A grant.revoke of
+// the account's grant on its number ends the connection whole,
+// access_lost, and tells its reader, where it once narrowed it; so does a
+// PUT that takes the account's Read.
+func TestGrantFramesConnectionAccount(t *testing.T) {
+	c := newConnParity(t)
+	ctx := context.Background()
+	person, _ := c.person(t, "caio", "admin")
+	number, shared := c.linkedDevice(t, "Number"), c.linkedDevice(t, "Shared")
+	for _, d := range []uuid.UUID{number, shared} {
+		c.reads(t, c.owner, d)
+		c.reads(t, person, d)
+	}
+	id, account := c.connect(t, person, true, number)
+	owner := wsapi.Hello{Session: c.token}
+
+	f := ask(t, c.console, owner, wsapi.TypeGrantAdd, wsapi.GrantRequest{DeviceID: shared.String(), UserID: account.String(), Epoch: 1,
+		SealedDSK: []byte("sealed")})
+	if got := frameOutcome(t, f, wsapi.TypeReaders); got != kc.CodeNotAuthorized {
+		t.Fatalf("a grant.add of a number its key does not name: %s", got)
+	}
+	if got := c.put(t, c.token, shared, account, true, false, false); got != "not_authorized" {
+		t.Fatalf("a PUT of Read on a number its key does not name: %s", got)
+	}
+	if h := c.held(t, shared, account); h != (held{}) {
+		t.Fatalf("the account holds %+v on the shared number", h)
+	}
+
+	// The screen's PUT without Read on the account of a second
+	// connection: it ends, and its reader is told.
+	second, secondAccount := c.connect(t, person, true, number)
+	if got := c.put(t, c.token, number, secondAccount, false, false, false); got != "ok" {
+		t.Fatalf("a PUT without Read on the account: %s", got)
+	}
+	if told := c.told.take(); !slices.Equal(told, []string{"enclave/" + second}) {
+		t.Fatalf("told %v", told)
+	}
+
+	if got := c.revoke(t, c.token, number, account); got != "ok" {
+		t.Fatalf("the account's grant.revoke: %s", got)
+	}
+	var status, reason string
+	c.scoped(ctx, t, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `SELECT status, coalesce(revoke_reason, '') FROM mcp_connections WHERE id = $1`, id).Scan(&status, &reason)
+	})
+	if status != "revoked" || reason != store.ReasonAccessLost {
+		t.Fatalf("the connection is %s %s", status, reason)
+	}
+	c.scoped(ctx, t, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `SELECT status, coalesce(revoke_reason, '') FROM mcp_connections WHERE id = $1`, second).Scan(&status, &reason)
+	})
+	if status != "revoked" || reason != store.ReasonAccessLost {
+		t.Fatalf("the second connection is %s %s", status, reason)
+	}
+	if told := c.told.take(); !slices.Equal(told, []string{"enclave/" + id}) {
+		t.Fatalf("told %v", told)
 	}
 }

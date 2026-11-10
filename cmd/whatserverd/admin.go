@@ -93,9 +93,11 @@ devices and mints an API key that acts as it in the console.
 func resetArchive(args []string) error {
 	fs := flag.NewFlagSet("reset-archive", flag.ContinueOnError)
 	tenantArg := fs.String("tenant", "", "tenant id (required)")
-	confirm := fs.Bool("yes-destroy-everything", false, "required; there is no undo")
+	confirm := fs.Bool("yes-destroy-everything", false,
+		"required; there is no undo. Stop wappie-api first: the reset holds the workspace's lock for its whole run")
 	keepDevices := fs.Bool("keep-devices", false,
-		"leave the device rows in place (their sessions stay paired but cannot seal)")
+		"leave the device rows in place; their sessions stay paired, with no archive key until device-key. "+
+			"A running server keeps sealing to the old key until it restarts")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -137,23 +139,51 @@ func resetArchive(args []string) error {
 
 	fmt.Printf(`Archive removed for tenant %s.
 
-messages  %d
-chats     %d
-contacts  %d
-media     %d
-devices   %d
-objects   %d removed from storage, %d failed
+messages     %d
+chats        %d
+contacts     %d
+media        %d
+devices      %d
+objects      %d removed from storage, %d failed
+connections  %d ended, access_lost (wappie-api tells their readers once it runs)
 
 An object that failed to delete is ciphertext whose keys no longer exist:
 useless to anyone, but still occupying space. Run again to retry, or empty the
 tenant's prefix in the bucket yourself.
-
-Next: create an account with "whatserverd invite", sign up in the browser, then
-pair a device. Pairing generates that device's archive key and seals it to the
-accounts that may read it, so there is nothing to write down.
 `, tenant, counts.Messages, counts.Chats, counts.Contacts, counts.Media, counts.Devices,
-		removed, failed)
+		removed, failed, counts.Connections)
+
+	fmt.Print(resetNext(*keepDevices))
 	return nil
+}
+
+// resetNext is what the reset prints after its counts. wappie-api stops
+// for any reset: the reset holds the workspace's lock (the tenants row)
+// for its whole run, which ingest needs for every message, and a running
+// server keeps what it loaded for each number. With the numbers kept,
+// device-key gives each a new key before the start: a running server
+// caches each number's key (ingest's pipelineFor), and nothing tells it
+// the key changed.
+func resetNext(keepDevices bool) string {
+	const stop = `
+Next, in this order:
+
+  1. Stop wappie-api. If it ran during the reset, stop it now.
+  2. Reset (done).
+`
+	if keepDevices {
+		return stop + `  3. Run "whatserverd device-key -device <id> -grant <email>" for each number.
+  4. Start wappie-api.
+
+A running server keeps sealing to the old key until it restarts.
+`
+	}
+	return stop + `  3. Start wappie-api.
+  4. Pair each number again. Pairing makes its archive key and seals it to the
+     accounts that may read it, so there is nothing to write down. An account
+     to pair with, if there is none: "whatserverd invite", then sign up in the
+     browser.
+`
 }
 
 // removeObjects deletes attachment objects, best effort, and counts.

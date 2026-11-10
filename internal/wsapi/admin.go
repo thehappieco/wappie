@@ -459,6 +459,13 @@ func (s *session) handleGrantAdd(ctx context.Context, f Frame) {
 			s.replyError(f.ReqID, ErrCodeNotFound, "this number is no longer in this workspace")
 			return
 		}
+		if errors.Is(err, store.ErrConnectionAccountGrant) {
+			// An assistant connection's own account: only what it was
+			// consented to (DS48).
+			s.replyError(f.ReqID, ErrCodeNotAuthorized,
+				"an assistant connection's account takes only a number its key names and its person reads")
+			return
+		}
 		s.log.Error("recording a grant failed", "device", dev.ID, "error", err)
 		s.replyError(f.ReqID, ErrCodeInternal, "could not record the grant")
 		return
@@ -500,9 +507,20 @@ func (s *session) handleGrantRevoke(ctx context.Context, f Frame) {
 	if !s.freshBackups(ctx, f.ReqID, TypeGrantRevoke, tenantUUID, deviceUUID, user) {
 		return
 	}
-	if err := s.srv.cfg.Keys2.RevokeGrant(ctx, tenantUUID, deviceUUID, user); err != nil {
+	ended, err := s.srv.cfg.Keys2.RevokeGrantEnded(ctx, tenantUUID, who.userID, deviceUUID, user)
+	if err != nil {
 		if errors.Is(err, store.ErrLastDeviceReader) {
 			s.replyError(f.ReqID, ErrCodeLastDeviceReader, "give another active member read access to this number before removing its last reader")
+			return
+		}
+		// The role read again under the workspace's lock (DS48): an admin
+		// on an owner (DS18), or an actor or a workspace no longer active.
+		if errors.Is(err, store.ErrOwnerTarget) {
+			s.replyError(f.ReqID, ErrCodeNotAuthorized, "only an owner changes an owner's access")
+			return
+		}
+		if errors.Is(err, store.ErrMembershipForbidden) {
+			s.replyError(f.ReqID, ErrCodeNotAuthorized, "this needs an active owner or admin of an active workspace")
 			return
 		}
 		s.log.Error("revoking a grant failed", "device", dev.ID, "error", err)
@@ -512,7 +530,28 @@ func (s *session) handleGrantRevoke(ctx context.Context, f Frame) {
 	s.log.Info("device key grant revoked",
 		"device", dev.ID, "from", req.UserID, "by", who.email)
 	s.srv.RevalidateAccess()
+	// When the revoke took the person's Read (the flag kept, no grant at
+	// the number's epoch left), it ended their own connections that held
+	// the number (DS48): their readers are told now, after the commit.
+	s.tellEnded(ctx, ended)
 	s.replyReaders(ctx, f.ReqID, tenantUUID, deviceUUID, dev.ID)
+}
+
+// tellEnded tells the readers of the connections an act ended, after its
+// commit and within one bound for them all. A reader not told now is told
+// again within 30 seconds.
+func (s *session) tellEnded(ctx context.Context, ended []store.EndedConnection) {
+	if len(ended) == 0 {
+		return
+	}
+	tctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	for _, e := range ended {
+		if s.srv.cfg.MCPReaders != nil {
+			s.srv.cfg.MCPReaders.TellRevoked(tctx, e.Reader, e.ID)
+		}
+		s.log.Info("mcp connection revoked", "connection", e.ID, "reason", store.ReasonAccessLost)
+	}
 }
 
 // handleGrantsList returns the grants of the account this connection acts

@@ -250,7 +250,10 @@ type Grant struct {
 	SealedDSK       []byte
 }
 
-// PutGrant records a sealed device key for one user.
+// PutGrant records a sealed device key for one user. A live connection's
+// own account takes only a number its key names and its person reads
+// (ErrConnectionAccountGrant, DS48): grant.add, a pairing's grants and the
+// command line's device-key alike.
 func (k *Keys) PutGrant(ctx context.Context, g Grant, grantedBy *uuid.UUID) error {
 	if len(g.SealedDSK) == 0 {
 		return errors.New("store: a grant with no sealed key is not a grant")
@@ -259,12 +262,7 @@ func (k *Keys) PutGrant(ctx context.Context, g Grant, grantedBy *uuid.UUID) erro
 		if err := lockWorkspaceAccess(ctx, tx, g.TenantID); err != nil {
 			return err
 		}
-		var member uuid.UUID
-		if err := tx.QueryRow(ctx, `SELECT m.user_id FROM workspace_memberships m JOIN users u ON u.id=m.user_id
-			WHERE m.tenant_id=$1 AND m.user_id=$2 AND m.status='active' AND u.status='active' AND (m.expires_at IS NULL OR m.expires_at > now()) FOR SHARE OF m`, g.TenantID, g.UserID).Scan(&member); err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
-				return ErrNotFound
-			}
+		if err := grantableTx(ctx, tx, g.TenantID, g.DeviceID, g.UserID); err != nil {
 			return err
 		}
 		_, err := tx.Exec(ctx, `
@@ -276,6 +274,31 @@ func (k *Keys) PutGrant(ctx context.Context, g Grant, grantedBy *uuid.UUID) erro
 			g.TenantID, g.DeviceID, g.UserID, int32(g.Epoch), g.SealedDSK, grantedBy)
 		return numberGone(err)
 	})
+}
+
+// CheckGrant runs PutGrant's checks of user on device and writes nothing:
+// ErrNotFound for an account that is not an active, unexpired member, and
+// ErrConnectionAccountGrant for a live connection's own account on a
+// number its consent does not cover. device-key asks it of every account
+// before it makes the number's key, so a refusal leaves no key that
+// nobody holds. PutGrant asks again under the workspace's lock.
+func (k *Keys) CheckGrant(ctx context.Context, tenant, device, user uuid.UUID) error {
+	return pg.InTenantTx(ctx, k.pool, tenant.String(), func(tx pgx.Tx) error {
+		return grantableTx(ctx, tx, tenant, device, user)
+	})
+}
+
+// grantableTx is PutGrant's checks of user on device.
+func grantableTx(ctx context.Context, tx pgx.Tx, tenant, device, user uuid.UUID) error {
+	var member uuid.UUID
+	if err := tx.QueryRow(ctx, `SELECT m.user_id FROM workspace_memberships m JOIN users u ON u.id=m.user_id
+		WHERE m.tenant_id=$1 AND m.user_id=$2 AND m.status='active' AND u.status='active' AND (m.expires_at IS NULL OR m.expires_at > now()) FOR SHARE OF m`, tenant, user).Scan(&member); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		return err
+	}
+	return connectionAccountTakesTx(ctx, tx, tenant, user, device)
 }
 
 // ErrNumberGone is a write for a number that left the workspace while it
@@ -346,18 +369,97 @@ func (k *Keys) HasGrant(ctx context.Context, tenant, device, user uuid.UUID) (bo
 	return has, nil
 }
 
-// RevokeGrant removes one user's access to one device.
-func (k *Keys) RevokeGrant(ctx context.Context, tenant, device, user uuid.UUID) error {
-	return pg.InTenantTx(ctx, k.pool, tenant.String(), func(tx pgx.Tx) error {
-		if err := lockWorkspaceAccess(ctx, tx, tenant); err != nil {
+// RevokeGrant is RevokeGrantEnded without the list. It may end
+// connections, and nobody tells their readers but the 30-second re-tell.
+// Code that serves a person's act calls RevokeGrantEnded and tells them,
+// as the socket's grant.revoke does.
+func (k *Keys) RevokeGrant(ctx context.Context, tenant, actor, device, user uuid.UUID) error {
+	_, err := k.RevokeGrantEnded(ctx, tenant, actor, device, user)
+	return err
+}
+
+// RevokeGrantEnded is the socket's grant.revoke: actor removes user's
+// grants on device, at every epoch, so a revoke that deleted one leaves
+// none at the number's current epoch. It returns the connections it ended,
+// for their readers to be told after the commit.
+//
+// Who: actor's role is read again under the tenants row
+// (lockWorkspaceManager), since a session's role can be stale: an owner or
+// an admin, active, in an active workspace, else ErrMembershipForbidden.
+// Only an owner changes an owner's access (DS18, the platform's 0060): an
+// admin whose target ownerTargetTx reads as an owner, fail-closed, is
+// refused with ErrOwnerTarget before anything else is checked or deleted,
+// a live grant or a dormant one alike.
+//
+// What ends (DS48), in the same transaction, whole and access_lost:
+//   - when user has the Read flag, the revoke takes their Read though the
+//     flag stays, and ends their own connections and integrations that held
+//     the number (grantTakenTx, the platform's 0061);
+//   - when user is a connection's own account (its service_user_id), that
+//     connection, which the revoke would otherwise narrow.
+//
+// A revoke that finds no grant, or deletes a dormant one (no Read flag) of
+// a person, ends nothing; a refusal (ErrLastDeviceReader) changes nothing.
+func (k *Keys) RevokeGrantEnded(ctx context.Context, tenant, actor, device, user uuid.UUID) ([]EndedConnection, error) {
+	var ended []EndedConnection
+	err := pg.InTenantTx(ctx, k.pool, tenant.String(), func(tx pgx.Tx) error {
+		role, err := lockWorkspaceManager(ctx, tx, tenant, actor)
+		if err != nil {
 			return err
+		}
+		if role != "owner" {
+			owner, err := ownerTargetTx(ctx, tx, tenant, user)
+			if err != nil {
+				return err
+			}
+			if owner {
+				return ErrOwnerTarget
+			}
 		}
 		if err := requireRemainingReader(ctx, tx, tenant, user, &device); err != nil {
 			return err
 		}
-		_, err := tx.Exec(ctx,
+		// A connection's own account: its connection is locked before its
+		// rows are touched (the tenants row, then the connection, then its
+		// own rows; reader_safety.go).
+		named, err := namedConnectionTx(ctx, tx, tenant, user)
+		if err != nil {
+			return err
+		}
+		tag, err := tx.Exec(ctx,
 			`DELETE FROM device_key_grants WHERE device_id = $1 AND user_id = $2`, device, user)
+		if err != nil || tag.RowsAffected() == 0 {
+			return err
+		}
+		for _, c := range named {
+			if _, err := endMCPConnectionTx(ctx, tx, tenant, c.ID, statusRevoked, ReasonAccessLost); err != nil {
+				return err
+			}
+		}
+		own, err := grantTakenTx(ctx, tx, tenant, user, device)
+		ended = append(named, own...)
 		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return ended, nil
+}
+
+// namedConnectionTx locks the live connection that names user as its own
+// account (service_user_id, unique), if there is one. The caller holds the
+// tenants row lock.
+func namedConnectionTx(ctx context.Context, tx pgx.Tx, tenant, user uuid.UUID) ([]EndedConnection, error) {
+	rows, err := tx.Query(ctx, `SELECT id::text, reader FROM mcp_connections
+		WHERE tenant_id = $1 AND service_user_id = $2 AND status IN ('pending', 'active', 'reseal')
+		ORDER BY id FOR UPDATE`, tenant, user)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (EndedConnection, error) {
+		var c EndedConnection
+		err := row.Scan(&c.ID, &c.Reader)
+		return c, err
 	})
 }
 
