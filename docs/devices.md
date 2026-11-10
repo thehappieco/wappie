@@ -225,3 +225,16 @@ No platform call runs inside the store transaction of a deletion, a recovery, a 
 ### Moving a number to Personal
 
 See [moving a number from Team to Personal](device-personal-transfer.md): a number moves only while nobody else has access to it.
+
+## Resetting the archive
+
+`whatserverd reset-archive -tenant <id> -yes-destroy-everything` removes everything sealed for a workspace: messages, chats, contacts, attachments, archive keys and grants. There is no undo. It refuses while a deleted number waits for its purge ([the purge](#the-purge)). Before its deletes it ends every live assistant connection and AI integration of the workspace, `access_lost` ([DS48](decisions.md)); people connect them again afterwards. Without `-keep-devices` it removes the numbers too, and each is paired again, which makes its new key.
+
+With `-keep-devices` the numbers stay paired, with no archive key. A running server keeps the key it loaded for each number, and nothing tells it the key changed. After the reset, and after `device-key`, it keeps sealing to the old key until it restarts. So a restart is required. Run, in this order:
+
+1. Stop `wappie-api`.
+2. `whatserverd reset-archive -tenant <id> -keep-devices -yes-destroy-everything`.
+3. `whatserverd device-key -device <id> -grant <email>` for each number.
+4. Start `wappie-api`.
+
+The reset prints these steps, and `device-key` the restart.
