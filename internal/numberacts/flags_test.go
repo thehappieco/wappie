@@ -144,6 +144,7 @@ func TestFlagsRevalidateAccess(t *testing.T) {
 	ctx := context.Background()
 	w := newFlagsWorld(t)
 	admin, adminSub := w.actor(t, "admin")
+	owner, ownerSub := w.actor(t, "owner")
 	member, memberSub := w.actor(t, "member")
 	target := w.person(t, "member")
 	s := &sockets{}
@@ -160,10 +161,13 @@ func TestFlagsRevalidateAccess(t *testing.T) {
 	}
 	act, err := r.FlagsRaise(ctx, w.run(t, kc.OpItemFlagsRaise, member, memberSub), w.device, target, read, readSend)
 	step("a member's raise", act, err, "refused", kc.CodeNotAuthorized, 0)
-	// The owner is the number's one reader.
+	// The owner is the number's one reader: an admin may not change an
+	// owner's flags (Q58), another owner meets last_reader.
 	act, err = r.FlagsDrop(ctx, w.run(t, kc.OpItemFlagsDrop, admin, adminSub), w.device, w.owner, read, []string{})
+	step("an admin's drop of an owner", act, err, "refused", kc.CodeNotAuthorized, 0)
+	act, err = r.FlagsDrop(ctx, w.run(t, kc.OpItemFlagsDrop, owner, ownerSub), w.device, w.owner, read, []string{})
 	step("the last reader's drop", act, err, "refused", kc.CodeLastReader, 0)
-	act, err = r.AccessRemove(ctx, w.run(t, kc.OpItemAccessRemove, admin, adminSub), w.device, w.owner)
+	act, err = r.AccessRemove(ctx, w.run(t, kc.OpItemAccessRemove, owner, ownerSub), w.device, w.owner)
 	step("the last reader's remove", act, err, "refused", kc.CodeLastReader, 0)
 	w.reads(t, target)
 	act, err = r.FlagsRaise(ctx, w.run(t, kc.OpItemFlagsRaise, admin, adminSub), w.device, target, readSend, append(readSend, kc.CanManage))

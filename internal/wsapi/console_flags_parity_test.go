@@ -20,8 +20,9 @@ import (
 // The console's flags runners (step 12b's F1) against Wappie's own
 // screen: PUT …/permissions and the socket's grant.revoke on one of twin
 // numbers, the runner on the other, by the same admin; each pair must
-// leave the same flags and grants, and refuse the same people, with the
-// last reader kept (ErrLastDeviceReader where the act says last_reader).
+// leave the same flags and grants, and refuse the same people, an admin
+// on an owner's flags included (Q58), with the last reader kept
+// (ErrLastDeviceReader where the act says last_reader).
 // The known differences are pinned: a deleted number (DS21), and a raise,
 // which never touches a key (the screen's PUT without read deletes one).
 
@@ -189,18 +190,32 @@ func TestConsoleParityFlags(t *testing.T) {
 	}
 	p.same(t, "a key shared after a remove", frame, console, target, held{Grants: 1})
 
-	// The last reader is kept by both: the owner alone reads these.
+	// The owner alone reads these. An owner's flags are only an owner's
+	// (Q58): the admin is refused by both, before the last reader.
 	soloFrame, soloConsole := p.linkedDevice(t, "Solo frame"), p.linkedDevice(t, "Solo console")
 	for _, d := range []uuid.UUID{soloFrame, soloConsole} {
 		p.reads(t, p.owner, d)
 	}
 	fo = p.put(t, adminToken, soloFrame, p.owner, false, true, false)
 	co = drop(soloConsole, p.owner, []string{kc.CanRead, kc.CanSend}, []string{kc.CanSend})
+	if fo != kc.CodeNotAuthorized || co != kc.CodeNotAuthorized {
+		t.Fatalf("an admin's drop of an owner: the screen %s, the runner %s", fo, co)
+	}
+	if co := remove(soloConsole, p.owner); co != kc.CodeNotAuthorized {
+		t.Fatalf("an admin's remove of an owner: the runner %s", co)
+	}
+	// The last reader is kept by both, for another owner.
+	second, secondToken := p.person(t, "duda", "owner")
+	secondSub := p.link(t, second, "owner")
+	fo = p.put(t, secondToken, soloFrame, p.owner, false, true, false)
+	co = p.outcome(p.runner.FlagsDrop(ctx, p.command(t, kc.OpItemFlagsDrop, second, secondSub), soloConsole, p.owner, //nolint:contextcheck // the world's helpers run on a context of their own
+		[]string{kc.CanRead, kc.CanSend}, []string{kc.CanSend}))
 	if fo != wsapi.ErrCodeLastDeviceReader || co != kc.CodeLastReader {
 		t.Fatalf("the last reader's drop: the screen %s, the runner %s", fo, co)
 	}
-	if fo, co := p.revoke(t, adminToken, soloFrame, p.owner), remove(soloConsole, p.owner); fo != wsapi.ErrCodeLastDeviceReader ||
-		co != kc.CodeLastReader {
+	fo = p.revoke(t, secondToken, soloFrame, p.owner)
+	co = p.outcome(p.runner.AccessRemove(ctx, p.command(t, kc.OpItemAccessRemove, second, secondSub), soloConsole, p.owner)) //nolint:contextcheck // the world's helpers run on a context of their own
+	if fo != wsapi.ErrCodeLastDeviceReader || co != kc.CodeLastReader {
 		t.Fatalf("the last reader's removal: the screen %s, the runner %s", fo, co)
 	}
 	p.same(t, "the last reader", soloFrame, soloConsole, p.owner, held{Read: true, Send: true, Grants: 1})

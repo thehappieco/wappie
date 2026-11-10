@@ -299,13 +299,15 @@ func TestRunFlagsDrop(t *testing.T) {
 	}
 
 	// The last reader: last_reader, nothing changed, on a live number and
-	// on a deleted one (0044).
+	// on a deleted one (0044). The reader is the workspace's owner, so an
+	// owner asks (an admin may not change an owner's flags, Q58).
 	solo, soloGone := w.number(t, "Solo"), w.number(t, "Solo gone")
 	w.reads(t, w.owner, solo)
 	w.reads(t, w.owner, soloGone)
 	w.quarantine(t, soloGone)
+	owner, ownerSub := w.actor(t, "owner", "owner")
 	for what, d := range map[string]uuid.UUID{"live": solo, "deleted": soloGone} {
-		_, act, wrote, err := drop(d, w.owner, canR, []string{})
+		act, wrote, err := w.c.RunFlagsDrop(ctx, w.command(t, kc.OpItemFlagsDrop, owner, ownerSub), d, w.owner, canR, []string{})
 		refusedWith(t, "the last reader of a "+what+" number", act, err, kc.CodeLastReader)
 		if wrote || w.grantsOf(t, d, w.owner) != 1 || !sameStored(w.stored(t, d, w.owner), true, false, false) {
 			t.Fatalf("the last reader of a %s number lost something", what)
@@ -419,10 +421,11 @@ func TestRunAccessRemove(t *testing.T) {
 	nobody, _ := w.actor(t, "member", "member")
 	_, act, _, err = remove(device, nobody)
 	ranAct(t, "a remove of someone holding nothing", act, err)
-	// The last reader.
+	// The last reader, the workspace's owner: an owner asks (Q58).
 	solo := w.number(t, "Solo")
 	w.reads(t, w.owner, solo)
-	_, act, wrote, err = remove(solo, w.owner)
+	owner, ownerSub := w.actor(t, "owner", "owner")
+	act, wrote, err = w.c.RunAccessRemove(ctx, w.command(t, kc.OpItemAccessRemove, owner, ownerSub), solo, w.owner)
 	refusedWith(t, "the last reader", act, err, kc.CodeLastReader)
 	if wrote || w.grantsOf(t, solo, w.owner) != 1 || !sameStored(w.stored(t, solo, w.owner), true, false, false) {
 		t.Fatal("the last reader lost something")
@@ -530,4 +533,76 @@ func TestStoredFlags(t *testing.T) {
 	if err != nil || len(can) != 0 || key {
 		t.Fatalf("another workspace's number: %v %v %v", can, key, err)
 	}
+}
+
+// TestFlagsOwnerTarget (the owner's answer to the platform's Q58): only an
+// owner, on both sides, changes an owner's flags. An admin's raise, drop
+// and remove of an owner (local, or named owner by their document alone)
+// are not_authorized with nothing written, an admin whose document says
+// owner included; an owner's run. Wappie's own screen refuses the admin
+// the same way (ErrOwnerTarget, a 403 not_authorized), and lets the owner.
+func TestFlagsOwnerTarget(t *testing.T) {
+	ctx := context.Background()
+	w := newActWorld(t)
+	admin, adminSub := w.actor(t, "admin", "admin")
+	halfOwner, halfOwnerSub := w.actor(t, "admin", "owner")
+	owner, ownerSub := w.actor(t, "owner", "owner")
+	localOwner, _ := w.actor(t, "owner", "owner")
+	docOwner, _ := w.actor(t, "admin", "owner")
+	device := w.number(t, "Vendas")
+	w.reads(t, w.owner, device)
+	for _, u := range []uuid.UUID{localOwner, docOwner} {
+		w.reads(t, u, device)
+		w.set(t, device, u, true, false, false)
+	}
+	w.later(t)
+
+	for name, target := range map[string]uuid.UUID{"a local owner": localOwner, "an owner by the document": docOwner} {
+		for who, by := range map[string][2]uuid.UUID{"an admin": {admin, adminSub}, "an admin the document calls owner": {halfOwner, halfOwnerSub}} {
+			what := who + " on " + name
+			act, wrote, err := w.c.RunFlagsRaise(ctx, w.command(t, kc.OpItemFlagsRaise, by[0], by[1]), device, target, canR, canRS)
+			refusedWith(t, what+": a raise", act, err, kc.CodeNotAuthorized)
+			if wrote {
+				t.Fatalf("%s: the raise wrote", what)
+			}
+			act, wrote, err = w.c.RunFlagsDrop(ctx, w.command(t, kc.OpItemFlagsDrop, by[0], by[1]), device, target, canR, []string{})
+			refusedWith(t, what+": a drop", act, err, kc.CodeNotAuthorized)
+			if wrote {
+				t.Fatalf("%s: the drop wrote", what)
+			}
+			act, wrote, err = w.c.RunAccessRemove(ctx, w.command(t, kc.OpItemAccessRemove, by[0], by[1]), device, target)
+			refusedWith(t, what+": a remove", act, err, kc.CodeNotAuthorized)
+			if wrote {
+				t.Fatalf("%s: the remove wrote", what)
+			}
+			if p := w.stored(t, device, target); !sameStored(p, true, false, false) || w.grantsOf(t, device, target) != 1 {
+				t.Fatalf("%s: %+v, %d grants", what, p, w.grantsOf(t, device, target))
+			}
+			err = w.users.SetDevicePermission(ctx, w.tenant, by[0], store.DevicePermission{DeviceID: device, UserID: target, Read: true, Send: true})
+			if !errors.Is(err, store.ErrOwnerTarget) || !errors.Is(err, store.ErrMembershipForbidden) {
+				t.Fatalf("%s: the screen: %v", what, err)
+			}
+		}
+		// An owner runs all three.
+		act, _, err := w.c.RunFlagsRaise(ctx, w.command(t, kc.OpItemFlagsRaise, owner, ownerSub), device, target, canR, canRS)
+		ranAct(t, "an owner's raise on "+name, act, err)
+		act, _, err = w.c.RunFlagsDrop(ctx, w.command(t, kc.OpItemFlagsDrop, owner, ownerSub), device, target, canRS, canR)
+		ranAct(t, "an owner's drop on "+name, act, err)
+		act, _, err = w.c.RunAccessRemove(ctx, w.command(t, kc.OpItemAccessRemove, owner, ownerSub), device, target)
+		ranAct(t, "an owner's remove on "+name, act, err)
+		if p := w.stored(t, device, target); !sameStored(p, false, false, false) || w.grantsOf(t, device, target) != 0 {
+			t.Fatalf("after an owner's remove on %s: %+v", name, p)
+		}
+		if err := w.users.SetDevicePermission(ctx, w.tenant, owner, store.DevicePermission{DeviceID: device, UserID: target, Send: true}); err != nil {
+			t.Fatalf("the screen, by an owner on %s: %v", name, err)
+		}
+	}
+	// An admin still changes an admin's and a member's.
+	member, _ := w.actor(t, "member", "member")
+	w.reads(t, member, device)
+	act, _, err := w.c.RunFlagsDrop(ctx, w.command(t, kc.OpItemFlagsDrop, admin, adminSub), device, member, canRS, canR)
+	ranAct(t, "an admin's drop on a member", act, err)
+	other, _ := w.actor(t, "admin", "admin")
+	act, _, err = w.c.RunFlagsRaise(ctx, w.command(t, kc.OpItemFlagsRaise, admin, adminSub), device, other, []string{}, []string{kc.CanSend})
+	ranAct(t, "an admin's raise on an admin", act, err)
 }
