@@ -1050,8 +1050,8 @@ a `DELETE` of grants removes zero rows under FORCE RLS, silently):
 | a number's deletion (`device.delete`, [devices.md](devices.md#deletion-and-recovery)), or a restore's replay excluding it again: every live connection whose key names the number, any kind | `access_lost` |
 | a move to Personal ([device-personal-transfer.md](device-personal-transfer.md)): the mover's own live connections to the number, any kind | `access_lost` |
 | a person's Read on a number taken, or no flag left them on it (Wappie's permissions screen, the console's `item.flags_drop` of read or of the last flag left, and `item.access_remove`; DS47, the platform's 0061): every live connection they consented to and every AI integration they created that holds the number, any kind, whole, one holding other numbers too | `access_lost` |
-| the socket's `grant.revoke` that leaves the person no grant at the number's current epoch, the Read flag kept or not (DS48, the platform's 0061): the same connections as the row above | `access_lost` |
-| the upgrade's sweep, once per database (DS48; no start runs it until its once-marker is chosen): every live connection whose person does not read one of its numbers, any kind, whole; a person waiting for a rotated number's new key keeps theirs | `access_lost` |
+| the socket's `grant.revoke` that leaves a person who has the Read flag no grant at the number's current epoch (DS48, the platform's 0061): the same connections as the row above; a dormant grant's revoke (no Read flag) ends nothing | `access_lost` |
+| the upgrade's sweep, once per database (DS48; no start runs it until its once-marker is chosen): every live connection whose person does not read one of its numbers, any kind, whole, a number with no archive key counting as read by nobody; a person waiting for a rotated number's new key keeps theirs | `access_lost` |
 
 `ExpireServiceAccounts(ctx, pool)`, run beside `ExpireMCPConnections`, applies
 `removeServiceAccountTx` per tenant to every membership past `expires_at` that
@@ -1375,17 +1375,23 @@ the lifecycle with connection ids, reasons and counts.
   a rotated number's new key (the Read flag, a grant at an earlier epoch
   whose key is not retired, none at the current one) keeps theirs. The
   sweep is built and tested; no start runs it until its once-marker is
-  chosen. Until then such a connection ends when the person's access to
-  that number is removed (a remove, the screen's PUT with no flag, a
-  drop of their last flag), on the number's deletion or move, on a
-  revoke, or at its expiry (a content or AI one cannot renew without
-  Read).
+  chosen. A number with no archive key at its current epoch (a keyless
+  number, or one after the operator's archive reset) is read by nobody,
+  so the sweep ends the connections that name it. Until then such a
+  connection ends when the person's access to that number is removed (a
+  remove, the screen's PUT with no flag, a drop of their last flag), on
+  the number's deletion or move, on a revoke, or at its expiry (a
+  content or AI one cannot renew without Read).
 - 0061's third rule (DS48): a `grant.revoke` alone that leaves the
   person no grant at the number's current epoch counts as Read taken
-  away, even with the Read flag kept, and ends their connections the
-  same way in its transaction; their readers are told after the commit.
-  A rotation of the number's key (connections go to `reseal`) and a
-  grant replaced in the same transaction do not count.
+  away when they have the Read flag, which it keeps, and ends their
+  connections the same way in its transaction; their readers are told
+  after the commit. A dormant grant (no Read flag) gives no Read, so its
+  revoke ends nothing, as the screen's PUT without Read does. A rotation
+  of the number's key and a grant replaced in the same transaction do
+  not count. A rotation sends content connections to `reseal`; a
+  metadata connection never reseals, so a person left out of one would
+  keep it to its expiry. No code rotates a key yet (DS48).
 - How each host presents `reconsent_required` and its link (UNCONFIRMED;
   elicitation is 2d).
 

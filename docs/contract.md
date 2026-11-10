@@ -952,13 +952,14 @@ included, and every renewal must name only numbers its person reads at
 that moment (the flag and a grant at the current epoch): one prepared
 before their Read went and recorded after is refused (`key_unsuitable`,
 HTTP 422). A `grant.revoke` alone, which leaves the Read flag, counts as
-Read taken away when it leaves the person no grant at the number's
-current epoch (0061): in its transaction it ends their connections that
-held the number the same way, and their readers are told after the
-commit. A rotation of the number's key and a grant replaced in the same
-transaction do not count (DS48). After a `ran` that wrote, this
-process's sockets check their access at once; the others within their
-access loop.
+Read taken away when the person has the flag and it leaves them no
+grant at the number's current epoch (0061): in its transaction it ends
+their connections that held the number the same way, and their readers
+are told after the commit. A rotation of the number's key, a grant
+replaced in the same transaction and a dormant grant's revoke (no Read
+flag) do not count (DS48). After a `ran` that wrote, this process's
+sockets check their access at once; the others within their access
+loop.
 
 The runners live in `internal/numberacts`, beside the relink, and reach
 the socket server through `internal/wsapi/console_hooks.go`; parity tests
