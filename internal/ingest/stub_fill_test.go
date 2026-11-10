@@ -3,6 +3,7 @@ package ingest_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"sync"
 	"sync/atomic"
@@ -18,6 +19,7 @@ import (
 	"whatserver2/internal/domain"
 	"whatserver2/internal/ingest"
 	"whatserver2/internal/obs"
+	"whatserver2/internal/pgtest"
 	"whatserver2/internal/store"
 )
 
@@ -325,6 +327,109 @@ func photo(f *fixture, waID string) domain.Envelope {
 	env.Content.Raw = []byte("the real message")
 	env.Content.Media = &domain.Media{MimeType: "image/jpeg", MediaKey: []byte("0123456789abcdef0123456789abcdef")}
 	return env
+}
+
+// lastSeq reads the workspace's sequence.
+func (f *fixture) lastSeq(t *testing.T) int64 {
+	t.Helper()
+	ctx := context.Background()
+	var seq int64
+	if err := withTenant(ctx, f.pool, f.tenant, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `SELECT last_seq FROM tenants WHERE id = $1`, f.tenant).Scan(&seq)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return seq
+}
+
+// TestAFillThatLostTheRaceTakesThePlaceholder (DS51): the placeholder
+// commits after the message's duplicate check and before its insert. The
+// insert finds the placeholder by its unique key, and that path seals
+// again to the placeholder's uid too. The sequence the first try took is
+// rolled back.
+func TestAFillThatLostTheRaceTakesThePlaceholder(t *testing.T) {
+	backends := &pgtest.Backends{}
+	f := newFixtureWith(t, backends.Configure)
+	pipe, q := stubPipeline(t, f)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	// A content key and the chat exist, so the message's only write is
+	// its own transaction.
+	if _, err := pipe.Ingest(ctx, f.envelope("WARM", domain.KindMessage, domain.TypeText, "oi")); err != nil {
+		t.Fatal(err)
+	}
+	const waID = "3AD9FC72C86E3D46A833"
+	placeholder := uuid.Must(uuid.NewV7())
+
+	type result struct {
+		res ingest.Result
+		err error
+	}
+	done := make(chan result, 1)
+	var placeholderSeq int64
+	err := withTenant(ctx, f.pool, f.tenant, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `SELECT id FROM tenants WHERE id = $1 FOR UPDATE`, f.tenant); err != nil {
+			return err
+		}
+		go func() {
+			res, err := pipe.Ingest(ctx, photo(f, waID))
+			done <- result{res, err}
+		}()
+		// The message has checked for a duplicate and waits for a
+		// sequence.
+		for {
+			waiting, err := backends.Waiting(ctx, f.pool)
+			if err != nil {
+				return err
+			}
+			if waiting {
+				break
+			}
+			select {
+			case r := <-done:
+				return fmt.Errorf("the message did not wait for a sequence: %+v, %w", r.res, r.err)
+			case <-time.After(10 * time.Millisecond):
+			}
+		}
+		// The placeholder takes the slot meanwhile.
+		if err := tx.QueryRow(ctx, `UPDATE tenants SET last_seq = last_seq + 1 WHERE id = $1 RETURNING last_seq`,
+			f.tenant).Scan(&placeholderSeq); err != nil {
+			return err
+		}
+		sender := senderJID.String()
+		_, err := tx.Exec(ctx, `
+			INSERT INTO messages (uid, tenant_id, device_id, seq, wa_id, chat_key,
+			                      sender_key, sender_pn, ts, kind, type, source, unsupported_field)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $7, now(), 'message', 'unsupported', 'live', 'someFutureMessage')`,
+			placeholder, f.tenant, f.device, placeholderSeq, waID, chatJID.String(), sender)
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := <-done
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	if !r.res.Filled || r.res.UID != placeholder || r.res.Seq != placeholderSeq {
+		t.Errorf("result = %+v, want the placeholder %v at %d filled", r.res, placeholder, placeholderSeq)
+	}
+	if got := f.lastSeq(t); got != placeholderSeq {
+		t.Errorf("last_seq = %d, want %d: the lost try's sequence was kept", got, placeholderSeq)
+	}
+	row := readStored(t, f, chatJID.String(), waID)
+	if got, err := f.opens(t, row.uid, seal.KindBody, row.keyID, row.body); err != nil || string(got) != "a foto" {
+		t.Errorf("body = %q, %v", got, err)
+	}
+	if !row.hasMedia {
+		t.Fatal("no media row")
+	}
+	if got, err := f.opens(t, row.uid, seal.KindMediaKey, row.keyID, row.mediaKey); err != nil || len(got) != 32 {
+		t.Errorf("media key = %x, %v", got, err)
+	}
+	if got := q.all(); len(got) != 1 || got[0] != placeholder {
+		t.Errorf("downloads nudged for %v, want [%v]", got, placeholder)
+	}
 }
 
 // TestAPlaceholderDeletedBetweenSealsGivesAFreshUID (DS51): the message is

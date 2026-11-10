@@ -3,6 +3,7 @@ package store_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -367,6 +368,28 @@ func TestAProtocolPlaceholderIsFilled(t *testing.T) {
 	}
 }
 
+// TestAFillLeavesANewerPreviewAlone (DS51): the chat list shows the newest
+// message by timestamp. Filling an older placeholder must not change it.
+func TestAFillLeavesANewerPreviewAlone(t *testing.T) {
+	m, tenant, device := chatFixture(t)
+	const chat, waID = "120363000000000000@g.us", "3AD9FC72C86E3D46A830"
+	uid := stub(t, m, tenant, device, chat, waID)
+	newer := placeholder(tenant, device, chat, "3AD9FC72C86E3D46A831")
+	newer.TS = stubTS.Add(time.Minute)
+	stubAs(t, m, newer)
+
+	res, err := m.Insert(context.Background(), realMessage(uid, tenant, device, chat, waID, "a mensagem de verdade"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Filled {
+		t.Fatalf("result = %+v, want filled", res)
+	}
+	if got := chatFor(t, m, tenant, device, chat).LastType; got != string(domain.TypeUnsupported) {
+		t.Errorf("chat last_type = %q, want the newer placeholder's unsupported", got)
+	}
+}
+
 // TestASealForAGonePlaceholderWritesNothing (DS51): a message sealed to a
 // placeholder's uid, after a purge deleted the placeholder. A new row
 // under that uid would give a deleted row's uid to another row, so
@@ -401,5 +424,61 @@ func TestASealForAGonePlaceholderWritesNothing(t *testing.T) {
 	}
 	if after := lastSeq(); after != before {
 		t.Errorf("last_seq %d, then %d: a sequence was taken", before, after)
+	}
+}
+
+// TestAFillTakesTheWorkspaceFirst: a reset takes the workspace's row, then
+// deletes messages. A fill that locked its message first and then waited
+// for the workspace would deadlock with it. The update's statement
+// trigger (storage_lock) takes the workspace first, so the fill holds
+// nothing on the message while it waits.
+func TestAFillTakesTheWorkspaceFirst(t *testing.T) {
+	w := newKeyWorld(t)
+	m := store.NewMessages(w.pool)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	const chat, waID = "120363000000000000@g.us", "3AD9FC72C86E3D46A830"
+	uid := stub(t, m, w.tenant, w.device, chat, waID)
+
+	type result struct {
+		res store.InsertResult
+		err error
+	}
+	done := make(chan result, 1)
+	err := pg.InTenantTx(ctx, w.pool, w.tenant.String(), func(tx pgx.Tx) error {
+		// What the reset holds first.
+		if _, err := tx.Exec(ctx, `SELECT id FROM tenants WHERE id = $1 FOR UPDATE`, w.tenant); err != nil {
+			return err
+		}
+		go func() {
+			res, err := m.Insert(ctx, realMessage(uid, w.tenant, w.device, chat, waID, "a mensagem de verdade"))
+			done <- result{res, err}
+		}()
+		for {
+			waiting, err := w.backends.Waiting(ctx, w.pool)
+			if err != nil {
+				return err
+			}
+			if waiting {
+				break
+			}
+			select {
+			case r := <-done:
+				return fmt.Errorf("the fill did not wait for the workspace: %+v, %w", r.res, r.err)
+			case <-time.After(10 * time.Millisecond):
+			}
+		}
+		// The reset's delete would lock the row now.
+		if _, err := tx.Exec(ctx, `SELECT 1 FROM messages WHERE uid = $1 FOR UPDATE NOWAIT`, uid); err != nil {
+			return fmt.Errorf("the waiting fill holds the message's row: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := <-done
+	if r.err != nil || !r.res.Filled {
+		t.Fatalf("after the workspace was free: %+v, %v; want filled", r.res, r.err)
 	}
 }
