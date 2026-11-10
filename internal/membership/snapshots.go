@@ -353,6 +353,13 @@ func (s *snapshotSender) send(ctx context.Context, next store.ContractSnapshotDu
 	case outcome == store.SnapshotAccepted:
 		l.log().Debug("contract: snapshot accepted", "workspace", ws, "seq", seq, "items", len(snap.Items))
 		s.labels(ws, read)
+		if read.TokensExpire != nil {
+			// A token's expiry writes nothing: the next snapshot is due
+			// then, and leaves it out (step 7's plan, 6.2).
+			if err := c.SnapshotDueBy(ctx, ws, seq, *read.TokensExpire); err != nil && ctx.Err() == nil {
+				l.log().Warn("contract: could not make a snapshot due at a token's expiry", "workspace", ws, "error", err)
+			}
+		}
 	case rec.Parked:
 		attrs := []any{"workspace", ws, "class", class}
 		if rec.NotFoundSince != nil {

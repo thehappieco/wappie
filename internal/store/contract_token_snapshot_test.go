@@ -8,7 +8,9 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"whatserver2/internal/migrate"
 	"whatserver2/internal/pg"
+	"whatserver2/internal/pgtest"
 	"whatserver2/internal/store"
 	"whatserver2/internal/tokentest"
 )
@@ -319,5 +321,53 @@ func TestTheTokenGateMakesEverySnapshotDue(t *testing.T) {
 				t.Errorf("tokens %s (changed %v): %s due in %v, parked %v", mode, change.Changed, ws, r.DueIn, r.ParkedAt)
 			}
 		}
+	}
+}
+
+// TestSnapshotDueByATokensExpiry (the plan's 6.2): the sender makes the
+// next snapshot due at the expiry of a token the accepted one lists, or
+// keeps it due sooner; never for a snapshot another has followed (its seq
+// passed), nor a parked workspace.
+func TestSnapshotDueByATokensExpiry(t *testing.T) {
+	pool := pgtest.Fresh(t, migrate.Run)
+	ctx := context.Background()
+	c := store.NewContract(pool)
+	ws, parked := recordWorkspace(t, pool, "team"), recordWorkspace(t, pool, "team")
+	if _, err := pool.Exec(ctx, `UPDATE contract_workspaces SET snapshot_seq = 7, snapshot_due_at = clock_timestamp() + interval '1 hour',
+		parked_at = CASE WHEN workspace_id = $1 THEN clock_timestamp() END`, parked); err != nil {
+		t.Fatal(err)
+	}
+	var now time.Time
+	if err := pool.QueryRow(ctx, `SELECT date_trunc('second', clock_timestamp())`).Scan(&now); err != nil {
+		t.Fatal(err)
+	}
+	due := func(ws uuid.UUID) time.Time {
+		t.Helper()
+		return *readSnapshotRow(t, pool, ws).DueAt
+	}
+	for _, step := range []struct {
+		name string
+		ws   uuid.UUID
+		seq  int64
+		at   time.Time
+		want time.Time
+	}{
+		{"an expiry sooner", ws, 7, now.Add(time.Minute), now.Add(time.Minute)},
+		{"an expiry later", ws, 7, now.Add(10 * time.Minute), now.Add(time.Minute)},
+		{"another seq", ws, 8, now.Add(time.Second), now.Add(time.Minute)},
+	} {
+		if err := c.SnapshotDueBy(ctx, step.ws, step.seq, step.at); err != nil {
+			t.Fatal(err)
+		}
+		if got := due(step.ws); !got.Equal(step.want) {
+			t.Errorf("%s: due %v, want %v", step.name, got, step.want)
+		}
+	}
+	before := due(parked)
+	if err := c.SnapshotDueBy(ctx, parked, 7, now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if got := due(parked); !got.Equal(before) {
+		t.Errorf("a parked workspace: due %v, was %v", got, before)
 	}
 }

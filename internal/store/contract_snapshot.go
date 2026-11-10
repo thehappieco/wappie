@@ -531,6 +531,18 @@ func (c *Contract) SnapshotsDirty(ctx context.Context, ids []uuid.UUID, all bool
 	})
 }
 
+// SnapshotDueBy makes the workspace's snapshot due at at, or keeps it due
+// sooner, while seq is still its last snapshot_seq and it is not parked:
+// the expiry of a token the accepted snapshot seq lists (TokensExpire),
+// which writes nothing a trigger could tell. A later snapshot has its own.
+func (c *Contract) SnapshotDueBy(ctx context.Context, workspace uuid.UUID, seq int64, at time.Time) error {
+	return retryDeadlock(ctx, func() error {
+		_, err := c.pool.Exec(ctx, `UPDATE contract_workspaces SET snapshot_due_at = least(snapshot_due_at, $3)
+			WHERE workspace_id = $1 AND snapshot_seq = $2 AND parked_at IS NULL`, workspace, seq, at)
+		return err
+	})
+}
+
 // ContractSnapshotOutcome is what became of a snapshot sent.
 type ContractSnapshotOutcome int
 
