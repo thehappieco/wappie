@@ -2415,6 +2415,39 @@ from the command feed also wakes the token follower, which no notice
 reaches from there: its long-poll in flight would otherwise ask from the
 old cursor for up to its 25 seconds.
 
+**Wappie's own keys give way to the platform's tokens.** While the token
+mode is on, or once `whatserverd tokens retire-keys -apply` has run (a
+`key_retirements` row, which stays), Wappie issues no general key: socket
+`apikeys.create` issues only an MCP setup's key (read, numbers, at most 31
+minutes, "MCP · …", a provisional service or none) and refuses every other
+shape with `tokens_are_the_platforms`; the command line's `key` and
+`bootstrap` refuse, and `-self-hosted` only says the installation is off the
+platform (the contract off, tokens off, no retirement), so it never lets
+through what the narrowing refuses; a standing service account's
+invitation gets 409 `tokens_are_the_platforms`, issued or redeemed; a
+setup's key that no connection names is refused on REST, media and the
+socket's hello, as an unknown key; and discovery says
+`tokens.platform.v1`. A self-hosted installation never turns tokens on, so
+nothing changes there. The retirement revokes the live keys of class `rest`
+and `cli` (0053's `api_key_class`), and removes a standing service account
+a retired key acted as only where no spared key acts as it and every number
+it holds a key of, at an epoch not retired, keeps another holder who is
+human: a person (user and membership not of role service), active, with
+Read, and no deadline. That is stricter than `sole_key_holders`, where two
+standing services, or a disabled person, shield each other
+(`everyGrantKeepsAHumanHolderTx`, which 12b's M2L reuses). A service kept
+for want of such a holder is listed in the retirement's report, so a later
+run removes it once one exists, even after the keys are deleted. Nothing
+is stranded and no notice is raised.
+
+**Ended API keys go 13 months after their end** (the owner's yes of
+2026-11-04), on every installation: an ended key serves nothing after
+that, and one rule is simpler than one per edition. The end is the earlier
+of the revocation and the expiry, by Wappie's clock and the database's. Every
+class and origin goes the same way, a retired key included, and its MCP
+connection's record with it. A retirement's report loses its per-key
+entries at the same time; its counts and the services it kept stay.
+
 **A person's lost Read never reaches a token** (DS47, the platform's
 0061). A platform token is its own holder kind (0053): its Read and its
 grants follow its record alone. Its identity is no member, so Wappie's
