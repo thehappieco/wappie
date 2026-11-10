@@ -1172,11 +1172,13 @@ func TestAnOldEpochsTokenGrantHoldsTheNumber(t *testing.T) {
 // workspace_memberships row, or of a users row joined to one), so a token
 // identity (which has none) is never a holder, a reader or a backup, or
 // names one account by equality (a parameter, a connection's service
-// account, a token's identity). Everyone but one (<>) is no account, and a
-// LEFT JOIN, or a membership bound to another row, is no membership. A new
-// query that counts holders without either fails here; the few that read
-// every account's grants are named below, each with what keeps identities
-// out of it. Writes are not counted.
+// account, a token's identity), directly or through a joined row whose
+// user_id does (F3's consenterReadsTx: the grant's user_id is the
+// permission row's, which is the person's). Everyone but one (<>) is no
+// account, and a LEFT JOIN, or a membership bound to another row, is no
+// membership. A new query that counts holders without either fails here;
+// the few that read every account's grants are named below, each with what
+// keeps identities out of it. Writes are not counted.
 func TestEveryGrantCountJoinsAMembership(t *testing.T) {
 	files, err := filepath.Glob("*.go")
 	if err != nil {
@@ -1211,6 +1213,10 @@ func TestEveryGrantCountJoinsAMembership(t *testing.T) {
 	bound := func(q, ref string, aliases map[string]bool) bool {
 		for _, m := range regexp.MustCompile(`(?i)(?:(?:^|[^a-z_.])`+ref+`\s*=\s*([a-z_]+)\.(?:user_id|id)\b|\b([a-z_]+)\.(?:user_id|id)\s*=\s*`+ref+`\b)`).FindAllStringSubmatch(q, -1) {
 			if aliases[m[1]] || aliases[m[2]] {
+				return true
+			}
+			// A row the grant is bound to that names one account itself.
+			if other := m[1] + m[2]; other != "" && oneAccount(q, regexp.QuoteMeta(other)+`\.user_id`) {
 				return true
 			}
 		}
