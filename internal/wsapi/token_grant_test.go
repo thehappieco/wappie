@@ -398,3 +398,33 @@ func TestAnotherWorkspacesTokenIsUnknownOnTheSocket(t *testing.T) {
 		t.Fatalf("token.waiting lists another workspace's token: %v", got)
 	}
 }
+
+// TestATokenGrantAppliesANarrowingGETFirst (the plan's 10.4): a grant
+// whose token's last signed GET is over a minute old asks the platform
+// first, and a record that dropped the token's Read on the number, which
+// the feed has not brought yet, is applied before the grant, which is then
+// refused.
+func TestATokenGrantAppliesANarrowingGETFirst(t *testing.T) {
+	ts, records := grantSocket(t)
+	w := ts.w
+	a, b := w.Number("Vendas"), w.Number("Suporte")
+	tok := w.TokenUnsealed(tokentest.Read(a), tokentest.Read(b))
+	records.add(tok)
+	owner, _ := ts.person(t, w.Owner)
+	fetched(w, tok, time.Now().Add(-61*time.Second))
+	// The platform's record now: b's Read dropped.
+	tok.Version++
+	tok.Perms = []tokentest.Perm{tokentest.Read(a)}
+	grant := func(device uuid.UUID) wsapi.Frame {
+		return on(t, owner, wsapi.TypeTokenGrant, wsapi.TokenGrantRequest{TokenID: tok.ID.String(), DeviceID: device.String(), Epoch: 1,
+			ArchiveKeyFingerprint: w.ArchiveKey(device, 1), SealedDSK: []byte("sealed to the token")})
+	}
+	wantError(t, grant(b), wsapi.ErrCodeTokenNoRead)
+	if records.calls.Load() != 1 {
+		t.Fatalf("%d GETs", records.calls.Load())
+	}
+	// The GET was fresh: a's grant asks nothing more.
+	if f := grant(a); f.Type != wsapi.TypeReaders || records.calls.Load() != 1 {
+		t.Fatalf("a's grant: %s %s, %d GETs", f.Type, f.Payload, records.calls.Load())
+	}
+}
