@@ -63,6 +63,14 @@ func SetStrandLockTimeoutForTest(t testing.TB, d time.Duration) {
 	t.Cleanup(func() { strandLockTimeout = old })
 }
 
+// SetSweepLockTimeoutForTest sets how long the upgrade's sweep waits for
+// each lock in a workspace, until the test ends.
+func SetSweepLockTimeoutForTest(t testing.TB, d time.Duration) {
+	old := sweepLockTimeout
+	sweepLockTimeout = d
+	t.Cleanup(func() { sweepLockTimeout = old })
+}
+
 // SnapshotSeqForTest numbers a snapshot of workspace measured at measured,
 // outside the measurement: the greater of measured's milliseconds and one
 // more than the last snapshot's or section's, false when the workspace is

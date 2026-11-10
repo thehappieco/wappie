@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -26,7 +28,9 @@ import (
 // It holds a number as leaveOwnConnectionsTx counts it: its key's row, or
 // its service account's permission or grant on it. Reading a number is
 // what consenterReadsTx asks of a consent: the Read flag and a grant at the
-// number's current epoch, its key not retired, the number not deleted.
+// number's current epoch, its key not retired, the number not deleted. A
+// number with no archive key at its current epoch (a keyless one, or one
+// after ResetArchive) is read by nobody, so its connections end.
 //
 // A rotation does not count (0061). A person waits for a number's new key,
 // and is passed over for it, when they keep the Read flag and hold a grant
@@ -36,10 +40,14 @@ import (
 //
 // Each workspace ends its own in one transaction, under its tenants row
 // lock, the connections in id order, each through endMCPConnectionTx, as
-// a revoke ends it. One workspace failing does not keep the others. It
-// returns what it ended, for the readers to be told after the commits
-// (WatchRevocations tells them in any case). It is the upgrade's work, run
-// once on a database (DS48), not a janitor.
+// a revoke ends it. It waits at most sweepLockTimeout for each lock: a
+// busy workspace fails with ErrWorkspaceBusy, named in the error, rather
+// than holding up its caller. One workspace failing does not keep the
+// others.
+// It returns what it ended, also when some workspace failed, for the
+// readers to be told after the commits (WatchRevocations tells them in any
+// case). It is the upgrade's work, run once on a database (DS48), not a
+// janitor.
 func EndConnectionsWithoutRead(ctx context.Context, pool *pgxpool.Pool) ([]EndedConnection, error) {
 	// The ledger carries no policy: the workspaces with a live connection
 	// are found in one read.
@@ -62,7 +70,7 @@ func EndConnectionsWithoutRead(ctx context.Context, pool *pgxpool.Pool) ([]Ended
 			return err
 		})
 		if err != nil {
-			errs = append(errs, fmt.Errorf("workspace %s: %w", tenant, err))
+			errs = append(errs, fmt.Errorf("workspace %s: %w", tenant, strandBusy(err)))
 			continue
 		}
 		out = append(out, ended...)
@@ -73,9 +81,17 @@ func EndConnectionsWithoutRead(ctx context.Context, pool *pgxpool.Pool) ([]Ended
 	return out, nil
 }
 
+// sweepLockTimeout is how long the sweep waits for each lock in a
+// workspace before it gives that workspace up.
+var sweepLockTimeout = 5 * time.Second
+
 // endConnectionsWithoutReadTx is EndConnectionsWithoutRead in one
 // workspace's transaction.
 func endConnectionsWithoutReadTx(ctx context.Context, tx pgx.Tx, tenant uuid.UUID) ([]EndedConnection, error) {
+	if _, err := tx.Exec(ctx, `SELECT set_config('lock_timeout', $1, true)`,
+		strconv.FormatInt(sweepLockTimeout.Milliseconds(), 10)+"ms"); err != nil {
+		return nil, err
+	}
 	if err := lockWorkspaceAccess(ctx, tx, tenant); err != nil {
 		return nil, err
 	}
