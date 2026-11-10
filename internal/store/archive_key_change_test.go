@@ -247,8 +247,8 @@ func TestSealedWritesNameTheirKey(t *testing.T) {
 	const chat = "5511999990000@s.whatsapp.net"
 	n := 0
 	next := func() string { n++; return fmt.Sprintf("W%d", n) }
-	row := func(waID string, typ domain.Type, id uint32, key []byte) (uuid.UUID, error) {
-		in := store.InsertMessage{UID: uuid.New(), TenantID: w.tenant, DeviceID: w.device,
+	rowAs := func(uid uuid.UUID, waID string, typ domain.Type, id uint32, key []byte) (uuid.UUID, error) {
+		in := store.InsertMessage{UID: uid, TenantID: w.tenant, DeviceID: w.device,
 			WAID: waID, ChatKey: chat, ChatPN: chat, TS: time.Now(), Kind: domain.KindMessage, Type: typ,
 			Source: domain.SourceLive, ContentKeyID: id, ArchiveKey: key}
 		if typ == domain.TypeUnsupported {
@@ -258,6 +258,9 @@ func TestSealedWritesNameTheirKey(t *testing.T) {
 		}
 		res, err := messages.Insert(ctx, in)
 		return res.UID, err
+	}
+	row := func(waID string, typ domain.Type, id uint32, key []byte) (uuid.UUID, error) {
+		return rowAs(uuid.New(), waID, typ, id, key)
 	}
 	for _, c := range []struct {
 		name  string
@@ -269,10 +272,12 @@ func TestSealedWritesNameTheirKey(t *testing.T) {
 		}},
 		{"placeholder filled", func(id uint32, key []byte) error {
 			waID := next()
-			if _, err := row(waID, domain.TypeUnsupported, 0, nil); err != nil {
+			uid, err := row(waID, domain.TypeUnsupported, 0, nil)
+			if err != nil {
 				return err
 			}
-			_, err := row(waID, domain.TypeText, id, key)
+			// Sealed to the placeholder's uid, as ingest seals it (DS51).
+			_, err = rowAs(uid, waID, domain.TypeText, id, key)
 			return err
 		}},
 		{"reprojection", func(id uint32, key []byte) error {

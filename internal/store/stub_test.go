@@ -2,6 +2,7 @@ package store_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -24,17 +25,31 @@ import (
 // The dangerous version of this fix overwrites real messages. These tests are
 // mostly about what must NOT be replaced.
 
-func stub(t *testing.T, m *store.Messages, tenant, device uuid.UUID, chat, waID string) {
+func stub(t *testing.T, m *store.Messages, tenant, device uuid.UUID, chat, waID string) uuid.UUID {
 	t.Helper()
-	_, err := m.Insert(context.Background(), store.InsertMessage{
+	res, err := m.Insert(context.Background(), store.InsertMessage{
 		UID: uuid.New(), TenantID: tenant, DeviceID: device,
 		WAID: waID, ChatKey: chat, ChatPN: chat,
 		Kind: domain.KindMessage, Type: domain.TypeUnsupported,
-		Source: domain.SourceLive, TS: time.Now().Truncate(time.Second),
+		Source: domain.SourceLive, TS: stubTS,
 		Unsupported: "senderKeyDistributionMessage",
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	return res.UID
+}
+
+// stubTS is when the placeholder and its real message were sent.
+var stubTS = time.Now().Truncate(time.Second)
+
+// realMessage is the message a placeholder took the slot of, sealed to uid.
+func realMessage(uid, tenant, device uuid.UUID, chat, waID, body string) store.InsertMessage {
+	return store.InsertMessage{
+		UID: uid, TenantID: tenant, DeviceID: device,
+		WAID: waID, ChatKey: chat, ChatPN: chat,
+		Kind: domain.KindMessage, Type: domain.TypeText,
+		Source: domain.SourceLive, TS: stubTS, ContentKeyID: 1, BodySealed: []byte(body),
 	}
 }
 
@@ -54,11 +69,21 @@ func TestARealMessageReplacesTheStubThatStoleItsPlace(t *testing.T) {
 	m, tenant, device := chatFixture(t)
 	const chat, waID = "120363000000000000@g.us", "3AD9FC72C86E3D46A830"
 
-	stub(t, m, tenant, device, chat, waID)
-	// The real message, arriving second, under the same id.
-	insert(t, m, tenant, device, chat, waID, domain.KindMessage, time.Now(), "a mensagem de verdade")
+	uid := stub(t, m, tenant, device, chat, waID)
+	// The real message, arriving second, under the same id, sealed to the
+	// placeholder's uid (DS51).
+	res, err := m.Insert(context.Background(), realMessage(uid, tenant, device, chat, waID, "a mensagem de verdade"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Filled || !res.Duplicate || res.UID != uid {
+		t.Errorf("result = %+v, want the placeholder's row filled", res)
+	}
 
 	row := only(t, m, tenant, device, chat)
+	if row.UID != uid {
+		t.Errorf("uid = %v, want the placeholder's %v", row.UID, uid)
+	}
 	if row.Type != domain.TypeText {
 		t.Errorf("type = %s, want text — the placeholder is still holding the row", row.Type)
 	}
@@ -122,5 +147,72 @@ func TestAnEmptyMessageDoesNotClearAStub(t *testing.T) {
 
 	if row := only(t, m, tenant, device, chat); row.Unsupported != "senderKeyDistributionMessage" {
 		t.Errorf("unsupported_field = %q; an empty message took the row", row.Unsupported)
+	}
+}
+
+// TestAFillSealedToAnotherUIDWritesNothing (DS51): the row keeps the
+// placeholder's uid, and a sealed value opens only under the uid it was
+// sealed to. A message sealed to another uid would read as tampered there,
+// so it fills nothing and is told the placeholder's uid.
+func TestAFillSealedToAnotherUIDWritesNothing(t *testing.T) {
+	m, tenant, device := chatFixture(t)
+	const chat, waID = "120363000000000000@g.us", "3AD9FC72C86E3D46A830"
+
+	uid := stub(t, m, tenant, device, chat, waID)
+	in := realMessage(uuid.New(), tenant, device, chat, waID, "selada para outra linha")
+	in.Media = &store.InsertMedia{MediaType: "image", MimeType: "image/jpeg", MediaKeySealed: []byte("key")}
+	_, err := m.Insert(context.Background(), in)
+	var fill *store.PlaceholderError
+	if !errors.As(err, &fill) || fill.UID != uid {
+		t.Fatalf("err = %v, want a PlaceholderError naming %v", err, uid)
+	}
+
+	row := only(t, m, tenant, device, chat)
+	if row.Type != domain.TypeUnsupported || len(row.BodySealed) != 0 || row.Media != nil {
+		t.Errorf("row = %s, body %q, media %v: a fill sealed to another uid was written",
+			row.Type, row.BodySealed, row.Media)
+	}
+}
+
+// TestAFillKeepsItsAttachment (DS51): the attachment's row is written
+// with the fill, under the placeholder's uid, and the chat list stops
+// saying "unsupported" about it.
+func TestAFillKeepsItsAttachment(t *testing.T) {
+	m, tenant, device := chatFixture(t)
+	const chat, waID = "120363000000000000@g.us", "3AD9FC72C86E3D46A830"
+
+	uid := stub(t, m, tenant, device, chat, waID)
+	if got := chatFor(t, m, tenant, device, chat).LastType; got != string(domain.TypeUnsupported) {
+		t.Fatalf("chat last_type = %q before the fill, want unsupported", got)
+	}
+	in := realMessage(uid, tenant, device, chat, waID, "a legenda")
+	in.Type = domain.TypeImage
+	in.Media = &store.InsertMedia{
+		MediaType: "image", MimeType: "image/jpeg", FileLength: 42,
+		MediaKeySealed: []byte("key"), ThumbSealed: []byte("thumb"),
+	}
+	res, err := m.Insert(context.Background(), in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Filled {
+		t.Fatalf("result = %+v, want filled", res)
+	}
+
+	row := only(t, m, tenant, device, chat)
+	if row.Type != domain.TypeImage {
+		t.Errorf("type = %s, want image", row.Type)
+	}
+	if row.Media == nil {
+		t.Fatal("no media row: the fill dropped the attachment")
+	}
+	if string(row.Media.MediaKeySealed) != "key" || string(row.Media.ThumbSealed) != "thumb" {
+		t.Errorf("media = %+v", row.Media)
+	}
+	if row.Media.DownloadStatus != "pending" {
+		t.Errorf("download_status = %q, want pending", row.Media.DownloadStatus)
+	}
+	if got := chatFor(t, m, tenant, device, chat).LastType; got != string(domain.TypeImage) {
+		t.Errorf("chat last_type = %q, want image", got)
 	}
 }
