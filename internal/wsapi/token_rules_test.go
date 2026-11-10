@@ -22,7 +22,8 @@ var serverFrames = []string{
 	"TypeGroupChanged", "TypeGroupFrame", "TypeGroupJoined", "TypeHistoryFrame", "TypeKeys", "TypeLag", "TypeMessage",
 	"TypeMessageFrame", "TypePage", "TypePairCode", "TypePairQR", "TypePairSuccess", "TypePairTimeout", "TypePong",
 	"TypePresence", "TypeReaders", "TypeReceipt", "TypeReplayBegin", "TypeReplayEnd", "TypeReprojected", "TypeRetryQueued",
-	"TypeSendResult", "TypeSubscriptionEnded", "TypeUnsupported", "TypeUsers", "TypeWelcome",
+	"TypeSendResult", "TypeSubscriptionEnded", "TypeTokenGrantContextResult", "TypeTokenWaitingList", "TypeUnsupported", "TypeUsers",
+	"TypeWelcome",
 }
 
 // TestEveryFrameHasATokenRule (the plan's 7.3): every case of dispatch
@@ -66,12 +67,13 @@ func TestEveryFrameHasATokenRule(t *testing.T) {
 
 // TestTokenRulesRefuseWhatATokenNeverDoes pins the rules that matter most:
 // no pairing of any kind (F1), no calls, no reprojection (H4), nothing of
-// accounts, keys, grants, deletion or moving; reads need Read, acts their
-// own perm, groups and backfill Manage alone, and pausing Manage.
+// accounts, keys, grants given or taken, the grant page, deletion or
+// moving; reads need Read, its own grants.list among them, acts their own
+// perm, groups and backfill Manage alone, and pausing Manage.
 func TestTokenRulesRefuseWhatATokenNeverDoes(t *testing.T) {
 	for _, kind := range []string{TypePair, TypePairCancel, TypeUsersList, TypeCallStart, TypeCallsList, TypeReprojectGet, TypeReprojectPut,
-		TypeDeviceDelete, TypeDeviceRecover, TypeDeviceTransfer, TypeKeyCreate, TypeKeysList, TypeGrantAdd, TypeGrantsList, TypeReaderMode,
-		TypeDeviceNoticeSeen, "unknown.frame"} {
+		TypeDeviceDelete, TypeDeviceRecover, TypeDeviceTransfer, TypeKeyCreate, TypeKeysList, TypeGrantAdd, TypeGrantRevoke, TypeReaderMode,
+		TypeDeviceNoticeSeen, TypeTokenGrantContext, TypeTokenWaiting, TypeTokenGrant, "unknown.frame"} {
 		if !ruleOf(kind).refused {
 			t.Errorf("%s is not refused to a token", kind)
 		}
@@ -80,6 +82,7 @@ func TestTokenRulesRefuseWhatATokenNeverDoes(t *testing.T) {
 		TypeChatPage: store.ActionRead, TypeDeviceInfo: store.ActionView, TypeSend: store.ActionSend, TypeMarkRead: store.ActionSend,
 		TypeGroupCreate: store.ActionManage, TypeBackfill: store.ActionManage, TypeDeviceStop: store.ActionPause,
 		TypeDeviceStart: store.ActionPause, TypeDeviceRename: store.ActionManage, TypeDeviceMode: store.ActionManage,
+		TypeGrantsList: store.ActionRead,
 	} {
 		if r := ruleOf(kind); r.refused || r.action != want {
 			t.Errorf("%s: %+v, want %s", kind, r, want)

@@ -122,6 +122,11 @@ type Config struct {
 	// tokens; its Keys and Users are this config's own (Keys, and Sessions
 	// or Accounts by who is asking). Nil refuses every platform token.
 	Access *access.Checker
+	// TokenRecords fetches a platform token's record by a signed GET and
+	// applies it, for the grant page (token_grant.go): the contract's
+	// Members in a serving process. Nil asks nothing, so a grant then needs
+	// a GET made in the last minute.
+	TokenRecords TokenRecords
 
 	// subscribeHook, for tests, runs at the subscribe's seams: "granted"
 	// once access is known and before the bus registers the subscription,
@@ -240,6 +245,7 @@ var features = []string{
 	"device.delete.check", "devices.deleted", "device.recover.check", "device.recover", "device.notice.seen",
 	"apikeys.list", "apikeys.create", "apikeys.revoke",
 	"grant.add", "grant.revoke", "grants.list",
+	"token.grant_context", "token.waiting", "token.grant",
 	"calls.list", "call.start", "call.answer", "call.reject", "call.hangup", "call.media", "call.invite",
 }
 
@@ -893,6 +899,12 @@ func (s *session) dispatch(ctx context.Context, f Frame) {
 		go s.handleGrantRevoke(ctx, f)
 	case TypeGrantsList:
 		go s.handleGrantsList(ctx, f)
+	case TypeTokenGrantContext:
+		go s.handleTokenGrantContext(ctx, f)
+	case TypeTokenWaiting:
+		go s.handleTokenWaiting(ctx, f)
+	case TypeTokenGrant:
+		go s.handleTokenGrant(ctx, f)
 	default:
 		s.replyError(f.ReqID, ErrCodeBadRequest, fmt.Sprintf("unknown frame type %q", f.Type))
 	}
