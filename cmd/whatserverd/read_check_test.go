@@ -69,7 +69,7 @@ func TestCheckReadAtStart(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, u := range []uuid.UUID{owner, person} {
-			if err := keys.PutGrant(ctx, store.Grant{TenantID: tenant, DeviceID: id, UserID: u, Epoch: 1, SealedDSK: []byte("grant"), Fingerprint: grantFingerprint(t, keys, tenant, id, 1)}, &owner); err != nil {
+			if err := keys.PutGrant(ctx, store.Grant{TenantID: tenant, DeviceID: id, UserID: u, Epoch: 1, SealedDSK: []byte("grant"), Fingerprint: grantFingerprint(t, keys, tenant, id, 1)}, &owner); err != nil { //nolint:contextcheck // the fingerprint is read on the test's own context
 				t.Fatal(err)
 			}
 			if err := users.SetDevicePermission(ctx, tenant, owner, store.DevicePermission{DeviceID: id, UserID: u, Read: true}); err != nil {
