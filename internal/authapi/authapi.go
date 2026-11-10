@@ -297,8 +297,9 @@ type grant struct {
 	// SealedDSK is the device's private archive key under this account's
 	// public key. Ciphertext here, and nowhere else.
 	SealedDSK string `json:"sealed_dsk"`
-	// Fingerprint names that archive key (store.ArchiveKeyFingerprint). A
-	// grant.add that seals it to someone else echoes it (DS49).
+	// Fingerprint names the number's archive key at this epoch now
+	// (store.ArchiveKeyFingerprint). A client compares it with the key it
+	// opened, and a grant.add sends the opened key's own (DS49).
 	Fingerprint string `json:"fingerprint"`
 }
 
