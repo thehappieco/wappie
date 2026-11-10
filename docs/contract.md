@@ -1021,7 +1021,11 @@ is retried with the backoff for 24 hours, then the workspace's snapshots
 are parked (ERROR "contract: a workspace's snapshot is parked") until a
 document names it again, a restart or a leader's start. A signed
 `invalid_request` parks it at once (a Wappie bug), until a restart or a
-leader's start. No answer, an unverified one or another refusal: 5 seconds
+leader's start; but a refusal of a snapshot measured before a due time
+set since (a document, a restart, a leader's start, a switch of the token
+mode) parks nothing: the snapshot measured after it goes next, and parks
+if it is refused too. So turning tokens off after the platform refused
+the new members unparks every workspace for good. No answer, an unverified one or another refusal: 5 seconds
 doubled with each failure, up to an hour. Each accepted snapshot logs, at
 most hourly per workspace, INFO "contract: snapshot labels": how many of
 its labels fall in each class (named, phone, placeholder, legacy id,

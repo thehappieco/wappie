@@ -302,7 +302,9 @@ func TestSnapshotTokens(t *testing.T) {
 // TestTheTokenGateMakesEverySnapshotDue (the plan's 6.2): turning the token
 // mode on, or off, makes every recorded workspace's snapshot due now, a
 // parked one's included, so the snapshots follow the gate at once; a
-// switch to the mode it is in changes nothing.
+// switch to the mode it is in changes nothing. A snapshot measured before
+// a switch and refused after it parks nothing: the switch released the
+// workspace, and the snapshot measured after it goes next.
 func TestTheTokenGateMakesEverySnapshotDue(t *testing.T) {
 	w := newTokenWorld(t)
 	ctx := context.Background()
@@ -328,6 +330,38 @@ func TestTheTokenGateMakesEverySnapshotDue(t *testing.T) {
 				t.Errorf("tokens %s (changed %v): %s due in %v, parked %v", mode, change.Changed, ws, r.DueIn, r.ParkedAt)
 			}
 		}
+	}
+
+	// Tokens on too early: a snapshot with the new members is in flight
+	// when the operator turns tokens off, and the platform's refusal of it
+	// comes after the switch.
+	if _, err := w.tokens.SetMode(ctx, store.TokensOn, w.now); err != nil {
+		t.Fatal(err)
+	}
+	w.exec(`UPDATE contract_workspaces SET snapshot_due_at = clock_timestamp(), parked_at = NULL WHERE workspace_id = $1`, team)
+	measured := dbClock(t, w.pool, "0")
+	seq, ok, err := w.contract.SnapshotSeqForTest(ctx, team, measured)
+	if err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	if _, err := w.tokens.SetMode(ctx, store.TokensOff, w.now); err != nil {
+		t.Fatal(err)
+	}
+	rec, err := w.contract.SnapshotSent(ctx, team, seq, measured, nil, store.SnapshotRefused, "refused:invalid_request", snapshotTimes)
+	if err != nil || !rec.Again || rec.Parked {
+		t.Fatalf("a refusal of a snapshot measured before tokens off: %+v %v", rec, err)
+	}
+	if r := readSnapshotRow(t, w.pool, team); r.ParkedAt != nil || r.DueIn > 0 || r.Tries != 0 {
+		t.Fatalf("after a refusal of a snapshot measured before tokens off: %+v", r)
+	}
+	// The snapshot measured after the switch, refused too, parks.
+	measured = dbClock(t, w.pool, "0")
+	if seq, ok, err = w.contract.SnapshotSeqForTest(ctx, team, measured); err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	if rec, err := w.contract.SnapshotSent(ctx, team, seq, measured, nil, store.SnapshotRefused, "refused:invalid_request",
+		snapshotTimes); err != nil || rec.Again || !rec.Parked {
+		t.Fatalf("a refusal of a snapshot measured after the switch: %+v %v", rec, err)
 	}
 }
 

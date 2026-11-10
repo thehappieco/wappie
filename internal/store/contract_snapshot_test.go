@@ -63,7 +63,7 @@ var snapshotTimes = store.ContractSnapshotTimes{Every: 55 * time.Minute, Backoff
 // up to an hour; a not_found keeps its first time and parks after a day;
 // an invalid_request parks at once with no not_found_since, which no
 // document releases; a seq another leader has passed records nothing; and a
-// due time set after the measurement stands.
+// due time set after the measurement stands, and no refusal then parks.
 func TestContractSnapshotOutcomes(t *testing.T) {
 	pool := pgtest.Fresh(t, migrate.Run)
 	ctx := context.Background()
@@ -208,9 +208,12 @@ func TestContractSnapshotOutcomes(t *testing.T) {
 	}
 
 	// Again: a due time set after the measurement (a document that changes
-	// the members, a restart, a name given again) stands, whatever the
-	// outcome, and a failure then counts no try.
-	for _, outcome := range []store.ContractSnapshotOutcome{store.SnapshotAccepted, store.SnapshotFailed, store.SnapshotNotFound} {
+	// the members, a restart, a name given again, a switch of the token
+	// mode) stands, whatever the outcome, and a failure then counts no try;
+	// nor does a refusal park: the snapshot measured after that change goes
+	// next.
+	for _, outcome := range []store.ContractSnapshotOutcome{store.SnapshotAccepted, store.SnapshotFailed, store.SnapshotNotFound,
+		store.SnapshotRefused} {
 		if seq, ok, err = c.SnapshotSeqForTest(ctx, ws, dbClock(t, pool, "0")); err != nil || !ok {
 			t.Fatal(ok, err)
 		}
@@ -222,7 +225,7 @@ func TestContractSnapshotOutcomes(t *testing.T) {
 		rec, err := c.SnapshotSent(ctx, ws, seq, measured, nil, outcome, "x", snapshotTimes)
 		after := readSnapshotRow(t, pool, ws)
 		if err != nil || !rec.Recorded || !rec.Again || !after.DueAt.Equal(*before.DueAt) || after.Tries != before.Tries ||
-			after.NotFoundSince != nil {
+			after.NotFoundSince != nil || rec.Parked || after.ParkedAt != nil {
 			t.Fatalf("outcome %d after a due time set since the measurement: %+v, %+v then %+v (%v)", outcome, rec, before, after, err)
 		}
 	}

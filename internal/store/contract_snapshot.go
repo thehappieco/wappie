@@ -492,7 +492,8 @@ func (c *Contract) NextSnapshot(ctx context.Context) (ContractSnapshotDue, bool,
 // A park is released for one try only, since its not_found_since stays:
 // one more not_found parks it again at once, and a snapshot refused as
 // invalid (a Wappie bug, which a new binary may have fixed) is parked
-// again by its refusal.
+// again by its refusal: the one measured after this start, since the late
+// refusal of one measured before it parks nothing (SnapshotSent's Again).
 func (c *Contract) SnapshotsDue(ctx context.Context) error {
 	return retryDeadlock(ctx, func() error {
 		_, err := c.pool.Exec(ctx, `UPDATE contract_workspaces w SET snapshot_due_at = clock_timestamp(), parked_at = NULL
@@ -598,10 +599,13 @@ type ContractSnapshotRecord struct {
 // backoff. Refused: parked, with no not_found_since, so no document
 // releases it. Failed: the backoff. A due time someone set after the
 // measurement stands whatever the outcome, unless the outcome's own is
-// sooner (Again), and a failure then counts no try: the snapshot measured
-// after that change is what goes next. So the late outcome of a leader
-// that lost its lock without knowing it yet never puts off what the next
-// leader's start or debounce asked.
+// sooner (Again), and a failure or a refusal then counts no try and parks
+// nothing: the snapshot measured after that change is what goes next, and
+// it parks if it is refused too. So the late outcome of a leader that lost
+// its lock without knowing it yet never puts off what the next leader's
+// start or debounce asked, and a snapshot measured before a switch of the
+// token mode, refused for what the switch changed, never parks the
+// workspace the switch released.
 func (c *Contract) SnapshotSent(ctx context.Context, workspace uuid.UUID, seq int64, measured time.Time, expires *time.Time,
 	outcome ContractSnapshotOutcome, class string, times ContractSnapshotTimes) (ContractSnapshotRecord, error) {
 	var rec ContractSnapshotRecord
@@ -664,6 +668,10 @@ func (c *Contract) SnapshotSent(ctx context.Context, workspace uuid.UUID, seq in
 			}
 			backoff()
 		case SnapshotRefused:
+			if rec.Again {
+				backoff()
+				break
+			}
 			rec.Parked, parked, rec.NotFoundSince = true, &now, nil
 		case SnapshotFailed:
 			backoff()
