@@ -77,6 +77,11 @@ func TestRESTContactsPageIsSealedAndComplete(t *testing.T) {
 		if opened, err := f.key.Open(seal.KindFullName, f.tenant, stored[i].UID, c.FullNameSealed); err != nil || string(opened) != "Private contact" {
 			t.Fatal("contact cannot be opened")
 		}
+		// Each name names its own content key (DS50).
+		if c.FullNameKeyID != f.key.ID || c.PushNameKeyID != 0 || c.BusinessNameKeyID != 0 {
+			t.Fatalf("name key ids %d, %d, %d; want the full name's %d alone",
+				c.FullNameKeyID, c.PushNameKeyID, c.BusinessNameKeyID, f.key.ID)
+		}
 	}
 	page = contactPage{}
 	f.get(t, base+"&after_key=200%40lid", token, 200, &page)
