@@ -19,7 +19,7 @@ row.
 |---|---|---|---|---|
 | `deleted` | `item.deleted` | the owner's sub, `person` | who read the number just before | `purge_at`: its `purge_after` |
 | `recovered` | `item.recovered` | the owner's sub, `person` | who reads it after the recovery | |
-| `sync_paused` | `item.sync_paused` | the person's sub, `person` (an owner or an admin, or a personal workspace's person: [who pauses](devices.md#who-pauses-and-resumes)); or an API key's creator's, `key` | the readers when it was paused, and those of every pause folded into it (below) | `stop`: `pause`, only while the token mode is on (below) |
+| `sync_paused` | `item.sync_paused` | the person's sub, `person` (an owner or an admin, or a personal workspace's person: [who pauses](devices.md#who-pauses-and-resumes)); or an API key's creator's, `key`; or a platform token's creator's (its record's `created_by`), `key` | the readers when it was paused, and those of every pause folded into it (below) | `stop`: `pause`, only while the token mode is on (below) |
 | `purged` | `item.purged` | null, `app` | `[]` | |
 | `moved_out` | `item.moved_out` | the mover's sub, `person` | the team's readers before the move: at most the mover | `to`: `personal` |
 | `stranded` | `item.stranded` | the owner's sub, `person` | who read it just before the change, the person stranded among them | `person`: the stranded person's sub (omitted when they have none); `cause`: `revoked` (a removal) or `disabled` (a disable) |
@@ -76,6 +76,11 @@ byte for byte the renderer's golden file
   while on goes without it once off. The golden file
   `internal/membership/testdata/events/sync_paused-tokens.json` is the
   pause with tokens on.
+- **A token's pause** (a token with Manage) is its creator's: `actor_kind`
+  `key`, `actor` the record's `created_by`, written with the row, so the
+  sub goes even when the creator has no local account here. The creator's
+  local account, when one is linked, is the row's actor and is left out of
+  the notices; with none, every reader is told.
 - **`cause`** is set for a stranding by a local act (`revoked` from a
   removal, `disabled` from a disable). A stranding the platform causes
   (enforce, a membership it ended) has none, and the platform fills it from
@@ -135,11 +140,14 @@ One `item.sync_paused` per number, actor and hour (the spec's "Floods"):
 - When a queue's next event is a pause, every later unsent pause of the
   same number by the same actor under an hour after it is folded into it,
   and it carries the union of their readers. The actor is the person
-  behind the act, by local account, a key's creator for a key (the spec's
-  "the creator counts as the actor"), so a person's stop and their key's
-  are one actor's, and the event goes with the first one's `actor_kind`;
-  with no account (a key with no creator, a person whose account is gone),
-  only the same kind with none is the same actor. The folded rows are settled
+  behind the act, a key's or a token's creator for a key or a token (the
+  spec's "the creator counts as the actor"), so a person's stop and their
+  key's or token's are one actor's, and the event goes with the first
+  one's `actor_kind`. Two acts are compared by local account when both
+  have one, else by sub: a token's creator may have no local account
+  here, and two such creators are two actors. With neither on both sides
+  (a key with no creator, a person whose account is gone and who never
+  linked), only the same kind with neither is the same actor. The folded rows are settled
   `coalesced` only in the transaction that records its own signed answer,
   and parked with it when it is parked.
 - A pause under an hour after one of the same number and actor that the
