@@ -2120,7 +2120,7 @@ A person's MCP connections and AI integrations keep their copy of the
 number's key after their Read goes, as on Wappie's own screen
 ([mcp-enclave](mcp-enclave.md) 15.15). The owner answered Q8 yes, for the
 person's own connections and integrations only: F3 takes the number off
-them, on the screen and in the acts alike.
+them, on the screen and in the acts alike (DS47).
 
 **DS25. A binary sends only the sections it renders.** The sender picks
 only rows of the sections this binary renders (`NextSection`'s filter,
@@ -2138,3 +2138,55 @@ unannounced. Their rollback is the release before's binaries, after
 telling the platform: a drop or a remove in flight then waits
 (`kind_not_accepted` is a retry for a tightening), a raise in flight ends
 final.
+
+**DS47. Read takes the number off the person's own connections** (the
+owner's answer to Q8, relayed by the platform, final; F3). When a
+person's Read on a number goes, or their access to it is removed, on
+Wappie's permissions screen or through the console's `item.flags_drop`
+of read or `item.access_remove`, the one write both use
+(`setDevicePermissionTx`) also takes the number off every live MCP
+connection the person consented to and every AI integration they created
+in that workspace, of every kind, in the same transaction: the key's row
+for it, the service account's permission and grants on it at every
+epoch, and the connection's drafts for it still waiting for a person.
+One left with no number ends `access_lost`, as a deletion ends it, and
+its reader is told after the commit as `Revoke` and `RevokeAI` tell it
+(best effort; the 30-second re-tell is the backstop). A media connection
+ends `access_lost` whole, even with other numbers left: the enclave keeps
+its attachment results (10 minutes) and text (1 hour) by the numbers its
+sealed record names and wipes them only when the connection ends
+([mcp-enclave](mcp-enclave.md) 16.9). Another person's connections,
+workspace API keys with no connection behind them, and legacy MCP tokens
+keep the number.
+
+The write decides when it applies, so the screen and the acts agree by
+construction: when Read goes (the stored row had it), or when no flag is
+left (an access removal: `item.access_remove`, the screen's PUT with
+every flag false). A change that keeps send or manage while Read was
+already gone (a raise, a drop of the other flag) takes nothing, and nor
+does a raise, a drop of send or manage with Read kept, or a refusal
+(`last_reader`, an admin on an owner). The screen's PUT without Read
+still deletes a dormant grant, as before ([contract](contract.md), the
+flags kinds).
+
+A content or AI consent, and its renewal, is refused
+(`ErrMCPKeyUnsuitable`, `key_unsuitable`) unless the person consenting
+reads every number of its key: Read, and a grant at the number's current
+epoch, not retired. Consent, renewal and the drop all hold the
+workspace's tenants row, so a consent the console prepared before the
+drop and recorded after it is refused, and no live connection of the
+person reaches the number. A metadata consent carries no archive key and
+needs no Read, as a workspace key does not; one recorded after the drop
+is a new consent, which an admin may give on any number of the
+workspace.
+
+Locks keep 3.2's order: the person's permission, membership and grants,
+then their connections in id order, then each connection's own rows. A
+connection without media that keeps other numbers serves them until it
+expires or its reader loses its key; it cannot be renewed, since the
+reader's record and an AI integration's `ai_config` still name the
+number taken off (deletions and moves end such connections whole for
+that reason), so the person consents again. The AI pick asks for the
+number on the row's key as well as in its `ai_config`. The socket's
+`grant.revoke` alone, which keeps the Read flag, is outside Q8 and
+leaves the connections as they were.

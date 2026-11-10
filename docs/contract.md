@@ -905,14 +905,15 @@ check that fails answering it with the seq it was judged on (DS5, DS15):
 | `item.registration_delete` | owner or admin | owner or admin | `state_changed` (it linked) | `device.delete` of a registration: its pairing cancelled and stopped first, the row deleted |
 | `item.sync_now` | Read, for a person, as the socket's own sync now asks it (a key keeps Manage) | any role | `paused`, `storage_paused`, `not_linked`, `read_only`, `item_busy`, `connect_failed` (a start past the start bound too), `rate_limited` within the failed start wait (no start) | `device.start` on a number not paused (DS13): an owner or admin who does not read the number may not |
 | `item.flags_raise` | owner or admin by role; an owner's flags only an owner's (Q58) | owner or admin; an owner's flags only an owner's | `state_changed` (`before` is not the stored flags, compared as a set; or the number was deleted since), `not_found` (the number gone or another workspace's; the target not an active member here) | `PUT …/permissions` with flags added: the flags written, never a key; `grant_needed` is never answered (send and manage need no seal, and the kit refuses a raise of read); the snapshot is due too |
-| `item.flags_drop` | as the raise | as the raise | `last_reader` (the number, a deleted one included, would be left with no reader) | the flags `before` has and `after` has not are taken from the stored ones, so one raised since stays; a drop of read deletes every grant of the person on the number at every epoch, even when the flag was already gone; it runs on a deleted number of the workspace (DS21); a person with no membership row at all is `ran`, a suspended one's flags and grants go all the same (DS22) |
-| `item.access_remove` | as the raise | as the raise | `last_reader` | every flag false with the row kept, so a key shared later gives no read or send; every grant of the person on the number deleted, a key holder's without read too; the number and the membership as the drop's (DS20) |
+| `item.flags_drop` | as the raise | as the raise | `last_reader` (the number, a deleted one included, would be left with no reader) | the flags `before` has and `after` has not are taken from the stored ones, so one raised since stays; a drop of read deletes every grant of the person on the number at every epoch, even when the flag was already gone, and, when Read goes or no flag is left, takes the number off the person's own MCP connections and AI integrations (DS47); it runs on a deleted number of the workspace (DS21); a person with no membership row at all is `ran`, a suspended one's flags and grants go all the same (DS22) |
+| `item.access_remove` | as the raise | as the raise | `last_reader` | every flag false with the row kept, so a key shared later gives no read or send; every grant of the person on the number deleted, a key holder's without read too; the number off the person's own MCP connections and AI integrations, as a drop of read (DS47); the number and the membership as the drop's (DS20) |
 | `person.sign_out_everywhere` | the actor | the actor | none | every session family of the actor begun before `issued_at` ends, its workspace sessions with it (the sockets close within a second), never a later one, an API key, an MCP or AI connection; `sessions_ended` counts the live sessions ended (DS11) |
 | `person.notices_dismiss` | the actor's own notices | the actor | `state_changed` (a pause notice whose version rose stays; every other one is dismissed) | Wappie's own "seen", at the version shown |
 
-**The flags kinds** (step 12b, DS18 to DS24) run on the write Wappie's
+**The flags kinds** (step 12b, DS18 to DS24, DS47) run on the write Wappie's
 own permissions screen makes (`setDevicePermissionTx`), so the two agree
-by construction, and `TestConsoleParityFlags` holds them to it. They
+by construction, and `TestConsoleParityFlags` and
+`TestConsoleParityOwnConnections` hold them to it. They
 differ where the console's rules do: drop and remove run on a deleted
 number, which the screen does not find (DS21), and a raise never touches
 a key, where the screen's PUT without Read deletes a dormant one. Wappie
@@ -922,12 +923,27 @@ answer `state_changed`. Only an owner, by the local role and the
 document's both, changes the flags of an owner (local, or named owner
 by their document): an admin is `not_authorized` here and 403
 `not_authorized` on Wappie's own screen (the owner's Q58); `grant.revoke`,
-which changes no flag, keeps its own rule. A person's MCP connections and
-AI integrations keep their copy of the number's key after their Read
-goes, as on Wappie's screen ([mcp-enclave](mcp-enclave.md) 15.15), until
-F3 takes the number off their own (the owner's Q8). After a `ran` that
-wrote, this process's sockets check their access at once; the others
-within their access loop.
+which changes no flag, keeps its own rule. When Read goes (the stored
+row had it: a drop of read, a remove, the screen's PUT without Read) or
+no flag is left (a remove, the screen's PUT with every flag false), the
+number also leaves every live MCP connection the person consented to and
+every AI integration they created in the workspace, in the same
+transaction (the owner's Q8, DS47): the key's row for it, its service
+account's permission and grants on it at every epoch, and its drafts for
+it still waiting; one left with no number ends `access_lost`, and so
+does a media connection whatever it keeps (the enclave's attachment
+caches answer by its sealed numbers until it ends), and its reader is
+told after the commit as a revoke tells it (best effort; the reader's
+30-second re-tell is the backstop). Another person's connections,
+workspace API keys and legacy MCP tokens keep the number. A change that
+keeps send or manage while Read was already gone (a raise, a drop of the
+other) takes nothing off them, on the screen as in the acts, and nor
+does a refusal (`last_reader`, an admin on an owner). A content or AI
+consent, or its renewal, recorded after the person's Read went is
+refused (`key_unsuitable`): it must name only numbers its person reads
+with their key. After a
+`ran` that wrote, this process's sockets check their access at once; the
+others within their access loop.
 
 The runners live in `internal/numberacts`, beside the relink, and reach
 the socket server through `internal/wsapi/console_hooks.go`; parity tests
