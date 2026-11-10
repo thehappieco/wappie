@@ -25,3 +25,8 @@ regexes = ['''HyIlKCsuMTQ3Oj1AQ0ZJTE9SVVhbXmFkZ2ptcHN2eXw=''']
 description = "Documented HMAC test-vector secret for the enclave relay (docs/mcp-enclave.md); it signs nothing real"
 regexTarget = "secret"
 regexes = ['''^wappie-test-relay-secret-0123456789abcdefghij$''']
+
+[[allowlists]]
+description = "Archive key fingerprint vectors (DS49): the SHA-256 of a zero key and of bytes 0 to 31; they name no real key"
+regexTarget = "secret"
+regexes = ['''^66687aadf862bd776c8fc18b8e9f8e20089714856ee233b3902a591d0d5f2925$''', '''^630dcd2966c4336691125448bbb25b4ff412a49c732db2c8abc1b8581bd710dd$''']
