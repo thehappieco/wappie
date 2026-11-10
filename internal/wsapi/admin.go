@@ -500,7 +500,8 @@ func (s *session) handleGrantRevoke(ctx context.Context, f Frame) {
 	if !s.freshBackups(ctx, f.ReqID, TypeGrantRevoke, tenantUUID, deviceUUID, user) {
 		return
 	}
-	if err := s.srv.cfg.Keys2.RevokeGrant(ctx, tenantUUID, deviceUUID, user); err != nil {
+	ended, err := s.srv.cfg.Keys2.RevokeGrantEnded(ctx, tenantUUID, deviceUUID, user)
+	if err != nil {
 		if errors.Is(err, store.ErrLastDeviceReader) {
 			s.replyError(f.ReqID, ErrCodeLastDeviceReader, "give another active member read access to this number before removing its last reader")
 			return
@@ -512,7 +513,27 @@ func (s *session) handleGrantRevoke(ctx context.Context, f Frame) {
 	s.log.Info("device key grant revoked",
 		"device", dev.ID, "from", req.UserID, "by", who.email)
 	s.srv.RevalidateAccess()
+	// The person holds no grant at the number's epoch now: their Read is
+	// gone, and so are their own connections that held the number (DS48).
+	s.tellEnded(ctx, ended)
 	s.replyReaders(ctx, f.ReqID, tenantUUID, deviceUUID, dev.ID)
+}
+
+// tellEnded tells the readers of the connections an act ended, after its
+// commit and within one bound for them all. A reader not told now is told
+// again within 30 seconds.
+func (s *session) tellEnded(ctx context.Context, ended []store.EndedConnection) {
+	if len(ended) == 0 {
+		return
+	}
+	tctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	for _, e := range ended {
+		if s.srv.cfg.MCPReaders != nil {
+			s.srv.cfg.MCPReaders.TellRevoked(tctx, e.Reader, e.ID)
+		}
+		s.log.Info("mcp connection revoked", "connection", e.ID, "reason", store.ReasonAccessLost)
+	}
 }
 
 // handleGrantsList returns the grants of the account this connection acts

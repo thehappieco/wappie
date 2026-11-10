@@ -20,13 +20,15 @@ import (
 	"whatserver2/internal/authapi"
 	"whatserver2/internal/numberacts"
 	"whatserver2/internal/store"
+	"whatserver2/internal/wsapi"
 )
 
 // The person's own connections (the owner's Q8, DS47) through Wappie's
 // own screen and the console's runners: PUT …/permissions without read,
-// item.flags_drop of read and item.access_remove, each on its own number
-// with the same connections, by the same admin, must leave the same rows
-// and tell the readers of the same ended connections. Every one of the
+// item.flags_drop of read and item.access_remove, and the socket's lone
+// grant.revoke (DS48), each on its own number with the same connections,
+// by the same admin, must leave the same rows and tell the readers of the
+// same ended connections. Every one of the
 // person's that held the number ends access_lost whole, one that also
 // reaches another number too (the platform's 0061); another person's
 // connection and a workspace key keep the number. With Read already gone,
@@ -57,6 +59,7 @@ func (r *tells) take() []string {
 var (
 	_ authapi.Readers    = (*tells)(nil)
 	_ numberacts.Readers = (*tells)(nil)
+	_ wsapi.MCPReaders   = (*tells)(nil)
 )
 
 // connParity is the flags parity world whose route and runner tell.
@@ -68,8 +71,8 @@ type connParity struct {
 
 func newConnParity(t *testing.T) *connParity {
 	t.Helper()
-	p := newParity(t)
 	told := &tells{}
+	p := newParityWith(t, told)
 	p.runner.Readers = told
 	mux := http.NewServeMux()
 	(&authapi.Handler{Users: p.users, Keys: store.NewKeys(p.pool), Devices: p.devices, AccessChanged: p.srv.RevalidateAccess,
@@ -266,8 +269,15 @@ func TestConsoleParityOwnConnections(t *testing.T) {
 		"a remove": func(s connSet) string {
 			return c.outcome(c.runner.AccessRemove(ctx, c.command(t, kc.OpItemAccessRemove, admin, adminSub), s.number, s.person)) //nolint:contextcheck // the world's helpers run on a context of their own
 		},
+		// The socket's grant.revoke, the Read flag kept: no grant at the
+		// number's epoch is left, so Read is gone (the platform's 0061,
+		// QF3, DS48).
+		"a lone grant.revoke": func(s connSet) string {
+			return frameOutcome(t, ask(t, c.console, wsapi.Hello{Session: adminToken}, wsapi.TypeGrantRevoke,
+				wsapi.GrantRevoke{DeviceID: s.number.String(), UserID: s.person.String()}), wsapi.TypeReaders)
+		},
 	}
-	for _, name := range []string{"the screen without read", "a drop of read", "a remove"} {
+	for _, name := range []string{"the screen without read", "a drop of read", "a remove", "a lone grant.revoke"} {
 		person, _ := c.person(t, strings.ReplaceAll(name, " ", "-"), "admin")
 		s := c.set(t, person, shared, name)
 		if out := paths[name](s); out != "ok" {
@@ -275,6 +285,9 @@ func TestConsoleParityOwnConnections(t *testing.T) {
 		}
 		if got := c.left(t, s); fmt.Sprint(got) != fmt.Sprint(want) {
 			t.Fatalf("%s: left %+v, want %+v", name, got, want)
+		}
+		if h := c.held(t, s.number, person); name == "a lone grant.revoke" && !h.Read {
+			t.Fatalf("%s took the Read flag: %+v", name, h)
 		}
 		c.endAll(t)
 	}

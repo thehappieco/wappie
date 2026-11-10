@@ -567,6 +567,9 @@ func setupWith(ctx context.Context, withWA, migrations bool) (*app, func(), erro
 		// Every act README 7.1 gates asks the contract's freshness first;
 		// release B only logs the verdicts.
 		Membership: a.members,
+		// A grant.revoke that took a person's Read tells the readers of
+		// their connections it ended (DS48).
+		MCPReaders: &a.readers,
 		// "Link again" on a logged-out number (decision 0057).
 		Relink: &relink.Service{
 			Devices: a.devices, Pairer: relink.FromRegistry(registry), LIDs: wa.NewLIDMap(container),
@@ -897,9 +900,9 @@ func (a *app) authHandler() *authapi.Handler {
 }
 
 // mcpReaders tells the readers through the MCP routes' handler, which
-// routes builds after the contract's acts and the auth routes take this:
-// nothing until then, nor in a process without MCP, where the readers'
-// re-tell is all there is.
+// routes builds after the contract's acts, the auth routes and the socket
+// server take this: nothing until then, nor in a process without MCP,
+// where the readers' re-tell is all there is.
 type mcpReaders struct {
 	h atomic.Pointer[mcpauth.Handler]
 }
