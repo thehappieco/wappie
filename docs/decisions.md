@@ -2693,11 +2693,11 @@ The grant context: every grant listed by `GET /v1/auth/me`,
 `grants.list` and `GET /v1/grants` carries `fingerprint`, computed from
 the key row at the grant's epoch: the number's key now, not the key
 sealed in that grant. So a client does not echo it. It computes the
-fingerprint of the key it opened (`seal.archiveKeyFingerprint` of its
-public half, the same SHA-256), refuses a grant whose key differs from
-the listed one with `no_grant`, and sends its own. An echo would let an
-old grant at a reused epoch, sealed with a key a reset deleted, be
-granted again: it is listed with the new key's fingerprint.
+fingerprint of the key it opened (the SHA-256 of its X25519 public
+half), refuses a grant whose key differs from the listed one, and sends
+its own. An echo would let an old grant at a reused epoch, sealed with a
+key a reset deleted, be granted again: it is listed with the new key's
+fingerprint.
 
 **The wire.** Core and cloud ship together, since the cloud pins the
 core.
@@ -2718,11 +2718,31 @@ core.
 The clients that send `grant.add`, changed with it: wappie-cloud's web
 (the permissions screen's `grantAccess`, the consent's `mcpSetup`, and
 the session's lender `createDeviceGrantLender`, which computes each
-key's fingerprint), `packages/client` (`withDeviceKey` and
-`withDeviceKeys` compute it and pass it to `use`;
-`seal.archiveKeyFingerprint`; the protocol types) and `packages/cli`
+key's fingerprint and refuses a stale grant) and `packages/cli`
 (`wsctl grant`). The Go `wsctl` only pairs, and the enclave reader only
 reads grants.
+
+**The reader's measured client stays release A's** (the platform's
+W46, option A). The attested reader's image measures `packages/client`'s
+build (`scripts/check-client-dist.sh`, CI's "The reader's measured
+client is release A's"), and `packages/mcp` and `packages/mcp-http`
+whole (deploy/enclave/Dockerfile). This change moves none of them. In
+`packages/client` only declarations change: `GrantRequest.fingerprint`
+and the grants' `fingerprint` in `ArchiveGrants`. So each client that
+sends `grant.add` computes the fingerprint with its own small code: the
+web's lender (the key's X25519 public half, then WebCrypto's SHA-256),
+and `wsctl` with Node's crypto (`archiveKeyFingerprint` in
+packages/cli/lib.mjs). Both are checked against the server's vectors,
+`internal/store/testdata/archive-key-fingerprints.json`, which
+`TestArchiveKeyFingerprint` reads too: wsctl's tests read it in the
+repository, and the web's tests read it from the core checkout the
+cloud's CI pins. So the paths cannot drift. A grant from `wsctl` whose
+key a reset replaced is refused by the server (`conflict`): wsctl does
+not see the listed fingerprint. The client's own version, where
+`withDeviceKey` and `withDeviceKeys` compute the fingerprint, pass it
+to `use` and refuse a stale grant with `no_grant`
+(`seal.archiveKeyFingerprint`), waits for reader 0.6.1 on the branch
+`codex/reader-061`, which also moves `wsctl` back to it.
 
 Step 7's `token.grant` uses this file once step 7 merges main: its own
 `internal/store/archive_fingerprint.go` goes, and its `archiveKeyIsTx`
@@ -2741,11 +2761,14 @@ Not here: (c), never reusing an epoch number, needs a migration.
 Nothing finds or removes a grant recorded before this change with an
 old key at a reused epoch. One needs a `grant.add` sent between a reset
 with `-keep-devices`, `device-key` and the client's next read of its
-grants. Clients now refuse to grant from one (`no_grant`), but it still
-counts as Read. The listening connection can hang half open until TCP
-notices; the checks above hold meanwhile, as for deletions.
+grants. The web now refuses to grant from one, and the server refuses
+any client's (`conflict`), but it still counts as Read. The listening
+connection can hang half open until TCP notices; the checks above hold
+meanwhile, as for deletions.
 
-Tests: `TestArchiveKeyFingerprint` (the format, two vectors),
+Tests: `TestArchiveKeyFingerprint` (the format, the vectors file: two
+public keys and RFC 7748's two private keys, whose public half it
+derives),
 `TestCreateContentKeyForChecksTheKey`,
 `TestCreateContentKeyForRacingReset`, `TestArchiveKeyNotices`,
 `TestParseArchiveKeyNotice`, `TestPutGrantNamesItsKey` (a missing or
@@ -2770,9 +2793,11 @@ due, and due; and started after both), `TestServeListensForArchiveKeys`,
 `TestDeviceKeyGrantsNameTheKey` and `TestResetAndDeviceKeyTexts`
 (cmd/whatserverd). The web's `grantStepUp`, `deviceGrants`, `mcpSetup`
 and `mcpContent` tests check each `grant.add` names the key's
-fingerprint, and `deviceGrants` that a stale grant is refused.
-`packages/client`'s check the same, the Go vectors, and
-`packages/cli`'s that it is passed on.
+fingerprint, and `deviceGrants` that a stale grant is refused; the
+lender's fingerprint is checked against the vectors file.
+`packages/cli`'s check its own fingerprint against the same file and
+that `wsctl grant` sends it. `packages/client`'s own tests for it are on
+`codex/reader-061`.
 
 **DS50. A contact's names each name their own content key** (from the
 review of DS49; the platform: names that become unreadable are a defect,
