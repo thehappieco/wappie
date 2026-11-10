@@ -249,7 +249,8 @@ func TestSealedWritesNameTheirKey(t *testing.T) {
 	next := func() string { n++; return fmt.Sprintf("W%d", n) }
 	rowAs := func(uid uuid.UUID, waID string, typ domain.Type, id uint32, key []byte) (uuid.UUID, error) {
 		in := store.InsertMessage{UID: uid, TenantID: w.tenant, DeviceID: w.device,
-			WAID: waID, ChatKey: chat, ChatPN: chat, TS: time.Now(), Kind: domain.KindMessage, Type: typ,
+			WAID: waID, ChatKey: chat, ChatPN: chat, SenderKey: chat, SenderPN: chat,
+			TS: time.Now(), Kind: domain.KindMessage, Type: typ,
 			Source: domain.SourceLive, ContentKeyID: id, ArchiveKey: key}
 		if typ == domain.TypeUnsupported {
 			in.Unsupported = "senderKeyDistributionMessage"

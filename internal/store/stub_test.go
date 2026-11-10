@@ -27,13 +27,24 @@ import (
 
 func stub(t *testing.T, m *store.Messages, tenant, device uuid.UUID, chat, waID string) uuid.UUID {
 	t.Helper()
-	res, err := m.Insert(context.Background(), store.InsertMessage{
+	return stubAs(t, m, placeholder(tenant, device, chat, waID))
+}
+
+// placeholder is the row a sender key took, before the real message.
+func placeholder(tenant, device uuid.UUID, chat, waID string) store.InsertMessage {
+	return store.InsertMessage{
 		UID: uuid.New(), TenantID: tenant, DeviceID: device,
 		WAID: waID, ChatKey: chat, ChatPN: chat,
+		SenderKey: stubSender, SenderPN: stubSender,
 		Kind: domain.KindMessage, Type: domain.TypeUnsupported,
 		Source: domain.SourceLive, TS: stubTS,
 		Unsupported: "senderKeyDistributionMessage",
-	})
+	}
+}
+
+func stubAs(t *testing.T, m *store.Messages, in store.InsertMessage) uuid.UUID {
+	t.Helper()
+	res, err := m.Insert(context.Background(), in)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,11 +54,15 @@ func stub(t *testing.T, m *store.Messages, tenant, device uuid.UUID, chat, waID 
 // stubTS is when the placeholder and its real message were sent.
 var stubTS = time.Now().Truncate(time.Second)
 
+// stubSender sent the placeholder and its real message.
+const stubSender = "5511988887777@s.whatsapp.net"
+
 // realMessage is the message a placeholder took the slot of, sealed to uid.
 func realMessage(uid, tenant, device uuid.UUID, chat, waID, body string) store.InsertMessage {
 	return store.InsertMessage{
 		UID: uid, TenantID: tenant, DeviceID: device,
 		WAID: waID, ChatKey: chat, ChatPN: chat,
+		SenderKey: stubSender, SenderPN: stubSender,
 		Kind: domain.KindMessage, Type: domain.TypeText,
 		Source: domain.SourceLive, TS: stubTS, ContentKeyID: 1, BodySealed: []byte(body),
 	}
@@ -214,5 +229,138 @@ func TestAFillKeepsItsAttachment(t *testing.T) {
 	}
 	if got := chatFor(t, m, tenant, device, chat).LastType; got != string(domain.TypeImage) {
 		t.Errorf("chat last_type = %q, want image", got)
+	}
+}
+
+// TestOnlyItsSenderFillsAPlaceholder (DS51): a fill opens cleanly now, so
+// content from anyone but the placeholder's sender must not land in it.
+// Another member reusing the id, a contact reusing the id of my message,
+// or a message with no sender is a plain duplicate: nothing is filled,
+// and no PlaceholderError asks for a second seal.
+func TestOnlyItsSenderFillsAPlaceholder(t *testing.T) {
+	const other = "5511977776666@s.whatsapp.net"
+	for _, c := range []struct {
+		name        string
+		placeholder func(in *store.InsertMessage)
+		message     func(in *store.InsertMessage)
+	}{
+		{"another member", nil, func(in *store.InsertMessage) {
+			in.SenderKey, in.SenderPN = other, other
+		}},
+		{"no sender", nil, func(in *store.InsertMessage) {
+			in.SenderKey, in.SenderPN = "", ""
+		}},
+		{"a contact reusing my message's id", func(in *store.InsertMessage) {
+			in.IsFromMe, in.SenderKey, in.SenderPN = true, "", ""
+		}, func(in *store.InsertMessage) {
+			in.SenderKey, in.SenderPN = other, other
+		}},
+		{"the same sender, marked as mine", nil, func(in *store.InsertMessage) {
+			in.IsFromMe = true
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			m, tenant, device := chatFixture(t)
+			ctx := context.Background()
+			const chat, waID = "120363000000000000@g.us", "3AD9FC72C86E3D46A830"
+			p := placeholder(tenant, device, chat, waID)
+			if c.placeholder != nil {
+				c.placeholder(&p)
+			}
+			uid := stubAs(t, m, p)
+			for _, sealedTo := range []uuid.UUID{uuid.New(), uid} {
+				in := realMessage(sealedTo, tenant, device, chat, waID, "de outra pessoa")
+				c.message(&in)
+				res, err := m.Insert(ctx, in)
+				if err != nil {
+					t.Fatalf("sealed to %v: %v, want a plain duplicate", sealedTo, err)
+				}
+				if !res.Duplicate || res.Filled || res.UID != uid {
+					t.Errorf("sealed to %v: %+v, want a plain duplicate of the placeholder", sealedTo, res)
+				}
+			}
+			if row := only(t, m, tenant, device, chat); row.Type != domain.TypeUnsupported || len(row.BodySealed) != 0 {
+				t.Errorf("row = %s, body %q: another sender's message filled the placeholder", row.Type, row.BodySealed)
+			}
+		})
+	}
+}
+
+// TestItsSenderFillsAPlaceholderUnderEitherName (DS51): a history sync may
+// name the sender by the other half, LID or phone number. One half both
+// sides know is enough. My own messages match on is_from_me alone: only
+// my devices send them, and older rows of mine have no sender.
+func TestItsSenderFillsAPlaceholderUnderEitherName(t *testing.T) {
+	const lid, pn = "123456789012345@lid", "5511988887777@s.whatsapp.net"
+	for _, c := range []struct {
+		name        string
+		placeholder func(in *store.InsertMessage)
+		message     func(in *store.InsertMessage)
+	}{
+		{"by phone number, stored by LID", func(in *store.InsertMessage) {
+			in.SenderKey, in.SenderLID, in.SenderPN = lid, lid, pn
+		}, func(in *store.InsertMessage) {
+			in.SenderKey, in.SenderLID, in.SenderPN = pn, "", pn
+		}},
+		{"by LID, stored by phone number", func(in *store.InsertMessage) {
+			in.SenderKey, in.SenderLID, in.SenderPN = pn, "", pn
+		}, func(in *store.InsertMessage) {
+			in.SenderKey, in.SenderLID, in.SenderPN = lid, lid, pn
+		}},
+		{"by LID only", func(in *store.InsertMessage) {
+			in.SenderKey, in.SenderLID, in.SenderPN = lid, lid, ""
+		}, func(in *store.InsertMessage) {
+			in.SenderKey, in.SenderLID, in.SenderPN = lid, lid, ""
+		}},
+		{"mine, with no sender stored", func(in *store.InsertMessage) {
+			in.IsFromMe, in.SenderKey, in.SenderPN = true, "", ""
+		}, func(in *store.InsertMessage) {
+			in.IsFromMe = true
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			m, tenant, device := chatFixture(t)
+			const chat, waID = "120363000000000000@g.us", "3AD9FC72C86E3D46A830"
+			p := placeholder(tenant, device, chat, waID)
+			c.placeholder(&p)
+			uid := stubAs(t, m, p)
+			in := realMessage(uid, tenant, device, chat, waID, "a mensagem de verdade")
+			c.message(&in)
+			res, err := m.Insert(context.Background(), in)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !res.Filled {
+				t.Errorf("result = %+v, want the placeholder filled", res)
+			}
+			if row := only(t, m, tenant, device, chat); row.Type != domain.TypeText {
+				t.Errorf("type = %s, want text", row.Type)
+			}
+		})
+	}
+}
+
+// TestAProtocolPlaceholderIsFilled (DS51): the browser's reproject retypes
+// a sender key's placeholder as protocol (MarkProtocol). That is the row
+// fillStub exists for, so the real message still fills it.
+func TestAProtocolPlaceholderIsFilled(t *testing.T) {
+	m, tenant, device := chatFixture(t)
+	const chat, waID = "120363000000000000@g.us", "3AD9FC72C86E3D46A830"
+	uid := stub(t, m, tenant, device, chat, waID)
+	if err := m.MarkProtocol(context.Background(), tenant, device, uid); err != nil {
+		t.Fatal(err)
+	}
+	res, err := m.Insert(context.Background(), realMessage(uid, tenant, device, chat, waID, "a mensagem de verdade"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Filled || res.UID != uid {
+		t.Errorf("result = %+v, want the protocol placeholder filled", res)
+	}
+	if row := only(t, m, tenant, device, chat); row.Type != domain.TypeText || string(row.BodySealed) != "a mensagem de verdade" {
+		t.Errorf("row = %s, body %q", row.Type, row.BodySealed)
+	}
+	if got := chatFor(t, m, tenant, device, chat).LastType; got != string(domain.TypeText) {
+		t.Errorf("chat last_type = %q, want text", got)
 	}
 }

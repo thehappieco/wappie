@@ -10,11 +10,13 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"go.mau.fi/whatsmeow/types"
 
 	"whatserver2/internal/crypto/seal"
 	"whatserver2/internal/domain"
 	"whatserver2/internal/ingest"
+	"whatserver2/internal/obs"
 	"whatserver2/internal/store"
 )
 
@@ -41,24 +43,34 @@ func (q *queued) all() []uuid.UUID {
 // archive key named, as the router builds it.
 func stubPipeline(t *testing.T, f *fixture) (*ingest.Pipeline, *queued) {
 	t.Helper()
+	pipe, q, _ := clockedPipeline(t, f, time.Now)
+	return pipe, q
+}
+
+// clockedPipeline is stubPipeline with the sealer's clock and the
+// pipeline's metrics in the test's hands. The sealer reads its clock on
+// each seal, before it seals.
+func clockedPipeline(t *testing.T, f *fixture, now func() time.Time) (*ingest.Pipeline, *queued, *obs.Metrics) {
+	t.Helper()
 	ctx := context.Background()
 	pub, epoch, err := f.keys.ArchiveKey(ctx, f.tenant, f.device)
 	if err != nil {
 		t.Fatal(err)
 	}
-	sealer, err := seal.NewSealer(f.tenant, f.device, pub, epoch, f.keys)
+	sealer, err := seal.NewSealerWithArchiveTenant(f.tenant, f.tenant, f.device, pub, epoch, f.keys, seal.WithClock(now))
 	if err != nil {
 		t.Fatal(err)
 	}
 	q := &queued{}
+	metrics := obs.NewMetrics()
 	pipe, err := ingest.New(ingest.Config{
 		Tenant: f.tenant, Sealer: sealer, ArchiveKey: pub, Messages: store.NewMessages(f.pool),
-		Bus: f.bus, Media: q, Log: slog.New(slog.DiscardHandler),
+		Bus: f.bus, Media: q, Metrics: metrics, Log: slog.New(slog.DiscardHandler),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	return pipe, q
+	return pipe, q, metrics
 }
 
 // stored is one message row and its media row as a reader gets them.
@@ -303,5 +315,53 @@ func TestTwoCopiesFillAPlaceholderOnce(t *testing.T) {
 	}
 	if got, err := f.opens(t, row.uid, seal.KindMediaKey, row.keyID, row.mediaKey); err != nil || len(got) != 32 {
 		t.Errorf("media key = %x, %v", got, err)
+	}
+}
+
+// photo is the real message of the race tests: an image with a caption.
+func photo(f *fixture, waID string) domain.Envelope {
+	env := f.envelope(waID, domain.KindMessage, domain.TypeImage, "a foto")
+	env.Content.Raw = []byte("the real message")
+	env.Content.Media = &domain.Media{MimeType: "image/jpeg", MediaKey: []byte("0123456789abcdef0123456789abcdef")}
+	return env
+}
+
+// TestAnotherSendersMessageDoesNotFillThroughThePipeline (DS51): a message
+// under a placeholder's id from someone else is a plain duplicate. It is
+// sealed once and stored nowhere.
+func TestAnotherSendersMessageDoesNotFillThroughThePipeline(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	pipe, q, m := clockedPipeline(t, f, time.Now)
+	group := types.JID{User: "120363000000000002", Server: types.GroupServer}
+	const waID = "3AD9FC72C86E3D46A835"
+
+	stub := f.envelope(waID, domain.KindMessage, domain.TypeUnsupported, "")
+	stub.Chat, stub.IsGroup = domain.AddressOf(group), true
+	stub.Content = domain.Content{Raw: []byte("placeholder"), Unsupported: "someFutureMessage"}
+	first, err := pipe.Ingest(ctx, stub)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	other := photo(f, waID)
+	other.Chat, other.IsGroup = domain.AddressOf(group), true
+	other.Sender = domain.AddressOf(types.JID{User: "5511977776666", Server: types.DefaultUserServer})
+	res, err := pipe.Ingest(ctx, other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Duplicate || res.Filled || res.UID != first.UID {
+		t.Errorf("result = %+v, want a plain duplicate of %v", res, first.UID)
+	}
+	if n := testutil.ToFloat64(m.Sealed.WithLabelValues(seal.KindBody.String())); n != 1 {
+		t.Errorf("%v seals of the body, want 1", n)
+	}
+	row := readStored(t, f, group.String(), waID)
+	if row.typ != string(domain.TypeUnsupported) || len(row.body) != 0 || row.hasMedia {
+		t.Errorf("row = %s, body %d bytes, media %v: another sender filled the placeholder", row.typ, len(row.body), row.hasMedia)
+	}
+	if got := q.all(); len(got) != 0 {
+		t.Errorf("downloads nudged for %v", got)
 	}
 }

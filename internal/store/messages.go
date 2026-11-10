@@ -410,16 +410,16 @@ func insertMessageRow(ctx context.Context, tx pgx.Tx, in InsertMessage, seq int6
 // can ever put the real message back. So a row that carries nothing gives way
 // to one that carries something.
 //
-// Narrow on purpose. It only fires when the stored row is an unsupported
-// placeholder with no body, no payload and no attachment, and only for an
-// incoming row that actually has content. A real message is never overwritten
-// by anything, including another copy of itself.
+// Narrow on purpose. It only fires when the stored row is an empty placeholder
+// from the same sender (fillable), and only for an incoming row that actually
+// has content. A real message is never overwritten by anything, including
+// another copy of itself.
 //
 // The row keeps the placeholder's uid, and every sealed value binds to the
 // uid it was sealed to. So the message must be sealed to the placeholder's
 // uid. One sealed to another uid fills nothing: it gets a PlaceholderError,
 // and the caller seals it again (DS51). The attachment's row and the chat
-// list's type are written with the fill, as Insert and Reproject write them.
+// list's type are written with the fill.
 func fillStub(ctx context.Context, tx pgx.Tx, in InsertMessage, uid uuid.UUID, res *InsertResult) error {
 	if in.Type == domain.TypeUnsupported || in.Kind != domain.KindMessage {
 		return nil
@@ -427,12 +427,13 @@ func fillStub(ctx context.Context, tx pgx.Tx, in InsertMessage, uid uuid.UUID, r
 	if len(in.BodySealed) == 0 && len(in.PayloadSealed) == 0 && in.Media == nil {
 		return nil
 	}
+	guard := []any{uid, in.IsFromMe, nullable(in.SenderKey), nullable(in.SenderLID), nullable(in.SenderPN)}
 
 	if in.UID != uid {
 		var stub bool
 		if err := tx.QueryRow(ctx,
-			`SELECT EXISTS (SELECT 1 FROM messages WHERE uid = $1 AND `+emptyPlaceholder+`)`,
-			uid).Scan(&stub); err != nil {
+			`SELECT EXISTS (SELECT 1 FROM messages WHERE uid = $1 AND `+fillable+`)`,
+			guard...).Scan(&stub); err != nil {
 			return fmt.Errorf("store: check placeholder: %w", err)
 		}
 		if stub {
@@ -441,25 +442,27 @@ func fillStub(ctx context.Context, tx pgx.Tx, in InsertMessage, uid uuid.UUID, r
 		return nil
 	}
 
+	// The update's statement trigger (storage_lock) takes the workspace's
+	// row before the update locks the message's, the same order as Insert.
 	tag, err := tx.Exec(ctx, `
 		UPDATE messages SET
-			kind = $2, type = $3, unsupported_field = NULL,
-			content_key_id = $4, body_sealed = $5, raw_sealed = $6, payload_sealed = $7,
-			reply_to = $8, is_forwarded = $9, forwarding_score = $10,
-			view_once = $11, ephemeral = $12
-		 WHERE uid = $1 AND `+emptyPlaceholder,
-		uid, string(in.Kind), string(in.Type),
-		nullableKeyID(in.ContentKeyID), in.BodySealed, in.RawSealed, in.PayloadSealed,
-		nullable(in.ReplyTo), in.IsForwarded, in.ForwardingScore,
-		in.ViewOnce, in.Ephemeral)
+			kind = $6, type = $7, unsupported_field = NULL,
+			content_key_id = $8, body_sealed = $9, raw_sealed = $10, payload_sealed = $11,
+			reply_to = $12, is_forwarded = $13, forwarding_score = $14,
+			view_once = $15, ephemeral = $16
+		 WHERE uid = $1 AND `+fillable,
+		append(guard, string(in.Kind), string(in.Type),
+			nullableKeyID(in.ContentKeyID), in.BodySealed, in.RawSealed, in.PayloadSealed,
+			nullable(in.ReplyTo), in.IsForwarded, in.ForwardingScore,
+			in.ViewOnce, in.Ephemeral)...)
 	if err != nil {
 		return fmt.Errorf("store: fill placeholder: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
 		return nil
 	}
-	// The update's trigger took the workspace's row; the transaction
-	// rolls back unless the content key is still there.
+	// The transaction holds the workspace's row; it rolls back unless the
+	// content key is still there.
 	if err := contentKeyIsTx(ctx, tx, in.DeviceID, in.ContentKeyID, in.ArchiveKey); err != nil {
 		return err
 	}
@@ -470,7 +473,9 @@ func fillStub(ctx context.Context, tx pgx.Tx, in InsertMessage, uid uuid.UUID, r
 		}
 	}
 	// The chat list says "unsupported" while the placeholder is its newest
-	// message. upsertChat sets last_type from the newest by timestamp.
+	// message. Newest by timestamp, as upsertChat picks it. MarkProtocol
+	// leaves last_type alone, so a protocol placeholder shows as
+	// "unsupported" there too.
 	if _, err := tx.Exec(ctx, `
 		UPDATE chats SET last_type = $3
 		 WHERE device_id = $1 AND chat_key = $2 AND last_type = 'unsupported'
@@ -482,16 +487,35 @@ func fillStub(ctx context.Context, tx pgx.Tx, in InsertMessage, uid uuid.UUID, r
 	return nil
 }
 
-// emptyPlaceholder is the WHERE clause of a row fillStub may fill, with
-// the row's uid as $1. One text for the check and the update.
+// fillable is the WHERE clause of a row fillStub may fill. One text for
+// the check and the update. $1 is the row's uid, $2 the message's
+// is_from_me, and $3, $4 and $5 its sender's key, LID and phone number.
 //
+// An empty placeholder: unsupported, or retyped protocol by MarkProtocol
+// (the browser's reproject does that to a sender key's placeholder, the
+// very row this exists for), with no body, no payload and no attachment.
 // Length rather than IS NULL: an empty bytea and a null both mean
 // "carries nothing", and which one was written depends on the driver
 // rather than on anything meaningful.
-const emptyPlaceholder = `type = 'unsupported'
+//
+// From the same sender. A fill used to read as tampered, so another
+// sender's content in the row showed as broken. Now it opens cleanly, so
+// the row must not take content from anyone but its sender. is_from_me
+// must agree: a contact reusing the id of my message does not fill it.
+// For my own messages that is enough, since only my devices send them,
+// and their sender is often not stored. Anyone else must match on a
+// half both sides know (key, LID or phone number). A null half matches
+// nothing, so someone else's placeholder with no sender stored is never
+// filled.
+const fillable = `type IN ('unsupported', 'protocol')
 		   AND coalesce(length(body_sealed), 0) = 0
 		   AND coalesce(length(payload_sealed), 0) = 0
-		   AND NOT EXISTS (SELECT 1 FROM media WHERE message_uid = $1)`
+		   AND NOT EXISTS (SELECT 1 FROM media WHERE message_uid = $1)
+		   AND is_from_me = $2
+		   AND (is_from_me
+		        OR sender_key IN ($3, $4, $5)
+		        OR sender_lid = $4
+		        OR sender_pn = $5)`
 
 // expiresAt computes when the sender intended the message to vanish.
 //
