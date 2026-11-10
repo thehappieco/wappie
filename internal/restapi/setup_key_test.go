@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"whatserver2/internal/store"
+	"whatserver2/internal/tokentest"
 )
 
 // setupKey issues an MCP setup's key on device by user, as the console's
@@ -90,5 +91,83 @@ func TestARenewalsKeyProvesItsGrantsOnREST(t *testing.T) {
 	unbound, _ := setupKey(t, r.pool, r.w.Tenant, r.w.Owner, device)
 	if code, body := r.do(t, "/v1/grants", bearer(unbound)...); code != http.StatusUnauthorized || body != tokenUnauthorized {
 		t.Fatalf("a setup's key that acts as no account: %d %q", code, body)
+	}
+}
+
+// keysBeforeTheRetirement issues, as before keys were narrowed, an old
+// local MCP token on device (origin legacy_mcp, as 0053's backfill found
+// it) and a panel's full key, both the owner's.
+func keysBeforeTheRetirement(t *testing.T, r *tokenREST, device uuid.UUID) (legacy, panel string) {
+	t.Helper()
+	ctx := context.Background()
+	keys := store.NewAPIKeys(r.pool)
+	legacy, err := keys.IssueActingAsForDevices(ctx, r.w.Tenant.String(), "MCP · Cursor", store.ScopeRead, &r.w.Owner, nil, []uuid.UUID{device}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.w.Exec(`UPDATE api_keys SET origin = 'legacy_mcp' WHERE prefix = $1`, strings.SplitN(legacy, ".", 2)[0])
+	panel, err = keys.IssueActingAsForDevices(ctx, r.w.Tenant.String(), "deploy bot", store.ScopeFull, &r.w.Owner, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return legacy, panel
+}
+
+// TestTheRetirementOnREST (the plan's 7.2 and 10.7): after tokens
+// retire-keys, a key it revoked gets the 401 an unknown key gets, and a
+// key it spared (an old local MCP token) still lists its number.
+func TestTheRetirementOnREST(t *testing.T) {
+	r := newTokenREST(t)
+	ctx := context.Background()
+	device := r.w.Number("Vendas")
+	legacy, panel := keysBeforeTheRetirement(t, r, device)
+	for name, key := range map[string]string{"an old token": legacy, "a panel's key": panel} {
+		if code, body := r.do(t, "/v1/devices", bearer(key)...); code != http.StatusOK {
+			t.Fatalf("%s before the retirement: %d %s", name, code, body)
+		}
+	}
+	keys := store.NewAPIKeys(r.pool)
+	plan, err := keys.RetirePlan(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := keys.Retire(ctx, plan.Revoke, "root"); err != nil {
+		t.Fatal(err)
+	}
+	if code, body := r.do(t, "/v1/devices", bearer(legacy)...); code != http.StatusOK || !strings.Contains(body, device.String()) {
+		t.Fatalf("the old token after the retirement: %d %s", code, body)
+	}
+	if code, body := r.do(t, "/v1/devices", bearer(panel)...); code != http.StatusUnauthorized || body != tokenUnauthorized {
+		t.Fatalf("the panel's key after the retirement: %d %q", code, body)
+	}
+}
+
+// TestASelfHostedInstallationKeepsItsKeysOnREST (the plan's 10.7, the
+// self-hosted regression): with the contract off, tokens off and no
+// retirement, a panel's key is still issued and lists the numbers, and a
+// platform token is refused.
+func TestASelfHostedInstallationKeepsItsKeysOnREST(t *testing.T) {
+	r := newTokenREST(t)
+	ctx := context.Background()
+	device := r.w.Number("Vendas")
+	tok := r.w.Token(tokentest.Read(device))
+	if code, body := r.do(t, "/v1/devices", bearer(tok.Text)...); code != http.StatusOK {
+		t.Fatalf("the token with tokens on: %d %s", code, body)
+	}
+	r.w.Exec(`UPDATE contract_token_state SET mode = 'off'`)
+	r.w.Exec(`UPDATE contract_state SET mode = 'off', events_paused_at = clock_timestamp()`)
+	keys := store.NewAPIKeys(r.pool)
+	if g, err := keys.Gate(ctx); err != nil || !g.OffThePlatform() {
+		t.Fatalf("not off the platform: %+v %v", g, err)
+	}
+	panel, err := keys.IssueAsked(ctx, r.w.Tenant.String(), "deploy bot", store.ScopeFull, &r.w.Owner, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code, body := r.do(t, "/v1/devices", bearer(panel)...); code != http.StatusOK || !strings.Contains(body, device.String()) {
+		t.Fatalf("a panel's key: %d %s", code, body)
+	}
+	if code, body := r.do(t, "/v1/devices", bearer(tok.Text)...); code != http.StatusUnauthorized {
+		t.Fatalf("a platform token: %d %s", code, body)
 	}
 }

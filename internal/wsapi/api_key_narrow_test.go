@@ -3,6 +3,7 @@ package wsapi_test
 import (
 	"context"
 	"crypto/rand"
+	"strings"
 	"testing"
 	"time"
 
@@ -190,4 +191,44 @@ func TestARevokedKeysSocketClosesWithinASecond(t *testing.T) {
 		t.Fatalf("the retirement: %+v %v", done, err)
 	}
 	expectAccessClosed(t, conn)
+}
+
+// TestTheRetirementOnTheSocket (the plan's 7.2 and 10.7): after tokens
+// retire-keys, a key it revoked gets the hello's "invalid api key", and a
+// key it spared (an old local MCP token, origin legacy_mcp as 0053's
+// backfill found it) is still welcomed.
+func TestTheRetirementOnTheSocket(t *testing.T) {
+	ts := newTokenSocket(t)
+	w := ts.w
+	ctx := context.Background()
+	device := w.Number("Vendas")
+	keys := store.NewAPIKeys(ts.pool)
+	legacy, err := keys.IssueActingAsForDevices(ctx, w.Tenant.String(), "MCP · Cursor", store.ScopeRead, &w.Owner, nil, []uuid.UUID{device}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.Exec(`UPDATE api_keys SET origin = 'legacy_mcp' WHERE prefix = $1`, strings.SplitN(legacy, ".", 2)[0])
+	panel, err := keys.IssueActingAsForDevices(ctx, w.Tenant.String(), "deploy bot", store.ScopeFull, &w.Owner, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, key := range map[string]string{"an old token": legacy, "a panel's key": panel} {
+		if _, f := ts.hello(t, wsapi.Hello{APIKey: key}); f.Type != wsapi.TypeWelcome {
+			t.Fatalf("%s before the retirement: %s %s", name, f.Type, f.Payload)
+		}
+	}
+	plan, err := keys.RetirePlan(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := keys.Retire(ctx, plan.Revoke, "root"); err != nil {
+		t.Fatal(err)
+	}
+	if _, f := ts.hello(t, wsapi.Hello{APIKey: legacy}); f.Type != wsapi.TypeWelcome {
+		t.Fatalf("the old token after the retirement: %s %s", f.Type, f.Payload)
+	}
+	_, f := ts.hello(t, wsapi.Hello{APIKey: panel})
+	if e := wantError(t, f, wsapi.ErrCodeUnauthorized); e.Message != "invalid api key" {
+		t.Fatalf("the panel's key after the retirement: %q", e.Message)
+	}
 }
