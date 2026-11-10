@@ -140,6 +140,24 @@ test('resolve_contact on the attested reader always reads four pages, whatever m
   } finally { await f.close() }
 })
 
+test("resolve_contact fetches every key a page's names need in one request", async () => {
+  // The rows name a content key the archive does not serve, and the one
+  // name is under another key, as after a later name under a new key
+  // (DS50). The names open, and each page's prefetch is the only request
+  // for keys.
+  const f = await contentFixture({ rows: 1, contacts: 2200, contactRowKey: 98 })
+  try {
+    const reader = await createReader(contentConfig(f), await contentProvider(f))
+    const mark = f.state.requests.length
+    const named = await reader.resolveContact({ device_id: device, query: 'roberto' })
+    assert.deepEqual(named.candidates[0].names, [{ name: 'Archived Roberto', source: 'archive_full' }])
+    assert.equal(named.coverage.unavailable_names, 0)
+    const keys = f.since(mark).filter(call => call.includes('/keys'))
+    assert.equal(keys.length, 1)
+    assert.deepEqual(new URL(keys[0].split(' ')[1], 'http://localhost').searchParams.get('ids').split(',').sort(), ['98', '99'])
+  } finally { await f.close() }
+})
+
 test('history labels run in parallel, at most four at a time, in the metadata and local modes', async () => {
   const f = await contentFixture({ rows: 40, contacts: 1 })
   const directory = await mkdtemp(join(tmpdir(), 'wappie-content-'))

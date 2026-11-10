@@ -3,7 +3,7 @@ import { ArchiveClient, ArchiveError, auth, bytes, hpke, seal } from '@whatserve
 import { openContactPack, MAX_CONTACT_PACK_BYTES } from '@whatserver2/client/crypto/contactPack'
 import { contactCandidates, matchesText, excerpt } from './contacts.mjs'
 import { resolveRange } from './time.mjs'
-import { Opener } from '@whatserver2/client/api/opener'
+import { contactKeyIDs, Opener } from '@whatserver2/client/api/opener'
 import { loadCredential, LocalConfigError, readerMode, readPrivateFile } from './config.mjs'
 
 /** Contact pages of 500 a hosted-content resolve_contact reads per call, whatever matched. */
@@ -782,7 +782,9 @@ export async function createReader(config, provider) {
         let reply, afterKey = start
         for (let page = 0; page < pages; page++) {
           reply = await archiveRead('archive_contacts', () => api.listContacts(device_id, { limit: 500, afterKey }))
-          await opener?.prefetch(reply.contacts.map(contact => contact.content_key_id))
+          // Every key the page's names need, in one request: a contact's
+          // names need not share its content_key_id (DS50).
+          await opener?.prefetch(reply.contacts.flatMap(contactKeyIDs))
           contacts.push(...reply.contacts)
           // Without a next_key (which the client refuses anyway) a further page
           // would start from the first again, as would a next without one.

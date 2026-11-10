@@ -34,8 +34,10 @@ export const contactKey = n => `${String(n).padStart(6, '0')}@lid`
  * chat's page then holds the rows of every key of its set, as the archive's
  * sibling keys do. `state.contactsWithoutNextKey` makes a contacts page with
  * more after it leave out `next_key`. `token` replaces the bearer it accepts.
+ * `contactRowKey` is the content_key_id every contact row names, while its
+ * names stay under the served key, as after a later name under another key.
  */
-export async function contentFixture({ rows: rowCount = 120, contacts: contactCount = 2200, scanPage = 40, token: bearer = token } = {}) {
+export async function contentFixture({ rows: rowCount = 120, contacts: contactCount = 2200, scanPage = 40, token: bearer = token, contactRowKey } = {}) {
   const account = await hpke.generateKeyPair()
   const namespace = bytes.parseUUID(vector.tenant), deviceBytes = bytes.parseUUID(device)
   const rawKey = crypto.getRandomValues(new Uint8Array(32))
@@ -64,7 +66,7 @@ export async function contentFixture({ rows: rowCount = 120, contacts: contactCo
   }
   const contacts = []
   for (let n = 1; n <= contactCount; n++) {
-    const contact = { uid: uid(10_000 + n), contact_key: contactKey(n), contact_lid: contactKey(n), content_key_id: keyID }
+    const contact = { uid: uid(10_000 + n), contact_key: contactKey(n), contact_lid: contactKey(n), content_key_id: contactRowKey ?? keyID }
     if (n === 1) contact.full_name_sealed = await encrypt(contact.uid, seal.Kind.FullName, 'Archived Roberto')
     contacts.push(contact)
   }
