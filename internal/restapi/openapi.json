@@ -28,7 +28,7 @@
             }
           }
         },
-        "description": "Missing, invalid, expired or revoked bearer credential; disabled workspace.",
+        "description": "Missing, invalid, expired or revoked bearer credential; disabled workspace. Every refusal of a platform token, from the header's shape to the token's state, is this one answer after a fixed wait.",
         "headers": {
           "Cache-Control": {
             "description": "Archive responses must not be stored.",
@@ -53,7 +53,7 @@
             }
           }
         },
-        "description": "Active credential lacks current device permission/grant or API key scope/whitelist; access changed during the read.",
+        "description": "Active credential lacks current device permission/grant, API key scope/whitelist or platform token Read; access changed during the read. For a platform token, a missing device or message gets this answer too, never 404.",
         "headers": {
           "Cache-Control": {
             "description": "Archive responses must not be stored.",
@@ -1269,16 +1269,16 @@
     },
     "securitySchemes": {
       "BearerAuth": {
-        "description": "Opaque Wappie session token or API key in Authorization only. Scope read is sufficient; send and full include read. API key whitelist and service grants further restrict access. No tenant override is accepted.",
+        "description": "One credential in Authorization only: a Wappie session; a platform token (thc_, 64 characters, exactly one header, never trimmed by Wappie), only on an installation connected to The Happie Co with its tokens on; or an API key, on a self-hosted installation and for MCP. Scope read is sufficient; send and full include read. API key whitelist and service grants further restrict access. A platform token reads a device with an applied Read, a grant to its identity at the current epoch and the workspace's text switch on; it never sends or manages here. No tenant override is accepted.",
         "scheme": "bearer",
         "type": "http"
       }
     }
   },
   "info": {
-    "description": "Read-only encrypted archive, contact pages and device-wide event scans. Bearer credentials select a single workspace; clients must validate tenant_id and pin the installation origin. All authenticated data responses and errors use Cache-Control: no-store. Credentials and device permissions are revalidated on every request and immediately before response serialization. Unknown/repeated query parameters are rejected; query strings are limited to 8192 bytes. No sends, downloads, capture/resume commands, plaintext content, private keys or storage object keys are exposed. Existing login, WebSocket and media protocols are documented separately.",
+    "description": "Read-only encrypted archive, contact pages and device-wide event scans. Bearer credentials (a session, a platform token or an API key) select a single workspace; clients must validate tenant_id and pin the installation origin. All authenticated data responses and errors use Cache-Control: no-store. Credentials and device permissions are revalidated on every request and immediately before response serialization. Unknown/repeated query parameters are rejected; query strings are limited to 8192 bytes. No sends, downloads, capture/resume commands, plaintext content, private keys or storage object keys are exposed. With a workspace's attachments switch off, a platform token gets each row with an attachment as withheld=attachments, with no sealed body, payload, media key, thumbnail or file name. Existing login, WebSocket and media protocols are documented separately.",
     "title": "Wappie sealed archive REST API",
-    "version": "1.1.0"
+    "version": "1.2.0"
   },
   "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
   "openapi": "3.1.1",
@@ -1870,7 +1870,7 @@
     },
     "/v1/grants": {
       "get": {
-        "description": "Requires a person session or API key acting as an active service account. A bare operator API key receives 403. Returns only current-epoch grants the actor may read, intersected with the API key device whitelist. user_id is the grant recipient used by local cryptography, and archive_tenant_id remains immutable after a workspace transfer.",
+        "description": "Requires a person session, an API key acting as an active service account, or a platform token. A bare operator API key receives 403. Returns only current-epoch grants the actor may read, intersected with the API key device whitelist. For a platform token, its hidden identity's grants on the devices it reads now, user_id being that identity; a token with no reading key yet has no identity, so user_id is empty and grants too. user_id is the grant recipient used by local cryptography, and archive_tenant_id remains immutable after a workspace transfer.",
         "operationId": "listGrants",
         "parameters": [],
         "responses": {

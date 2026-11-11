@@ -89,6 +89,27 @@ covers importing such a bundle, [Claude Desktop through local stdio](../packages
 and [other hosts that run a stdio server](../packages/mcp/README.md#other-mcp-hosts);
 a new local connection uses its [manual configuration](../packages/mcp/README.md#manual-configuration).
 
+### Keys on an installation that takes the platform's tokens
+
+On an installation connected to The Happie Co, the platform's tokens
+replace Wappie's own general keys once its token mode is on, or once its
+keys were retired ([Wappie's own keys under tokens](contract.md#wappies-own-keys-under-tokens)).
+MCP keeps working:
+
+- A consent still gets its key. `apikeys.create` issues only that shape:
+  read, the chosen numbers, at most 30 minutes, named "MCP · …".
+- A setup's key works on REST, media and the socket only once its
+  connection names it. A consent records its connection first. The one
+  exception is a content or AI renewal's new key, which acts as a fresh
+  provisional account the same person invited: the reader lists its
+  grants before the renewal is recorded. This exception is pending the
+  owner's yes.
+- A connection's key is never retired. Old local MCP tokens are spared
+  too, with the service accounts they act as, so a bundle imported
+  earlier keeps reading until it is revoked in the console.
+- A new key in an old local token's shape that no consent issued is
+  retired with the general keys.
+
 ### Installing the hosted connector in one step
 
 Wappie runs two addresses. `https://api.wappie.thehappie.co/mcp` is the hosted

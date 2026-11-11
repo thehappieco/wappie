@@ -63,6 +63,8 @@ wsctl grant --device DEVICE_UUID --user USER_UUID --server https://archive.examp
 
 `ws REQUEST_TYPE --reply RESPONSE_TYPE --json FILE` exposes the public request/reply protocol for device controls, permissions and API-key administration. For example, `grant.revoke` with `{"device_id":"...","user_id":"..."}` replies with `device.readers`. Wire names and payloads are defined in `packages/client/src/api/protocol.ts` and `internal/wsapi/protocol.go`. Long-lived subscription/pairing streams are not implemented by this one-request command; existing operator CLI workflows remain available.
 
+An installation connected to The Happie Co may take the platform's API tokens in place of its own keys: its discovery then lists `tokens.platform.v1`. There `apikeys.create` issues only an MCP setup's key and refuses any other with `tokens_are_the_platforms`; make a token in the platform's console instead. `apikeys.list` and `apikeys.revoke` still work.
+
 ## Verification
 
 `npm --prefix packages/cli test` checks isolated sessions, private file permissions, no password/key persistence, same-origin requests and redirect rejection, WebSocket session authentication/cleanup, recovery output protection, and a real public-SDK password derivation/account-unwrapping exchange against a local HTTP fixture.

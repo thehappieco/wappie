@@ -38,6 +38,11 @@ export const TypeDeviceRename = 'device.rename'
 export const TypePair = 'pair'
 export const TypePairCancel = 'pair.cancel'
 export const TypeKeysList = 'apikeys.list'
+/**
+ * On an installation that takes The Happie Co's API tokens (discovery lists
+ * tokens.platform.v1), apikeys.create issues only an MCP setup's key and
+ * refuses any other with tokens_are_the_platforms.
+ */
 export const TypeKeyCreate = 'apikeys.create'
 export const TypeKeyRevoke = 'apikeys.revoke'
 export const TypeGrantAdd = 'grant.add'
@@ -103,7 +108,9 @@ export const TypePong = 'pong'
 
 /**
  * Hello authenticates the connection. Exactly one credential is expected: an
- * API key for a program, a session for a person who signed in.
+ * API key for a program, a session for a person who signed in. On an
+ * installation connected to The Happie Co with its tokens on, a program
+ * sends a platform token (thc_, 64 characters, as it is) in api_key.
  */
 export interface Hello {
   api_key?: string

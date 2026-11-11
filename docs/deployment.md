@@ -701,6 +701,7 @@ whatserverd tokens suspend [-note N] SELECTOR|TOKEN|-
 whatserverd tokens suspend -replay F
 whatserverd tokens lift SELECTOR|TOKEN|-
 whatserverd tokens list
+whatserverd tokens retire-keys -dry-run|-apply -confirm N
 ```
 
 Run them as the server's user, with the socket's group and its
@@ -756,6 +757,8 @@ sudo systemd-run --uid=wappie --gid=wappie --pipe --wait --collect \
   token](contract.md#the-token-feed)). It leaves the lines the restored
   database holds already, and those of stops retention let go before the
   snapshot. `-note` is kept in Wappie's database only.
+- `tokens retire-keys` revokes Wappie's own general keys once tokens are
+  on ([retiring Wappie's keys](#retiring-wappies-keys)).
 
 `whatserverd contract-secret seal|promote|unpromote|drop|reset|capabilities`
 is root's, at the owner's prompt only, and reads no `.env` and no database
@@ -795,6 +798,69 @@ workspace, and without a transport or a secret every sign-up is refused
 ([Rolling back below 0051](#rolling-back-below-0051)) brings back personal
 workspaces of Wappie's choosing. Removing the settings is safe only while
 the contract was never observed (`events_from` unset).
+
+### Retiring Wappie's keys
+
+Once tokens are on, the platform's tokens replace Wappie's own general
+keys. `whatserverd tokens retire-keys` revokes those keys and removes the
+standing service accounts they acted as
+([Wappie's own keys under tokens](contract.md#wappies-own-keys-under-tokens)).
+It is an operator's command, never a migration, since a self-hosted
+installation runs the same migrations. It refuses unless the contract is
+on and tokens are on, and writes nothing then.
+
+1. **A fresh backup**, which holds the stop record. There is no other way
+   back: the keys stay revoked through every down-step.
+2. **The dry run.** `whatserverd tokens retire-keys -dry-run`, as the
+   server's user, in the `systemd-run` form above. It writes nothing. It
+   prints every live key with its name and its creator's sub or address,
+   and every standing service account.
+   - The output goes to the owner only, through the platform in chat
+     (the platform's W46, Q4). Never write it to a file, a log or a
+     ticket, on either side. Do not redirect it or pipe it through
+     `tee`. `systemd-run --pipe` hands it to the terminal, not the
+     journal. Do not keep it after the apply.
+   - The command itself writes no file, and logs nothing in the dry run.
+3. **The owner's yes**, to the per-key list and the services to remove.
+4. **The apply**, while the token feed is quiet:
+   `whatserverd tokens retire-keys -apply -confirm N`, with `N` the dry
+   run's count of keys to revoke. A different count refuses, and nothing
+   is written: run the dry run again.
+   - It is one transaction (the platform's W46, Q3). It holds the
+     contract's and the token mode's rows, and every workspace's row,
+     until it commits. While it runs, no token page commits, so no
+     revocation, narrowing or stop from the platform applies, and a
+     capture waits too. On the pilot it takes under a second.
+   - It prints the same per-key list as the dry run, with `revoked` and
+     `kept`. Treat it as the dry run's: to the terminal only.
+   - Its log line, INFO "api keys retired", holds counts, key prefixes
+     and service names only, never a key's name or creator.
+5. **The checks.** Revoked keys get 401, and their sockets close within a
+   second. MCP keys and old local MCP tokens still work.
+
+**Run it again after M2L.** 12b's M2L revokes old local MCP tokens and
+may keep a token's service account while a number has no other human
+holder. A later run removes that account once one exists, but it finds
+the account by the revoked token only until the token is deleted, 13
+months after its revoke (ended API keys, above). So run `retire-keys`
+again after M2L ships, inside those 13 months (the platform's W46, Q5).
+A run that revokes nothing writes its row all the same.
+
+**What it keeps** (`key_retirements`, one row per apply): when it ran,
+the OS user who ran it, its counts, and a report. The report names each
+key it revoked by workspace, prefix, name, class, its creator's
+platform sub or email address, and the service it acted as. Those
+entries go 13 months after the run, with the ended keys themselves. The
+counts, who ran it, and each service account it kept (by user id, so a
+later run finds it) stay. A restore brings the entries back until the
+next hourly pass. 0053's down-step drops the table. The site's privacy
+text lists this beside the ended keys.
+
+**`-self-hosted`** on `whatserverd key` and `bootstrap` asserts that the
+installation is off the platform: the contract off, tokens off, and no
+retirement. It refuses otherwise, and never lets a key through that the
+narrowing refuses (the platform's W46, Q2). A self-hosted installation
+never turns tokens on, so its keys are never narrowed.
 
 ### Restoring with the contract
 

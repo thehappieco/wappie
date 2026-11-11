@@ -13,6 +13,12 @@ API version, capabilities and relative HTTP/WebSocket/media paths. Clients must
 reject incompatible versions before authenticating. The first version requires
 `product: wappie`, `api_version: 1` and `external-client.v1`.
 
+`tokens.platform.v1` says the installation takes The Happie Co's API tokens
+in place of its own keys: its token mode is on, or its keys were retired.
+It is computed per request. A console then sends people to the platform's
+API keys page. An external installation never says it, and keeps its own
+keys and its own key screen.
+
 ### Remote MCP connector
 
 An installation that serves the hosted MCP connector advertises `mcp.remote.v1`

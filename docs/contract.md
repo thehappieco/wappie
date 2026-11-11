@@ -813,6 +813,128 @@ plus 365 days, and the stops, never before the database's clock either):
   of a token Wappie keeps nothing of, 30 days after it was queued; a
   forgotten token's, as its record (above).
 
+## A token's requests
+
+A platform token works on REST, media and the socket's hello, in place of
+a key ([REST](rest-api.md#authentication-and-workspace-isolation)). MCP
+and AI routes never take one.
+
+**One verifier.** A request is a token's when one of its `Authorization`
+values, or the hello's `api_key`, holds `thc_` in any case, and it is not
+a well-formed session. Its text comes only from the kit's reading of the
+header. It is never trimmed, and never tried as a session or a key. Every
+refusal, from the header's shape to the token's state, is the same answer:
+REST's and media's 401, after a fixed 250 ms wait, and the hello's one
+refusal.
+Logs name the selector alone, never the token.
+
+**A live token**, read in one statement on every request and never from a
+cache:
+
+- not revoked, expired or unlisted, here or in what Wappie keeps of it;
+- the token mode on and caught up, and the contract not off, so `contract
+  tokens off` and `contract mode off` refuse every token at once in every
+  process;
+- no stop of Wappie's own: an operator's, `apply_failed`,
+  `creator_disabled_here` (the creator's local account is disabled), or
+  `local_rule` (the creator is not an active owner or admin of the
+  workspace here; a personal workspace's person is its owner). These two
+  lift when their rule does, and the acknowledgement reports them in
+  `suspended`;
+- the belt: the creator's stored account document still lists the
+  workspace, and its `disabled_at` and `credentials_revoked_at` are not
+  after the token's `created_at`, by the platform's times with no margin.
+  It holds at observe, and stops tokens only;
+- the workspace active.
+
+**What each act needs**, on a number of the token's workspace, not
+deleted, named by its full id, while the stored workspace document does
+not say closed (`workspace_closed`, at observe too):
+
+| Act | Needs |
+|---|---|
+| read, and any view of a number | an applied Read, a grant to the token's identity at the number's current epoch, and the text switch on; the attachments switch too to fetch an attachment |
+| send | an applied Send, and a token feed under an hour old |
+| manage, pause and resume | an applied Manage, and a token feed under an hour old |
+
+A refused act counts in the usage report with its code: `no_permission`,
+`no_grant`, `switch_off`, `stale_feed` or `workspace_closed`. It counts
+only on a number of the token's workspace, so a made-up id adds nothing.
+
+**The switches** are read per request from the workspace's own columns
+(`tenants.mcp_text`, `tenants.mcp_media`), else `WS_MCP_WORKSPACE_DEFAULT`,
+and never on for a workspace in `WS_MCP_DENY_TENANTS`. Tokens never use
+MCP's own switches. A change applies to the next request, and to an open
+socket within a second.
+
+- Text off refuses every Read, metadata included.
+- Attachments off refuses an attachment's fetch, `media.retry` and
+  `media.expired`. Rows that carry an attachment still come, with
+  `withheld: "attachments"` and no sealed body, payload, media key,
+  thumbnail or file name. A media row's caption goes with it; a text
+  row's link preview stays. An upload is a send, which the switch never
+  refuses.
+
+**Numbers.** A token never gets the prefix lookup. A number that does
+not exist, another workspace's, and one it may not use get one answer,
+with no id. Listings show only the numbers it reads, so a token with
+only Send or Manage lists nothing and works by the number's id, which the
+console shows. The reply to its act on a number it does not read carries
+only `{device_id, ok}` and the field the act changed.
+
+**Frames a token never sends**: pairing in every form, calls,
+`users.list`, `reader.mode`, `reproject.list` and `reproject.apply`
+(reprojection reseals a protobuf the caller supplies), moving, deleting
+and recovering numbers, `device.notice.seen`, `apikeys.*`, `grant.*` and
+the grant page's frames. Each answers `not_authorized`, and `welcome`'s
+features leave them out.
+
+**An open socket** checks its token every second and before each write.
+A failed check or a changed version closes it, and queued frames are not
+written. A narrowing that leaves the version alone (a switch, the belt, a
+key rotation, an expiry) empties the token's sets, so the next frame for
+those numbers is refused.
+
+## Wappie's own keys under tokens
+
+While the token mode is on, or once `whatserverd tokens retire-keys
+-apply` has run (a `key_retirements` row, which stays), Wappie issues no
+general key. Discovery then lists `tokens.platform.v1`.
+
+- `apikeys.create` issues only an MCP setup's key (read, chosen numbers,
+  at most 30 minutes, named "MCP · …", acting as no account or as a fresh
+  provisional one). Any other shape is refused `tokens_are_the_platforms`.
+- `whatserverd key` and `bootstrap` refuse. Their `-self-hosted` flag only
+  asserts that the installation is off the platform (the contract off,
+  tokens off, no retirement), and refuses otherwise. It never lets a key
+  through (the platform's answer W46, Q2).
+- A standing service account's invitation is refused `409
+  tokens_are_the_platforms`, issued or redeemed.
+- A setup's key works on REST, media and the hello only once a connection
+  names it. The one exception is a key acting as a fresh provisional
+  account the same person invited, which no connection names yet: a
+  content or AI renewal's new key, which the reader uses before the
+  renewal is recorded. This exception is pending the owner's yes
+  ([decisions](decisions.md#platform-tokens-in-wappie-step-7)).
+
+```
+whatserverd tokens retire-keys -dry-run|-apply -confirm N
+```
+
+It refuses unless the contract is on and tokens are on. `-dry-run` prints,
+per workspace, every live key (prefix, revoke or keep, class, origin,
+scope, name, the service it acts as, its creator, its last use) and every
+standing service account (remove, or keep and why), and writes nothing.
+`-apply -confirm N` revokes the keys of class `rest` and `cli`, and those
+in an MCP shape that no consent issued. It removes each standing service
+account a retired key acted as, where every number it holds a key of
+keeps another holder who is human. Then it records the run. `N` must be the dry run's count of keys
+to revoke, or nothing is written. A connection's key, a setup in flight
+and an old local MCP token are spared. Run again, it revokes nothing, and
+removes a service kept before that now has a human holder. The apply
+holds the modes and every workspace's row until it commits, so the token
+feed and captures wait for it ([the runbook](deployment.md#retiring-wappies-keys)).
+
 ## The grant page
 
 An owner or admin gives a platform token the key of a number on Wappie's
@@ -889,7 +1011,8 @@ again for a minute.
   for a record Wappie could not apply (`apply_failed`) waits for the feed,
   which lifts it once a later version applies.
 
-**The archive key's fingerprint** (DS49, which `grant.add` shares). After
+**The archive key's fingerprint** (DS49, wappie#75, not on main yet;
+`grant.add` takes the same check when it merges). After
 `reset-archive -keep-devices` and `device-key`, a number's new archive key
 takes epoch 1 again. So a grant also names the archive key it was sealed
 for, by its fingerprint: the lowercase hex of the SHA-256 of the key's 32
@@ -903,17 +1026,19 @@ raw X25519 public bytes (`store.ArchiveKeyFingerprint`).
   through a key the reset deleted, cached before it.
 - The grant write compares the fingerprint with the stored key under the
   workspace's row, in its own transaction. A grant for another key, or
-  for a number with no key, is refused `conflict`, as `grant.add` is, and
-  writes nothing. The reset deleted every grant, so the token reads
-  nothing (`no_grant`) until someone seals the new key.
+  for a number with no key, is refused `conflict` and writes nothing, as
+  `grant.add` will be under DS49. The reset deleted every grant, so the
+  token reads nothing (`no_grant`) until someone seals the new key.
 
 `token.grant` is also refused `not_found` (no such token in this
-workspace, a token with no reading key yet, or the number left the
-workspace), `token_not_live`, `reading_key_changed` (a record brought
-another reading key than the pin), `token_no_read` (no applied Read on the
-number), `conflict` (another epoch), `not_authorized` (the sealer does
+workspace, or a token with no reading key yet), `token_not_live`,
+`reading_key_changed` (a record brought another reading key than the
+pin), `token_no_read` (no applied Read on the number), `conflict`
+(another epoch), `not_authorized` (the sealer does
 not read the number now), `step_up_required`, and the freshness check's
-`memberships_unconfirmed`.
+`memberships_unconfirmed`. A number deleted or moved out of the
+workspace answers `token_no_read`: the deletion and the move delete the
+token's perms on it in the same write.
 
 **With tokens off,** the three frames are still listed in `welcome`'s
 features: they are this build's. `token.waiting` answers an empty list,

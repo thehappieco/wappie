@@ -2598,7 +2598,8 @@ installation ships with them off.
 
 The token grant write reads the number's archive key under the
 workspace's row (step 3), and compares the key the grant names with it
-(`archiveKeyIsTx`, DS49's check, which `grant.add` shares). No lock is
+(`archiveKeyIsTx`). DS49 (wappie#75, not on main yet) gives `grant.add`
+the same check; step 7's PR 11 waits for main to carry it. No lock is
 added: every write to `device_archive_keys` takes that row as well, so
 the key cannot change before the grant commits. What makes it the same
 row: 0036's `archive_owner_lock` locks the `tenants` row named by the
@@ -2740,6 +2741,30 @@ from the command feed also wakes the token follower, which no notice
 reaches from there: its long-poll in flight would otherwise ask from the
 old cursor for up to its 25 seconds.
 
+**How Wappie reads decision 0053 for a token's requests**
+([a token's requests](contract.md#a-tokens-requests)):
+
+- The text switch off refuses every Read, metadata included. That is the
+  safe reading of "switches on outside access to content". A
+  metadata-only Read can come later.
+- The attachments switch off withholds the sealed content of every row
+  that carries an attachment (`withheld: "attachments"`), caption
+  included. That content holds the media key, the CDN path and a legible
+  thumbnail, with which a token could fetch the file around the switch. A
+  text row's link preview stays the text's.
+- The switches are read from the database on every request, never from
+  MCP's in-memory copy, so no start can leave a workspace on the default.
+- A record that brings another reading key than the pin keeps the grants
+  sealed to the pinned key, refuses new ones, and raises an ERROR.
+- A token with only Send or Manage lists no number, and learns no number's
+  id or existence: it works by the id the console shows.
+- A token never reprojects: reprojection reseals a protobuf the caller
+  supplies, and is an operator's repair tool.
+- `workspace_closed` applies at observe too: the token is the
+  platform's.
+- A token a reset's pass finds unlisted is refused for good, here.
+- With the contract off, every token is refused (above).
+
 **Wappie's own keys give way to the platform's tokens.** Keys are narrowed
 while the token mode is on, or once `whatserverd tokens retire-keys -apply`
 has run (a `key_retirements` row, which stays). Then Wappie issues no
@@ -2765,6 +2790,10 @@ renewal's new key: the enclave's reader lists its grants with it (`GET
 /v1/grants`) before the renewal is recorded and the ledger names the key.
 A key that acts as an account a connection names is refused too, and
 while keys are narrowed no such key is issued.
+
+This exception is built, and pending the owner's yes: it is an auth
+change, so it needs his answer under 0049 (the platform's W46, Q1). Until
+then it stays as described here.
 
 That is the limit of the plan's L8 guard. An admin can still mint a
 30-minute read key acting as a provisional account of their own, and use
@@ -2802,6 +2831,15 @@ turns off under it. Then it takes each workspace's row FOR UPDATE, in id
 order (step 3), and holds them to the commit. Inserts with a foreign key
 to those workspaces, a capture's included, wait that fraction of a second.
 One transaction checks `-confirm` once and writes one row per apply.
+
+The share lock on `contract_token_state` also holds back the token feed.
+A token page's commit and `ApplyTokenRecord` take that row FOR UPDATE
+(step 2), so no revocation, narrowing or stop from the platform applies
+until the apply commits. Decision 0053 asks for a revocation within a
+second. There is no deadlock, and on the pilot the apply takes under a
+second, so the platform kept the one transaction (W46, Q3). The runbook
+says to run the apply while the token feed is quiet
+([retiring Wappie's keys](deployment.md#retiring-wappies-keys)).
 
 **Ended API keys go 13 months after their end** (the owner's yes of
 2026-11-04), on every installation: an ended key serves nothing after
