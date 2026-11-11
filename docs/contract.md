@@ -819,13 +819,20 @@ A platform token works on REST, media and the socket's hello, in place of
 a key ([REST](rest-api.md#authentication-and-workspace-isolation)). MCP
 and AI routes never take one.
 
-**One verifier.** A request is a token's when one of its `Authorization`
-values, or the hello's `api_key`, holds `thc_` in any case, and it is not
-a well-formed session. Its text comes only from the kit's reading of the
-header. It is never trimmed, and never tried as a session or a key. Every
-refusal, from the header's shape to the token's state, is the same answer:
-REST's and media's 401, after a fixed 250 ms wait, and the hello's one
-refusal.
+**One verifier.** A REST or media request is a token's when one of its
+`Authorization` values holds `thc_` in any case. The one exception is a
+single value of the form `Bearer <text>` whose text is a well-formed
+session or key: that request keeps the session's or the key's path. A
+hello is a token's when its `api_key` or its `session` holds `thc_` and
+is neither a well-formed session nor a well-formed key. A token sent
+beside a session is refused. The token's text comes only from the kit's
+reading of the header. It is never trimmed, and never tried as a session
+or a key. At the request's start, every refusal, from the header's shape
+to the token's state, is the same answer: REST's and media's 401, after a
+fixed 250 ms wait, and the hello's one refusal. A REST answer checks the
+token once more before it is written: a token no longer live then gets
+401, and one whose version changed gets 403 `not_authorized` ("workspace
+access changed; retry the request"), both with no wait.
 Logs name the selector alone, never the token.
 
 **A live token**, read in one statement on every request and never from a
@@ -891,9 +898,10 @@ features leave them out.
 
 **An open socket** checks its token every second and before each write.
 A failed check or a changed version closes it, and queued frames are not
-written. A narrowing that leaves the version alone (a switch, the belt, a
-key rotation, an expiry) empties the token's sets, so the next frame for
-those numbers is refused.
+written. The belt, an expiry, a revocation and a stop fail the check. A
+narrowing that leaves the version alone (a switch, a key rotation, the
+workspace closed, or a stale feed for send and manage) empties the
+token's sets, so the next frame for those numbers is refused.
 
 ## Wappie's own keys under tokens
 
@@ -932,8 +940,10 @@ keeps another holder who is human. Then it records the run. `N` must be the dry 
 to revoke, or nothing is written. A connection's key, a setup in flight
 and an old local MCP token are spared. Run again, it revokes nothing, and
 removes a service kept before that now has a human holder. The apply
-holds the modes and every workspace's row until it commits, so the token
-feed and captures wait for it ([the runbook](deployment.md#retiring-wappies-keys)).
+holds the modes and every workspace's row until it commits. The token
+feed, the account feed, the settings feed, the `contract mode` and
+`contract tokens` switches, and captures wait for it, so run it while the
+contract's feeds are quiet ([the runbook](deployment.md#retiring-wappies-keys)).
 
 ## The grant page
 
@@ -1038,7 +1048,9 @@ pin), `token_no_read` (no applied Read on the number), `conflict`
 not read the number now), `step_up_required`, and the freshness check's
 `memberships_unconfirmed`. A number deleted or moved out of the
 workspace answers `token_no_read`: the deletion and the move delete the
-token's perms on it in the same write.
+token's perms on it in the same write. `not_found` with "this number is
+no longer in this workspace" is kept for a deleted number that still has
+a token's applied Read, which only a row edited by hand leaves.
 
 **With tokens off,** the three frames are still listed in `welcome`'s
 features: they are this build's. `token.waiting` answers an empty list,

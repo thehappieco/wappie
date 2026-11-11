@@ -28,7 +28,7 @@
             }
           }
         },
-        "description": "Missing, invalid, expired or revoked bearer credential; disabled workspace. Every refusal of a platform token, from the header's shape to the token's state, is this one answer after a fixed wait.",
+        "description": "Missing, invalid, expired or revoked bearer credential; disabled workspace. At the request's start, every refusal of a platform token, from the header's shape to the token's state, is this one answer after a fixed wait. A token that is no longer live at the answer's last check gets it with no wait.",
         "headers": {
           "Cache-Control": {
             "description": "Archive responses must not be stored.",

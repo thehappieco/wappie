@@ -76,9 +76,13 @@ The authorization rules are shared with `internal/access`:
   name. A media row's caption goes with it. A text row's link preview
   stays. A chat's newest message is withheld the same way
   (`last_withheld`).
-- Every refusal of a token, from the header's shape to the token's state,
-  is the same `401 unauthorized` with the body "credential expired, revoked
-  or invalid", after a fixed wait.
+- At the request's start, every refusal of a token, from the header's
+  shape to the token's state, is the same `401 unauthorized` with the body
+  "credential expired, revoked or invalid", after a fixed wait. The answer
+  checks the token again before it is written: a token no longer live
+  then gets that 401, and one whose access changed gets `403
+  not_authorized` ("workspace access changed; retry the request"), both
+  with no wait.
 
 Suspension of capture for storage and a paused device do not block archive reads.
 A disabled account, revoked session or suspended workspace does block access.

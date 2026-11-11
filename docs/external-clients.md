@@ -15,7 +15,7 @@ reject incompatible versions before authenticating. The first version requires
 
 `tokens.platform.v1` says the installation takes The Happie Co's API tokens
 in place of its own keys: its token mode is on, or its keys were retired.
-It is computed per request. A console then sends people to the platform's
+It is read at most every 5 seconds. A console then sends people to the platform's
 API keys page. An external installation never says it, and keeps its own
 keys and its own key screen.
 
