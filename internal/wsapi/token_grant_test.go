@@ -112,6 +112,7 @@ func waitingOf(t *testing.T, f wsapi.Frame) []string {
 // first when the last signed GET is over a minute old; token.grant writes
 // the grant and answers the readers, the token apart, and the token then
 // reads the number and waits no more. Only an owner or admin uses them.
+// A grant.revoke of the token's identity is not_found.
 func TestTheGrantPagesFrames(t *testing.T) {
 	ts, records := grantSocket(t)
 	w := ts.w
@@ -208,6 +209,12 @@ func TestTheGrantPagesFrames(t *testing.T) {
 	conn := ts.open(t, tok)
 	if f := on(t, conn, wsapi.TypeChatsList, wsapi.DeviceRef{DeviceID: a.String()}); f.Type != wsapi.TypeChats {
 		t.Fatalf("the token's read after its grant: %s %s", f.Type, f.Payload)
+	}
+	// grant.revoke never takes a token's grant: its identity is no person
+	// (DS48 stops before it), and the token still reads.
+	wantError(t, on(t, owner, wsapi.TypeGrantRevoke, wsapi.GrantRevoke{DeviceID: a.String(), UserID: identity.String()}), wsapi.ErrCodeNotFound)
+	if f := on(t, conn, wsapi.TypeChatsList, wsapi.DeviceRef{DeviceID: a.String()}); f.Type != wsapi.TypeChats {
+		t.Fatalf("the token's read after a refused grant.revoke: %s %s", f.Type, f.Payload)
 	}
 
 	// The refusals.

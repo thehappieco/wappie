@@ -546,6 +546,12 @@ func (s *session) handleGrantRevoke(ctx context.Context, f Frame) {
 			s.replyError(f.ReqID, ErrCodeNotAuthorized, "this needs an active owner or admin of an active workspace")
 			return
 		}
+		// A platform token's identity: no person, and no one's to revoke
+		// here. Its grants follow its record.
+		if errors.Is(err, store.ErrNotFound) {
+			s.replyError(f.ReqID, ErrCodeNotFound, "no such account")
+			return
+		}
 		s.log.Error("revoking a grant failed", "device", dev.ID, "error", err)
 		s.replyError(f.ReqID, ErrCodeInternal, "could not revoke the grant")
 		return
