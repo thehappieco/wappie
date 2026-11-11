@@ -611,7 +611,7 @@ func (w settingsWorld) consenter(t *testing.T) (uuid.UUID, func()) {
 		t.Fatal(err)
 	}
 	reads := func(user uuid.UUID) {
-		if err := keys.PutGrant(ctx, Grant{TenantID: w.ws, DeviceID: w.device, UserID: user, Epoch: 1, SealedDSK: []byte("grant")}, &owner); err != nil {
+		if err := keys.PutGrant(ctx, Grant{TenantID: w.ws, DeviceID: w.device, UserID: user, Epoch: 1, SealedDSK: []byte("grant"), Fingerprint: grantFingerprint(t, keys, w.ws, w.device, 1)}, &owner); err != nil { //nolint:contextcheck // the fingerprint is read on the test's own context
 			t.Fatal(err)
 		}
 		if err := users.SetDevicePermission(ctx, w.ws, owner, DevicePermission{DeviceID: w.device, UserID: user, Read: true}); err != nil {

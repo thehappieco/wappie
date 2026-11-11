@@ -94,10 +94,10 @@ func resetArchive(args []string) error {
 	fs := flag.NewFlagSet("reset-archive", flag.ContinueOnError)
 	tenantArg := fs.String("tenant", "", "tenant id (required)")
 	confirm := fs.Bool("yes-destroy-everything", false,
-		"required; there is no undo. Stop wappie-api first: the reset holds the workspace's lock for its whole run")
+		"required; there is no undo. The reset holds the workspace's lock for its whole run, so the workspace's ingest waits meanwhile")
 	keepDevices := fs.Bool("keep-devices", false,
 		"leave the device rows in place; their sessions stay paired, with no archive key until device-key. "+
-			"A running server keeps sealing to the old key until it restarts")
+			"A running server hears the reset and device-key, and needs no restart")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -145,7 +145,7 @@ contacts     %d
 media        %d
 devices      %d
 objects      %d removed from storage, %d failed
-connections  %d ended, access_lost (wappie-api tells their readers once it runs)
+connections  %d ended, access_lost (wappie-api tells their readers)
 
 An object that failed to delete is ciphertext whose keys no longer exist:
 useless to anyone, but still occupying space. Run again to retry, or empty the
@@ -157,32 +157,26 @@ tenant's prefix in the bucket yourself.
 	return nil
 }
 
-// resetNext is what the reset prints after its counts. wappie-api stops
-// for any reset: the reset holds the workspace's lock (the tenants row)
-// for its whole run, which ingest needs for every message, and a running
-// server keeps what it loaded for each number. With the numbers kept,
-// device-key gives each a new key before the start: a running server
-// caches each number's key (ingest's pipelineFor), and nothing tells it
-// the key changed.
+// resetNext is what the reset prints after its counts. A running server
+// heard the reset at its commit, and hears each device-key at its own, so
+// nothing restarts (DS49). With the numbers kept, device-key gives each a
+// new key; without them, the numbers are paired again.
 func resetNext(keepDevices bool) string {
-	const stop = `
-Next, in this order:
-
-  1. Stop wappie-api. If it ran during the reset, stop it now.
-  2. Reset (done).
-`
 	if keepDevices {
-		return stop + `  3. Run "whatserverd device-key -device <id> -grant <email>" for each number.
-  4. Start wappie-api.
+		return `
+Next, run "whatserverd device-key -device <id> -grant <email>" for each number.
+Until then a message to the number is not stored: it has no key.
 
-A running server keeps sealing to the old key until it restarts.
+A running wappie-api heard the reset and hears each device-key. It seals to the
+new key from the next message on, and needs no restart.
 `
 	}
-	return stop + `  3. Start wappie-api.
-  4. Pair each number again. Pairing makes its archive key and seals it to the
-     accounts that may read it, so there is nothing to write down. An account
-     to pair with, if there is none: "whatserverd invite", then sign up in the
-     browser.
+	return `
+Next, pair each number again. Pairing makes its archive key and seals it to the
+accounts that may read it, so there is nothing to write down. An account to
+pair with, if there is none: "whatserverd invite", then sign up in the browser.
+
+A running wappie-api heard the reset, and needs no restart.
 `
 }
 

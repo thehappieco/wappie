@@ -3,7 +3,12 @@ import assert from 'node:assert/strict'
 import { mkdtemp, readFile, stat, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { serverOrigin, sessionPath, saveSession, loadSession, execute, request } from '../lib.mjs'
+import { serverOrigin, sessionPath, saveSession, loadSession, execute, request, archiveKeyFingerprint, publicKeyFingerprint } from '../lib.mjs'
+
+// The server's fingerprint vectors (DS49), which the core's Go tests and the
+// cloud web's tests read too.
+const fingerprints = JSON.parse(await readFile(new URL('../../../internal/store/testdata/archive-key-fingerprints.json', import.meta.url), 'utf8')).vectors
+const hex = value => Uint8Array.from(Buffer.from(value, 'hex'))
 
 const signed = { token: 'opaque-session', email: 'owner@example.test', tenantID: 'workspace', userID: 'owner', expiresAt: new Date(Date.now() + 60_000), accountKey: 'private-never-persist', password: 'password-never-persist' }
 async function fixture(t) { const dir = await mkdtemp(join(tmpdir(), 'wsctl-')); t.after(() => rm(dir, { recursive: true, force: true })); return dir }
@@ -83,6 +88,15 @@ test('real public SDK login derives proof locally and opens account key', async 
  keys.privateKey.fill(0)
 })
 
+test('names an archive key by the fingerprint the server computes', () => {
+ assert.ok(fingerprints.length >= 4 && fingerprints.some(v => v.private_key))
+ for (const v of fingerprints) {
+  assert.equal(publicKeyFingerprint(hex(v.public_key)), v.fingerprint, v.name)
+  if (v.private_key) assert.equal(archiveKeyFingerprint(hex(v.private_key)), v.fingerprint, v.name)
+ }
+ assert.throws(() => archiveKeyFingerprint(new Uint8Array(31)))
+})
+const alice = fingerprints.find(v => v.name === 'RFC 7748 Alice')
 test('grant seals only to verified workspace recipient and sends no raw key', async t => {
  const dir = await fixture(t); await saveSession(dir, 'https://one.test', signed)
  const sent = []; let closed = false
@@ -91,14 +105,16 @@ test('grant seals only to verified workspace recipient and sends no raw key', as
    sent.push({ type, payload })
    return type === 'users.list' ? { users: [{ id: 'recipient', public_key: 'verified-key' }] } : { readers: [] }
   }, close: () => { closed = true } }) },
-  auth: { withDeviceKey: async (input, use) => use(new Uint8Array([99]), 7) },
+  // The client the reader measures now passes no fingerprint: wsctl names
+  // the key it opened itself.
+  auth: { withDeviceKey: async (input, use) => use(hex(alice.private_key), 7, undefined) },
   bytes: { parseUUID: value => value, fromBase64: value => value, toBase64: () => 'sealed-envelope' },
   seal: { Kind: { DeviceGrant: 4 }, grantRow: async () => 'bound-row', sealDirect: async (key, kind, tenant, row, epoch, raw) => {
-   assert.equal(key, 'verified-key'); assert.equal(tenant, signed.tenantID); assert.equal(epoch, 7); assert.equal(raw[0], 99)
+   assert.equal(key, 'verified-key'); assert.equal(tenant, signed.tenantID); assert.equal(epoch, 7); assert.equal(Buffer.from(raw).toString('hex'), alice.private_key)
    return new Uint8Array([1])
   } },
  }
  await execute(['grant', '--server', 'https://one.test', '--state-dir', dir, '--device', 'device', '--user', 'recipient'], { secret: async () => 'password', print: () => {} }, sdk)
- assert.deepEqual(sent[1], { type: 'grant.add', payload: { device_id: 'device', user_id: 'recipient', epoch: 7, sealed_dsk: 'sealed-envelope' } })
+ assert.deepEqual(sent[1], { type: 'grant.add', payload: { device_id: 'device', user_id: 'recipient', epoch: 7, sealed_dsk: 'sealed-envelope', fingerprint: alice.fingerprint } })
  assert.equal(closed, true)
 })

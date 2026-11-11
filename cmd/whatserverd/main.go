@@ -658,6 +658,9 @@ func serve() error {
 	// A deletion in any process tells this one at its commit, so it lets go
 	// of the number before the next tick.
 	go a.listenExcluded(ctx)
+	// So do a reset and a new archive key, so ingest seals to the number's
+	// key as it is now, with no restart (DS49).
+	go a.listenArchiveKeys(ctx)
 
 	// The attachment queue lives in the database, so this starts whether or
 	// not anything is waiting and picks up whatever a previous process left.

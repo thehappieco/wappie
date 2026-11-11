@@ -228,17 +228,19 @@ See [moving a number from Team to Personal](device-personal-transfer.md): a numb
 
 ## Resetting the archive
 
-`whatserverd reset-archive -tenant <id> -yes-destroy-everything` removes everything sealed for a workspace: messages, chats, contacts, attachments, archive keys and grants. There is no undo. It refuses while a deleted number waits for its purge ([the purge](#the-purge)). Before its deletes it ends every live assistant connection and AI integration of the workspace, `access_lost` ([DS48](decisions.md)); people connect them again afterwards, and `wappie-api` tells their readers once it runs.
+`whatserverd reset-archive -tenant <id> -yes-destroy-everything` removes everything sealed for a workspace: messages, chats, contacts, attachments, archive keys and grants. There is no undo. It refuses while a deleted number waits for its purge ([the purge](#the-purge)). Before its deletes it ends every live assistant connection and AI integration of the workspace, `access_lost` ([DS48](decisions.md)); people connect them again afterwards, and `wappie-api` tells their readers.
 
-Stop `wappie-api` before any reset, and start it after. The reset holds the workspace's lock to its end, and ingest needs that lock for every message. A running server also keeps what it loaded for each number until it restarts.
+A running `wappie-api` needs no restart. The reset and each `device-key` tell every process at their commit, and a running server drops what it loaded for those numbers, so it seals to the number's new key from the next message on ([DS49](decisions.md)). Each new content key, and each write of what ingest sealed, is also checked against the number's key, so a message in flight during the reset is refused rather than stored where nobody can open it. Before DS49 a running server kept sealing to the old key until it restarted, so this runbook stopped `wappie-api` for every reset; that is no longer needed.
 
-Without `-keep-devices` the reset removes the numbers too. Start `wappie-api` again, then pair each number again, which makes its new key.
+The reset holds the workspace's lock to its end, and ingest needs that lock for every message, so the workspace's ingest waits while the reset runs. On a large archive, stop `wappie-api` before the reset and start it after; the steps do not change.
 
-With `-keep-devices` the numbers stay paired, with no archive key. A running server keeps the key it loaded for each number, and nothing tells it the key changed. After the reset, and after `device-key`, it keeps sealing to the old key until it restarts. So a restart is required. Run, in this order:
+Without `-keep-devices` the reset removes the numbers too. Pair each number again, which makes its new key.
 
-1. Stop `wappie-api`.
-2. `whatserverd reset-archive -tenant <id> -keep-devices -yes-destroy-everything`.
-3. `whatserverd device-key -device <id> -grant <email>` for each number.
-4. Start `wappie-api`.
+With `-keep-devices` the numbers stay paired, with no archive key, until `device-key` gives each a new one. A message that arrives in between is not stored: the number has no key. Run, in this order:
 
-`device-key` refuses an assistant connection's own account, before it makes the key. The reset prints these steps, and `device-key` the restart.
+1. `whatserverd reset-archive -tenant <id> -keep-devices -yes-destroy-everything`.
+2. `whatserverd device-key -device <id> -grant <email>` for each number.
+
+`device-key` refuses an assistant connection's own account, before it makes the key. The reset prints these steps.
+
+The new key takes epoch 1 again, so a grant names its key by a fingerprint, not by the epoch alone. A browser that read its grants before the reset has its next grant refused with `conflict`, and reads them again ([DS49](decisions.md)).

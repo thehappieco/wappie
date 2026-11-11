@@ -98,8 +98,12 @@ func (m *Messages) Unsupported(ctx context.Context, tenant, device uuid.UUID,
 // The type is narrowed, never widened: a row is only rewritten when it stops
 // being unsupported. Guarded in the WHERE so a concurrent ingest that had
 // already reclassified it wins, and so a second run is a no-op.
+//
+// archiveKey is the archive key keyID was sealed to, as for
+// InsertMessage.ArchiveKey: the row is rewritten only while that content
+// key is stored under it (DS49). nil checks nothing.
 func (m *Messages) Reproject(ctx context.Context, tenant, device uuid.UUID, uid uuid.UUID,
-	typ domain.Type, keyID uint32, body, payload, raw []byte, media *InsertMedia) error {
+	typ domain.Type, keyID uint32, archiveKey []byte, body, payload, raw []byte, media *InsertMedia) error {
 	if typ == domain.TypeUnsupported {
 		return fmt.Errorf("store: refusing to reproject %s back to unsupported", uid)
 	}
@@ -120,6 +124,10 @@ func (m *Messages) Reproject(ctx context.Context, tenant, device uuid.UUID, uid 
 		}
 		if tag.RowsAffected() == 0 {
 			return nil
+		}
+		// The update's trigger took the workspace's row.
+		if err := contentKeyIsTx(ctx, tx, device, keyID, archiveKey); err != nil {
+			return err
 		}
 
 		// The chat list carries a projection of its newest message, and the

@@ -117,7 +117,7 @@ func run() error {
 		}
 		if err := keys.PutGrant(ctx, store.Grant{
 			TenantID: tenant, DeviceID: deviceID, UserID: u.ID,
-			Epoch: epoch, SealedDSK: sealed,
+			Epoch: epoch, SealedDSK: sealed, Fingerprint: store.ArchiveKeyFingerprint(pub.Bytes()),
 		}, nil); err != nil {
 			return err
 		}
@@ -361,7 +361,7 @@ func seedContacts(ctx context.Context, s *seal.Sealer, contacts *store.Contacts,
 			return err
 		}
 		if err := contacts.SetAvatar(ctx, tenant, device, p.key, "demo",
-			sealedPic[seal.KindAvatar], keyID); err != nil {
+			sealedPic[seal.KindAvatar], keyID, nil); err != nil {
 			return err
 		}
 	}

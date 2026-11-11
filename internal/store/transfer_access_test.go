@@ -76,7 +76,7 @@ func (w *transferWorld) permit(t *testing.T, user uuid.UUID, p store.DevicePermi
 func (w *transferWorld) grant(t *testing.T, user uuid.UUID, epoch uint16) {
 	t.Helper()
 	if err := w.grants.PutGrant(context.Background(), store.Grant{TenantID: w.tenant, DeviceID: w.device, UserID: user, Epoch: epoch,
-		SealedDSK: []byte("grant")}, &w.owner); err != nil {
+		SealedDSK: []byte("grant"), Fingerprint: grantFingerprint(t, w.grants, w.tenant, w.device, epoch)}, &w.owner); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -559,7 +559,7 @@ func TestTransferMovedOutWithoutRead(t *testing.T) {
 	if err := store.NewUsers(a.pool).SetDevicePermission(ctx, a.tenant, owner, store.DevicePermission{DeviceID: a.device, UserID: owner, Manage: true}); err != nil {
 		t.Fatal(err)
 	}
-	if err := keys.PutGrant(ctx, store.Grant{TenantID: a.tenant, DeviceID: a.device, UserID: owner, Epoch: 1, SealedDSK: []byte("g")}, &owner); err != nil {
+	if err := keys.PutGrant(ctx, store.Grant{TenantID: a.tenant, DeviceID: a.device, UserID: owner, Epoch: 1, SealedDSK: []byte("g"), Fingerprint: grantFingerprint(t, keys, a.tenant, a.device, 1)}, &owner); err != nil {
 		t.Fatal(err)
 	}
 	devices := store.NewDevices(a.pool)
@@ -619,6 +619,7 @@ func TestTransferAccessRace(t *testing.T) {
 		t.Fatal(err)
 	}
 	pid := int(blocker.Conn().PgConn().PID())
+	fp := grantFingerprint(t, w.grants, w.tenant, w.device, 1)
 	moved := make(chan error, 1)
 	go func() {
 		_, err := w.devices.TransferPersonal(ctx, w.tenant, w.owner, w.device, w.personal)
@@ -627,7 +628,7 @@ func TestTransferAccessRace(t *testing.T) {
 	waitBlockedOn(t, w.pool, pid, 1)
 	granted, permitted, issued := make(chan error, 1), make(chan error, 1), make(chan error, 1)
 	go func() {
-		granted <- w.grants.PutGrant(ctx, store.Grant{TenantID: w.tenant, DeviceID: w.device, UserID: other, Epoch: 1, SealedDSK: []byte("late")}, &w.owner)
+		granted <- w.grants.PutGrant(ctx, store.Grant{TenantID: w.tenant, DeviceID: w.device, UserID: other, Epoch: 1, SealedDSK: []byte("late"), Fingerprint: fp}, &w.owner)
 	}()
 	go func() {
 		permitted <- w.users.SetDevicePermission(ctx, w.tenant, w.owner, store.DevicePermission{DeviceID: w.device, UserID: other, Read: true})

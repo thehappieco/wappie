@@ -1,6 +1,8 @@
 package seal
 
 import (
+	"time"
+
 	"github.com/google/uuid"
 	kit "github.com/thehappieco/kit/seal"
 )
@@ -35,6 +37,12 @@ type KeyStore = kit.KeyStore
 // never be used past its limit by a racing caller.
 type Sealer = kit.Sealer[Kind]
 
+// SealerOption configures a Sealer.
+type SealerOption = kit.SealerOption
+
+// WithClock replaces the clock a sealer's age limit reads, for tests.
+func WithClock(now func() time.Time) SealerOption { return kit.WithClock(now) }
+
 // NewSealer builds a sealer for one device at one epoch.
 func NewSealer(tenant, device uuid.UUID, pub PublicKey, epoch uint16, store KeyStore) (*Sealer, error) {
 	return NewSealerWithArchiveTenant(tenant, tenant, device, pub, epoch, store)
@@ -42,6 +50,7 @@ func NewSealer(tenant, device uuid.UUID, pub PublicKey, epoch uint16, store KeyS
 
 // NewSealerWithArchiveTenant separates current storage authorization from the
 // immutable cryptographic namespace, preserving ciphertext after a workspace move.
-func NewSealerWithArchiveTenant(tenant, archiveTenant, device uuid.UUID, pub PublicKey, epoch uint16, store KeyStore) (*Sealer, error) {
-	return kit.NewSealer[Kind](store, tenant, archiveTenant, device, pub, epoch)
+func NewSealerWithArchiveTenant(tenant, archiveTenant, device uuid.UUID, pub PublicKey, epoch uint16, store KeyStore,
+	opts ...SealerOption) (*Sealer, error) {
+	return kit.NewSealer[Kind](store, tenant, archiveTenant, device, pub, epoch, opts...)
 }

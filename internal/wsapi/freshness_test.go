@@ -253,7 +253,8 @@ func TestFreshnessHook(t *testing.T) {
 	// Sharing a key: the person IfStale, the recipient Always; a grant to
 	// oneself shares nothing. Revoking one: the minute rule.
 	grant := func(to uuid.UUID) wsapi.GrantRequest {
-		return wsapi.GrantRequest{DeviceID: device.String(), UserID: to.String(), Epoch: 1, SealedDSK: []byte("grant")}
+		return wsapi.GrantRequest{DeviceID: device.String(), UserID: to.String(), Epoch: 1, SealedDSK: []byte("grant"),
+			Fingerprint: grantFingerprint(t, store.NewKeys(c.pool), c.tenant, device, 1)}
 	}
 	n = rec.count()
 	if f := ask(t, c.console, owner, wsapi.TypeGrantAdd, grant(second)); f.Type == wsapi.TypeError {
@@ -338,7 +339,8 @@ func TestFreshnessHook(t *testing.T) {
 	if d, err := c.devices.Get(ctx, c.tenant.String(), other.String()); err != nil || d.Paused {
 		t.Fatalf("a refused stop paused the number: %+v %v", d, err)
 	}
-	refused("a grant", wsapi.TypeGrantAdd, wsapi.GrantRequest{DeviceID: other.String(), UserID: second.String(), Epoch: 1, SealedDSK: []byte("grant")})
+	refused("a grant", wsapi.TypeGrantAdd, wsapi.GrantRequest{DeviceID: other.String(), UserID: second.String(), Epoch: 1, SealedDSK: []byte("grant"),
+		Fingerprint: grantFingerprint(t, store.NewKeys(c.pool), c.tenant, other, 1)})
 	refused("a revocation", wsapi.TypeGrantRevoke, wsapi.GrantRevoke{DeviceID: other.String(), UserID: reader.String()})
 	var grants int
 	if err := pg.InTenantTx(ctx, c.pool, c.tenant.String(), func(tx pgx.Tx) error {

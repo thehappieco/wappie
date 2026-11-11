@@ -638,6 +638,12 @@ type GrantEntry struct {
 	Label           string `json:"label,omitempty"`
 	Epoch           int    `json:"epoch"`
 	SealedDSK       []byte `json:"sealed_dsk"`
+	// Fingerprint names the number's archive key at Epoch now
+	// (store.ArchiveKeyFingerprint: lowercase hex SHA-256 of its public
+	// key), which is SealedDSK's unless a reset replaced it. A client
+	// compares it with the fingerprint of the key it opened, and a
+	// grant.add sends the latter, never this one (DS49).
+	Fingerprint string `json:"fingerprint"`
 }
 
 // Grants answers grants.list.
@@ -670,11 +676,20 @@ type APIKeyRef struct {
 // admin controls what gets *recorded here*. It cannot stop somebody who already
 // holds a key from passing it on by other means — no arrangement can, once a
 // key is in a person's browser.
+//
+// Fingerprint names the archive key SealedDSK seals: the fingerprint of
+// the key the caller opened, computed from its public half, not echoed
+// from grants.list, /v1/auth/me or GET /v1/grants, which list the
+// number's key now. Required. The server compares it with the number's key at Epoch in the
+// write's own transaction and answers conflict for another key: after a
+// reset the number has a new key at epoch 1 again, and a grant of the old
+// one would be recorded as access and open nothing (DS49).
 type GrantRequest struct {
-	DeviceID  string `json:"device_id"`
-	UserID    string `json:"user_id"`
-	Epoch     int    `json:"epoch"`
-	SealedDSK []byte `json:"sealed_dsk"`
+	DeviceID    string `json:"device_id"`
+	UserID      string `json:"user_id"`
+	Epoch       int    `json:"epoch"`
+	SealedDSK   []byte `json:"sealed_dsk"`
+	Fingerprint string `json:"fingerprint"`
 }
 
 // GrantRevoke takes it back, for whatever that is worth.

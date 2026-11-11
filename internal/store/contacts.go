@@ -50,6 +50,10 @@ type ContactName struct {
 	PushNameSealed     []byte
 	FullNameSealed     []byte
 	BusinessNameSealed []byte
+	// ArchiveKey is the archive key ContentKeyID was sealed to, as for
+	// InsertMessage.ArchiveKey: ingest sets it, and the upsert is refused
+	// unless that content key is still stored under it (DS49).
+	ArchiveKey []byte
 }
 
 // ContactRow is a contact as it leaves the server.
@@ -95,7 +99,11 @@ func (c *Contacts) Upsert(ctx context.Context, in ContactName) error {
 			ContactUID(in.DeviceID, in.ContactKey), nullableKeyID(in.ContentKeyID),
 			nullableBytes(in.PushNameSealed), nullableBytes(in.FullNameSealed),
 			nullableBytes(in.BusinessNameSealed))
-		return err
+		if err != nil {
+			return err
+		}
+		// The upsert's trigger took the workspace's row.
+		return contentKeyIsTx(ctx, tx, in.DeviceID, in.ContentKeyID, in.ArchiveKey)
 	})
 	if err != nil {
 		return fmt.Errorf("store: upsert contact: %w", err)
@@ -109,8 +117,12 @@ func (c *Contacts) Upsert(ctx context.Context, in ContactName) error {
 // does, and is what lets the fetcher skip a contact whose picture it already
 // has. An empty sealed value with a set checked time means "asked, and there
 // is no picture" — which has to be recorded, or every pass asks again.
+//
+// archiveKey is the archive key keyID was sealed to, as for
+// InsertMessage.ArchiveKey: the picture is stored only while that content
+// key is stored under it (DS49). nil checks nothing.
 func (c *Contacts) SetAvatar(ctx context.Context, tenant, device uuid.UUID,
-	contactKey, avatarID string, sealed []byte, keyID uint32) error {
+	contactKey, avatarID string, sealed []byte, keyID uint32, archiveKey []byte) error {
 	err := pg.InTenantTx(ctx, c.pool, tenant.String(), func(tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, `
 			INSERT INTO contacts (tenant_id, device_id, contact_key, uid,
@@ -123,7 +135,11 @@ func (c *Contacts) SetAvatar(ctx context.Context, tenant, device uuid.UUID,
 				avatar_checked_at = now()`,
 			tenant, device, contactKey, ContactUID(device, contactKey),
 			nullable(avatarID), nullableBytes(sealed), nullableKeyID(keyID))
-		return err
+		if err != nil || len(sealed) == 0 {
+			return err
+		}
+		// The upsert's trigger took the workspace's row.
+		return contentKeyIsTx(ctx, tx, device, keyID, archiveKey)
 	})
 	if err != nil {
 		return fmt.Errorf("store: set avatar: %w", err)

@@ -193,7 +193,7 @@ func TestFreshnessHook(t *testing.T) {
 	if err := h.keys.CreateArchiveKey(ctx, h.tenant, device, 1, pub); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.keys.PutGrant(ctx, store.Grant{TenantID: h.tenant, DeviceID: device, UserID: holder.ID, Epoch: 1, SealedDSK: []byte("grant")}, &owner.ID); err != nil {
+	if err := h.keys.PutGrant(ctx, store.Grant{TenantID: h.tenant, DeviceID: device, UserID: holder.ID, Epoch: 1, SealedDSK: []byte("grant"), Fingerprint: grantFingerprint(t, h.keys, h.tenant, device, 1)}, &owner.ID); err != nil {
 		t.Fatal(err)
 	}
 	if err := pg.InTenantTx(ctx, h.pool, h.tenant.String(), func(tx pgx.Tx) error {

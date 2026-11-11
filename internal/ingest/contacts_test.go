@@ -161,12 +161,12 @@ func TestAnAvatarIsSealedAndBoundToItsContact(t *testing.T) {
 
 	picture := []byte("\xFF\xD8\xFF a face, in bytes")
 	uid := store.ContactUID(f.device, contactJID.String())
-	sealed, keyID, err := r.SealFor(ctx, f.tenant, f.device, uid, seal.KindAvatar, picture)
+	sealed, keyID, archiveKey, err := r.SealFor(ctx, f.tenant, f.device, uid, seal.KindAvatar, picture)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := contacts.SetAvatar(ctx, f.tenant, f.device,
-		contactJID.String(), "pic-1", sealed, keyID); err != nil {
+		contactJID.String(), "pic-1", sealed, keyID, archiveKey); err != nil {
 		t.Fatal(err)
 	}
 
@@ -249,7 +249,7 @@ func TestAChangedPictureIsQueuedRatherThanFetched(t *testing.T) {
 	contacts := store.NewContacts(f.pool)
 
 	if err := contacts.SetAvatar(ctx, f.tenant, f.device,
-		contactJID.String(), "pic-1", []byte("sealed face"), 1); err != nil {
+		contactJID.String(), "pic-1", []byte("sealed face"), 1, nil); err != nil {
 		t.Fatal(err)
 	}
 

@@ -344,7 +344,7 @@ func TestTransferUndoesItsPause(t *testing.T) {
 		case "race":
 			// A grant committed after the handler's preview, before the move
 			// took its lock.
-			if err := store.NewKeys(c.pool).PutGrant(ctx, store.Grant{TenantID: source, DeviceID: device, UserID: late, Epoch: 1, SealedDSK: []byte("late")}, &c.owner); err != nil {
+			if err := store.NewKeys(c.pool).PutGrant(ctx, store.Grant{TenantID: source, DeviceID: device, UserID: late, Epoch: 1, SealedDSK: []byte("late"), Fingerprint: grantFingerprint(t, store.NewKeys(c.pool), source, device, 1)}, &c.owner); err != nil { //nolint:contextcheck // the fingerprint is read on the test's own context
 				return store.PersonalTransferPreview{}, err
 			}
 		case "timeout":
@@ -464,6 +464,7 @@ func TestGrantAddAfterAMove(t *testing.T) {
 		t.Fatal(err)
 	}
 	pid := blocker.Conn().PgConn().PID()
+	lateFP := grantFingerprint(t, store.NewKeys(c.pool), c.tenant, device, 1)
 	moved := make(chan error, 1)
 	go func() {
 		_, err := c.devices.TransferPersonal(ctx, c.tenant, c.owner, device, personal)
@@ -471,7 +472,8 @@ func TestGrantAddAfterAMove(t *testing.T) {
 	}()
 	waitWaiting(t, c, pid, 1)
 	conn := connect(t, c.console, wsapi.Hello{Session: c.token})
-	request(t, conn, "grant", wsapi.TypeGrantAdd, wsapi.GrantRequest{DeviceID: device.String(), UserID: reader.String(), Epoch: 1, SealedDSK: []byte("late")})
+	request(t, conn, "grant", wsapi.TypeGrantAdd, wsapi.GrantRequest{DeviceID: device.String(), UserID: reader.String(), Epoch: 1, SealedDSK: []byte("late"),
+		Fingerprint: lateFP})
 	waitWaiting(t, c, pid, 2)
 	if err := blocker.Rollback(ctx); err != nil {
 		t.Fatal(err)

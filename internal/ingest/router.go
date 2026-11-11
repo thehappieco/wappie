@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 	"go.mau.fi/whatsmeow/types/events"
@@ -35,11 +36,24 @@ type ArchiveKeys interface {
 	ArchiveKey(ctx context.Context, tenant, device uuid.UUID) (seal.PublicKey, uint16, error)
 }
 
+// ContentKeys is the key store a router's sealers use (store.Keys).
+// CreateContentKeyFor makes a content key only while pub is still the
+// number's current archive key at epoch, checked in the same transaction,
+// else store.ErrArchiveKeyChanged (DS49).
+type ContentKeys interface {
+	seal.KeyStore
+	CreateContentKeyFor(ctx context.Context, tenant, device uuid.UUID, epoch uint16, pub seal.PublicKey,
+		sealFn func(id uint32) ([]byte, error)) (uint32, error)
+}
+
 // RouterConfig wires a router.
 type RouterConfig struct {
 	Lookup   DeviceLookup
 	Keys     ArchiveKeys
-	KeyStore seal.KeyStore
+	KeyStore ContentKeys
+	// Now is the sealers' clock, which says when a content key is due.
+	// Tests only; nil is the wall clock.
+	Now      func() time.Time
 	Messages *store.Messages
 	// Receipts archives acknowledgements. Optional: a deployment that only
 	// wants the message archive can leave it out, and receipt events are then
@@ -276,18 +290,17 @@ func (r *Router) handleMessage(ctx context.Context, deviceID string, evt *events
 		r.failed(name, "bad_device")
 		return
 	}
-	pipe, err := r.pipelineFor(ctx, info.TenantID, device)
-	if err != nil {
-		// Notably includes a device with no archive key. Ingest stops rather
-		// than storing content unsealed, which would be a silent failure of
-		// the one guarantee this system makes.
-		r.log.Error("cannot ingest for this device",
-			"tenant", info.TenantID, "device", deviceID, "error", err)
-		r.failed(name, "no_pipeline")
-		return
-	}
-
-	if _, err := pipe.Ingest(ctx, env); err != nil {
+	if _, err := r.ingest(ctx, info.TenantID, device, env); err != nil {
+		var none noPipelineError
+		if errors.As(err, &none) {
+			// Notably includes a device with no archive key. Ingest stops
+			// rather than storing content unsealed, which would be a silent
+			// failure of the one guarantee this system makes.
+			r.log.Error("cannot ingest for this device",
+				"tenant", info.TenantID, "device", deviceID, "error", err)
+			r.failed(name, "no_pipeline")
+			return
+		}
 		r.log.Error("ingest failed",
 			"device", deviceID, "message", env.MessageID, "kind", env.Kind, "error", err)
 		r.failed(name, "ingest")
@@ -295,6 +308,42 @@ func (r *Router) handleMessage(ctx context.Context, deviceID string, evt *events
 	}
 	r.handled(name)
 }
+
+// ingest stores env through device's pipeline. When that pipeline was
+// dropped meanwhile, or the number's archive key is no longer the one it
+// seals to (store.ErrArchiveKeyChanged: the check before a content key,
+// or the one in the write), it builds the pipeline again from the key as
+// it is now and tries once more (DS49). After a reset and device-key the
+// message is then stored under the new key. Between the two the number
+// has no key, and the message is refused (store.ErrNoArchiveKey).
+func (r *Router) ingest(ctx context.Context, tenant, device uuid.UUID, env domain.Envelope) (Result, error) {
+	for try := 0; ; try++ {
+		pipe, err := r.pipelineFor(ctx, tenant, device)
+		if err != nil {
+			return Result{}, err
+		}
+		res, err := pipe.Ingest(ctx, env)
+		if try > 0 || !staleKey(err) {
+			return res, err
+		}
+		r.drop(device, pipe)
+	}
+}
+
+// staleKey reports whether err means the pipeline that met it is out of
+// date: dropped since it was fetched, or sealing to a key the number no
+// longer has. Building the pipeline again is the cure.
+func staleKey(err error) bool {
+	return errors.Is(err, errPipelineDropped) || errors.Is(err, store.ErrArchiveKeyChanged)
+}
+
+// noPipelineError is pipelineFor's failure: the number has no pipeline,
+// notably because it has no archive key. Callers tell it from a message
+// that failed by itself.
+type noPipelineError struct{ err error }
+
+func (e noPipelineError) Error() string { return e.err.Error() }
+func (e noPipelineError) Unwrap() error { return e.err }
 
 // pipelineFor returns the device's pipeline, building it on first use.
 //
@@ -306,6 +355,21 @@ func (r *Router) handleMessage(ctx context.Context, deviceID string, evt *events
 // exist when the process starts: a device paired before its key was generated
 // is a normal state, and it fails here with a clear message rather than at boot
 // with an obscure one.
+//
+// The pipeline keeps the key it was built with. Three things drop it, so
+// that the next message builds it again from the key as it is now (DS49):
+// a notice that the number's key changed (Forget, ForgetWorkspace and
+// ForgetAll, which serve calls on store.ArchiveKeyChannel), a content key
+// refused because the key changed (pinnedKeys), and any other failed seal.
+// A dropped pipeline seals nothing more (Pipeline.drop), so a caller that
+// still holds it fetches the number's pipeline again (Router.ingest,
+// SealFor). The mutex is held while the key is read, so a notice that
+// lands while a pipeline is built waits, and drops it.
+//
+// Each write of what the pipeline sealed names the archive key too, and
+// the store refuses it unless the content key is still stored under that
+// key (store.InsertMessage.ArchiveKey): a message sealed before a reset
+// and written after it is not stored unreadable.
 func (r *Router) pipelineFor(ctx context.Context, tenant, device uuid.UUID) (*Pipeline, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -315,26 +379,78 @@ func (r *Router) pipelineFor(ctx context.Context, tenant, device uuid.UUID) (*Pi
 
 	pub, epoch, err := r.cfg.Keys.ArchiveKey(ctx, tenant, device)
 	if err != nil {
-		return nil, fmt.Errorf("ingest: archive key for device %s: %w", device, err)
+		return nil, noPipelineError{fmt.Errorf("ingest: archive key for device %s: %w", device, err)}
 	}
 	archiveTenant, err := r.cfg.Keys.ArchiveTenant(ctx, tenant, device)
 	if err != nil {
-		return nil, err
+		return nil, noPipelineError{err}
 	}
-	sealer, err := seal.NewSealerWithArchiveTenant(tenant, archiveTenant, device, pub, epoch, r.cfg.KeyStore)
+	var opts []seal.SealerOption
+	if r.cfg.Now != nil {
+		opts = append(opts, seal.WithClock(r.cfg.Now))
+	}
+	sealer, err := seal.NewSealerWithArchiveTenant(tenant, archiveTenant, device, pub, epoch,
+		PinnedKeys(r.cfg.KeyStore, pub), opts...)
 	if err != nil {
-		return nil, err
+		return nil, noPipelineError{err}
 	}
-	p, err := New(Config{
-		Tenant: tenant, Sealer: sealer, Messages: r.cfg.Messages,
+	var p *Pipeline
+	p, err = New(Config{
+		Tenant: tenant, Sealer: sealer, ArchiveKey: pub, Messages: r.cfg.Messages,
 		Bus: r.cfg.Bus, Media: r.cfg.Media, Metrics: r.cfg.Metrics,
 		Phones: r.cfg.Phones, Log: r.log,
+		SealFailed: func() { r.drop(device, p) },
 	})
 	if err != nil {
-		return nil, err
+		return nil, noPipelineError{err}
 	}
 	r.pipelines[device] = p
 	return p, nil
+}
+
+// pinnedKeys is one pipeline's key store. Each content key it makes is
+// sealed to the archive key the pipeline was built with, so it makes one
+// only while that is still the number's current key. A pipeline built
+// before reset-archive -keep-devices and device-key, which gives the
+// number a new key at the same epoch, is refused here
+// (store.ErrArchiveKeyChanged) rather than filing a content key sealed to
+// the old key under the new one, which nobody could open (DS49). The
+// refusal is a failed seal, so the router drops the pipeline.
+type pinnedKeys struct {
+	ContentKeys
+	pub seal.PublicKey
+}
+
+// PinnedKeys is keys for a sealer that seals to pub: each content key it
+// makes is checked against the number's current archive key (pinnedKeys).
+// The command line's reproject seals with it too.
+func PinnedKeys(keys ContentKeys, pub seal.PublicKey) seal.KeyStore {
+	return pinnedKeys{ContentKeys: keys, pub: pub}
+}
+
+// CreateContentKey makes a content key for the pinned archive key only.
+func (k pinnedKeys) CreateContentKey(ctx context.Context, tenant, device uuid.UUID, epoch uint16,
+	sealFn func(id uint32) ([]byte, error)) (uint32, error) {
+	return k.CreateContentKeyFor(ctx, tenant, device, epoch, k.pub, sealFn)
+}
+
+// drop forgets p, when it is still device's pipeline: one built since
+// stays. p seals nothing more either way.
+func (r *Router) drop(device uuid.UUID, p *Pipeline) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	p.drop()
+	if r.pipelines[device] == p {
+		delete(r.pipelines, device)
+	}
+}
+
+// forgetLocked drops device's pipeline. The caller holds r.mu.
+func (r *Router) forgetLocked(device uuid.UUID) {
+	if p, ok := r.pipelines[device]; ok {
+		p.drop()
+		delete(r.pipelines, device)
+	}
 }
 
 // IngestOutbound archives a message this server sent.
@@ -350,10 +466,6 @@ func (r *Router) IngestOutbound(ctx context.Context, tenant uuid.UUID, deviceID 
 	if err != nil {
 		return Result{}, fmt.Errorf("ingest: %q is not a device id: %w", deviceID, err)
 	}
-	pipe, err := r.pipelineFor(ctx, tenant, device)
-	if err != nil {
-		return Result{}, err
-	}
 	env.TenantID = tenant.String()
 	env.DeviceID = deviceID
 	env.Source = domain.SourceOutbox
@@ -367,15 +479,38 @@ func (r *Router) IngestOutbound(ctx context.Context, tenant uuid.UUID, deviceID 
 			env.Sender = info.Own
 		}
 	}
-	return pipe.Ingest(ctx, env)
+	return r.ingest(ctx, tenant, device, env)
 }
 
 // Forget drops a device's cached pipeline, so the next event rebuilds it.
-// Used after a key rotation, where the epoch and public key both change.
+// Used when the number is let go of, and when its archive key changed: a
+// new key (store.CreateArchiveKey), whose epoch may be the old one's. The
+// dropped pipeline seals nothing more, even for a caller that holds it.
 func (r *Router) Forget(device uuid.UUID) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	delete(r.pipelines, device)
+	r.forgetLocked(device)
+}
+
+// ForgetWorkspace drops the pipelines of every number of tenant: a reset
+// (store.ResetArchive) deleted all their keys.
+func (r *Router) ForgetWorkspace(tenant uuid.UUID) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for device, p := range r.pipelines {
+		if p.tenant == tenant {
+			r.forgetLocked(device)
+		}
+	}
+}
+
+// ForgetAll drops every pipeline: a key's notice may have been missed.
+func (r *Router) ForgetAll() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for device := range r.pipelines {
+		r.forgetLocked(device)
+	}
 }
 
 func (r *Router) handled(name string) {

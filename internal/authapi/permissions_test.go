@@ -50,13 +50,13 @@ func TestIndependentDevicePermissions(t *testing.T) {
 		t.Fatal(err)
 	}
 	check(actor, store.ActionRead, false)
-	if err = h.keys.PutGrant(ctx, store.Grant{TenantID: h.tenant, DeviceID: device, UserID: member.ID, Epoch: 1, SealedDSK: []byte("sealed")}, &owner.ID); err != nil {
+	if err = h.keys.PutGrant(ctx, store.Grant{TenantID: h.tenant, DeviceID: device, UserID: member.ID, Epoch: 1, SealedDSK: []byte("sealed"), Fingerprint: grantFingerprint(t, h.keys, h.tenant, device, 1)}, &owner.ID); err != nil {
 		t.Fatal(err)
 	}
 	check(actor, store.ActionRead, true)
 	check(actor, store.ActionSend, false)
 	// Revocation succeeds only because somebody else can still recover the key.
-	if err = h.keys.PutGrant(ctx, store.Grant{TenantID: h.tenant, DeviceID: device, UserID: owner.ID, Epoch: 1, SealedDSK: []byte("backup")}, &owner.ID); err != nil {
+	if err = h.keys.PutGrant(ctx, store.Grant{TenantID: h.tenant, DeviceID: device, UserID: owner.ID, Epoch: 1, SealedDSK: []byte("backup"), Fingerprint: grantFingerprint(t, h.keys, h.tenant, device, 1)}, &owner.ID); err != nil {
 		t.Fatal(err)
 	}
 	p.Read = false

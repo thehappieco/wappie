@@ -297,6 +297,10 @@ type grant struct {
 	// SealedDSK is the device's private archive key under this account's
 	// public key. Ciphertext here, and nowhere else.
 	SealedDSK string `json:"sealed_dsk"`
+	// Fingerprint names the number's archive key at this epoch now
+	// (store.ArchiveKeyFingerprint). A client compares it with the key it
+	// opened, and a grant.add sends the opened key's own (DS49).
+	Fingerprint string `json:"fingerprint"`
 }
 
 type meReply struct {
@@ -735,7 +739,7 @@ func (h *Handler) me(w http.ResponseWriter, r *http.Request) {
 	for _, g := range grants {
 		out.Grants = append(out.Grants, grant{
 			ArchiveTenantID: g.ArchiveTenantID.String(), DeviceID: g.DeviceID.String(), Label: labels[g.DeviceID.String()],
-			Epoch: int(g.Epoch), SealedDSK: b64(g.SealedDSK),
+			Epoch: int(g.Epoch), SealedDSK: b64(g.SealedDSK), Fingerprint: g.Fingerprint,
 		})
 	}
 	send(w, http.StatusOK, out)

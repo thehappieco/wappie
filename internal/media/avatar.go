@@ -34,10 +34,11 @@ type AvatarClient interface {
 //
 // The device is part of it because the archive key is: two devices of the same
 // tenant seal under different keys, so a picture sealed for one is not readable
-// with the other's.
+// with the other's. It returns the archive key the value's content key was
+// sealed to, which the picture's write names (Contacts.SetAvatar, DS49).
 type Sealer interface {
 	SealFor(ctx context.Context, tenant, device, uid uuid.UUID,
-		kind seal.Kind, value []byte) ([]byte, uint32, error)
+		kind seal.Kind, value []byte) (sealed []byte, keyID uint32, archiveKey []byte, err error)
 }
 
 // AvatarConfig wires the avatar worker.
@@ -335,7 +336,7 @@ func (w *AvatarWorker) one(ctx context.Context, tenant, device uuid.UUID,
 		return resultFailed
 	}
 
-	sealed, keyID, err := w.cfg.Sealer.SealFor(ctx, tenant, device,
+	sealed, keyID, archiveKey, err := w.cfg.Sealer.SealFor(ctx, tenant, device,
 		store.ContactUID(device, contact.ContactKey), seal.KindAvatar, picture)
 	if err != nil {
 		w.log.Error("could not seal a profile picture",
@@ -343,7 +344,7 @@ func (w *AvatarWorker) one(ctx context.Context, tenant, device uuid.UUID,
 		return resultFailed
 	}
 	if err := w.cfg.Contacts.SetAvatar(ctx, tenant, device,
-		contact.ContactKey, info.ID, sealed, keyID); err != nil {
+		contact.ContactKey, info.ID, sealed, keyID, archiveKey); err != nil {
 		w.log.Error("could not store a profile picture",
 			"contact", contact.ContactKey, "error", err)
 		return resultFailed

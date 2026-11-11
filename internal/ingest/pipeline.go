@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -149,29 +150,46 @@ type MediaQueue interface {
 
 // Pipeline ingests envelopes for one tenant.
 type Pipeline struct {
-	tenant   uuid.UUID
-	sealer   *seal.Sealer
+	tenant uuid.UUID
+	sealer *seal.Sealer
+	// archiveKey is the archive key sealer seals to, which each write of
+	// what it sealed names (store.InsertMessage.ArchiveKey). nil names
+	// none.
+	archiveKey []byte
+	// dropped is set once the router let go of this pipeline (Router.drop,
+	// Router.Forget). It seals nothing more after that.
+	dropped  atomic.Bool
 	messages *store.Messages
 	bus      Publisher
 	media    MediaQueue
 	metrics  *obs.Metrics
 	phones   PhoneBook
 	log      *slog.Logger
+	// sealFailed is told of every seal that fails (sealAll).
+	sealFailed func()
 }
 
 // Config wires a pipeline.
 type Config struct {
-	Tenant   uuid.UUID
-	Sealer   *seal.Sealer
-	Messages *store.Messages
-	Bus      Publisher
-	Media    MediaQueue
-	Metrics  *obs.Metrics
+	Tenant uuid.UUID
+	Sealer *seal.Sealer
+	// ArchiveKey is the archive key Sealer seals to. The router sets it,
+	// and each write then names it, so the store refuses a row whose
+	// content key a reset deleted (DS49). Optional.
+	ArchiveKey seal.PublicKey
+	Messages   *store.Messages
+	Bus        Publisher
+	Media      MediaQueue
+	Metrics    *obs.Metrics
 	// Phones resolves a group participant's LID to the number behind it, so a
 	// sender can be matched against a contact list keyed by phone number.
 	// Optional: without it, LID-only senders stay LID-only.
 	Phones PhoneBook
 	Log    *slog.Logger
+	// SealFailed is told when a seal fails. The router drops the pipeline
+	// then, so the next message builds it again from the number's archive
+	// key as it is now (DS49). Optional.
+	SealFailed func()
 }
 
 // PhoneBook answers "whose number is this LID".
@@ -196,11 +214,40 @@ func New(cfg Config) (*Pipeline, error) {
 	if cfg.Log == nil {
 		cfg.Log = slog.Default()
 	}
+	var archiveKey []byte
+	if cfg.ArchiveKey.Valid() {
+		archiveKey = cfg.ArchiveKey.Bytes()
+	}
 	return &Pipeline{
-		tenant: cfg.Tenant, sealer: cfg.Sealer, messages: cfg.Messages,
+		tenant: cfg.Tenant, sealer: cfg.Sealer, archiveKey: archiveKey, messages: cfg.Messages,
 		bus: cfg.Bus, media: cfg.Media, metrics: cfg.Metrics,
-		phones: cfg.Phones, log: cfg.Log,
+		phones: cfg.Phones, log: cfg.Log, sealFailed: cfg.SealFailed,
 	}, nil
+}
+
+// errPipelineDropped is a seal by a pipeline the router let go of. The
+// number's key may have changed since it was built (DS49), so the caller
+// fetches the number's pipeline again (Router.ingest).
+var errPipelineDropped = errors.New("ingest: this number's pipeline was dropped; it is built again from its key")
+
+// drop marks the pipeline as let go of: it seals nothing more. A caller
+// that fetched it before, such as the history worker in the middle of a
+// chunk, would otherwise go on sealing under a content key a reset
+// deleted.
+func (p *Pipeline) drop() { p.dropped.Store(true) }
+
+// sealAll seals values for row under one content key. Every seal of a
+// pipeline goes through here, so a failure always reaches sealFailed, and
+// a dropped pipeline seals nothing.
+func (p *Pipeline) sealAll(ctx context.Context, row uuid.UUID, values map[seal.Kind][]byte) (map[seal.Kind][]byte, uint32, error) {
+	if p.dropped.Load() {
+		return nil, 0, errPipelineDropped
+	}
+	sealed, keyID, err := p.sealer.SealAll(ctx, row, values)
+	if err != nil && p.sealFailed != nil {
+		p.sealFailed()
+	}
+	return sealed, keyID, err
 }
 
 // Result reports what one ingest did.
@@ -275,6 +322,7 @@ func (p *Pipeline) Ingest(ctx context.Context, env domain.Envelope) (Result, err
 		BodySealed:    sealed[seal.KindBody],
 		RawSealed:     sealed[seal.KindRawProto],
 		PayloadSealed: sealed[seal.KindPayload],
+		ArchiveKey:    p.archiveKey,
 	}
 	if env.Content.Media != nil {
 		in.Media = mediaRow(env.Type, env.Content.Media, sealed)
@@ -369,7 +417,7 @@ func (p *Pipeline) seal(ctx context.Context, uid uuid.UUID, env domain.Envelope)
 		return nil, 0, nil
 	}
 
-	sealed, keyID, err := p.sealer.SealAll(ctx, uid, values)
+	sealed, keyID, err := p.sealAll(ctx, uid, values)
 	if err != nil {
 		return nil, 0, fmt.Errorf("ingest: seal content: %w", err)
 	}

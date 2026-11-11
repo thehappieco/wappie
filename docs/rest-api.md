@@ -75,7 +75,7 @@ parameters are rejected. Query strings are limited to 8192 bytes. Only GET
 | `/v1/messages/{uid}` | `{tenant_id, ...SealedMessage}`. An individual stored row, including control rows. |
 | `/v1/messages/{uid}/history` | `{tenant_id, requested_uid, device_id, chat_key, wa_id, versions, deletion?, reactions?, readers?}`. Complete existing history projection for one message thread. |
 | `/v1/devices/{device}/keys?ids=1,2` | `{tenant_id, device_id, archive_tenant_id, keys: [{id, sealed}]}`. Between 1 and 500 IDs, each 1–2147483647. Missing IDs are omitted; duplicates are folded. |
-| `/v1/grants` | `{tenant_id, user_id, grants: [{device_id, archive_tenant_id, label?, epoch, sealed_dsk}]}`. Current-epoch grants of the authenticated person/service account, filtered by current read access and any API key whitelist. |
+| `/v1/grants` | `{tenant_id, user_id, grants: [{device_id, archive_tenant_id, label?, epoch, sealed_dsk, fingerprint}]}`. Current-epoch grants of the authenticated person/service account, filtered by current read access and any API key whitelist. `fingerprint` names the number's archive key at that epoch now (lowercase hex SHA-256 of its public key). A client compares it with the key it opened, and a `grant.add` sends the opened key's own fingerprint, never this one ([DS49](decisions.md)). |
 | `/v1/openapi.json` | Public OpenAPI document; no credential required. |
 
 Response fields use the existing WebSocket DTOs, documented in

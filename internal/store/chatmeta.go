@@ -48,6 +48,10 @@ type ChatMeta struct {
 	// person's name, which is content rather than routing.
 	NameSealed []byte
 	NameKeyID  uint32
+	// NameArchiveKey is the archive key NameKeyID was sealed to, as for
+	// InsertMessage.ArchiveKey: ingest sets it, and the upsert is refused
+	// unless that content key is still stored under it (DS49).
+	NameArchiveKey []byte
 
 	EphemeralExpiration *int32
 	Unread              *int32
@@ -108,7 +112,14 @@ func (m *Messages) UpsertChatMeta(ctx context.Context, meta ChatMeta) error {
 			meta.NameSealed, nullableKeyID(meta.NameKeyID),
 			meta.EphemeralExpiration, meta.Unread, meta.Archived, meta.Pinned,
 			meta.MuteUntil, meta.GroupCreatedAt, meta.ParticipantCount)
-		return err
+		if err != nil {
+			return err
+		}
+		if len(meta.NameSealed) == 0 {
+			return nil
+		}
+		// The upsert's trigger took the workspace's row.
+		return contentKeyIsTx(ctx, tx, meta.DeviceID, meta.NameKeyID, meta.NameArchiveKey)
 	})
 	if err != nil {
 		return fmt.Errorf("store: upsert chat metadata: %w", err)

@@ -73,7 +73,7 @@ func (h *attestedHarness) serviceFor(t *testing.T, actor uuid.UUID, pub []byte) 
 	if err := h.users.SetDevicePermission(ctx, h.tenant, actor, store.DevicePermission{DeviceID: h.device, UserID: svc.ID, Read: true}); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.NewKeys(h.pool).PutGrant(ctx, store.Grant{TenantID: h.tenant, DeviceID: h.device, UserID: svc.ID, Epoch: 1, SealedDSK: []byte("sealed")}, &actor); err != nil {
+	if err := store.NewKeys(h.pool).PutGrant(ctx, store.Grant{TenantID: h.tenant, DeviceID: h.device, UserID: svc.ID, Epoch: 1, SealedDSK: []byte("sealed"), Fingerprint: grantFingerprint(t, store.NewKeys(h.pool), h.tenant, h.device, 1)}, &actor); err != nil {
 		t.Fatal(err)
 	}
 	in := time.Now().Add(20 * time.Minute)
@@ -97,7 +97,7 @@ func (h *harness) consenterReads(t *testing.T, actor uuid.UUID) {
 	}
 	if !p.HasKey {
 		if err := store.NewKeys(h.pool).PutGrant(ctx, store.Grant{TenantID: h.tenant, DeviceID: h.device, UserID: actor, Epoch: 1,
-			SealedDSK: []byte("a person's")}, &h.owner.ID); err != nil {
+			SealedDSK: []byte("a person's"), Fingerprint: grantFingerprint(t, store.NewKeys(h.pool), h.tenant, h.device, 1)}, &h.owner.ID); err != nil {
 			t.Fatal(err)
 		}
 	}

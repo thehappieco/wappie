@@ -45,7 +45,7 @@ func TestPersonalReadPolicyGatesUnreadPlayedAndTypingBeforeAnyEffects(t *testing
 				if err != nil {
 					t.Fatal(err)
 				}
-				if err := keys.PutGrant(ctx, store.Grant{TenantID: tenant, DeviceID: device, UserID: u.ID, Epoch: 1, SealedDSK: []byte("sealed")}, nil); err != nil {
+				if err := keys.PutGrant(ctx, store.Grant{TenantID: tenant, DeviceID: device, UserID: u.ID, Epoch: 1, SealedDSK: []byte("sealed"), Fingerprint: grantFingerprint(t, keys, tenant, device, 1)}, nil); err != nil { //nolint:contextcheck // the fingerprint is read on the test's own context
 					t.Fatal(err)
 				}
 				return u

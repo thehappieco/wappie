@@ -420,6 +420,9 @@
           "epoch": {
             "type": "integer"
           },
+          "fingerprint": {
+            "type": "string"
+          },
           "label": {
             "type": "string"
           },
@@ -431,6 +434,7 @@
         "required": [
           "device_id",
           "epoch",
+          "fingerprint",
           "sealed_dsk"
         ],
         "type": "object"

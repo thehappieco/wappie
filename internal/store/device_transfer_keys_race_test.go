@@ -26,7 +26,7 @@ func TestPersonalTransferSerializesContentKeyCreation(t *testing.T) {
 	if err := keys.CreateArchiveKey(ctx, a.tenant, a.device, 1, pub); err != nil {
 		t.Fatal(err)
 	}
-	if err := keys.PutGrant(ctx, store.Grant{TenantID: a.tenant, DeviceID: a.device, UserID: owner, Epoch: 1, SealedDSK: []byte("owner")}, &owner); err != nil {
+	if err := keys.PutGrant(ctx, store.Grant{TenantID: a.tenant, DeviceID: a.device, UserID: owner, Epoch: 1, SealedDSK: []byte("owner"), Fingerprint: grantFingerprint(t, keys, a.tenant, a.device, 1)}, &owner); err != nil {
 		t.Fatal(err)
 	}
 	devices := store.NewDevices(a.pool)

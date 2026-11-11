@@ -76,7 +76,7 @@ func TestInvalidateAvatarKeepsThePicture(t *testing.T) {
 	ctx := context.Background()
 	const key = "5511999999999@s.whatsapp.net"
 
-	if err := contacts.SetAvatar(ctx, tenant, device, key, "pic-1", []byte("sealed face"), 7); err != nil {
+	if err := contacts.SetAvatar(ctx, tenant, device, key, "pic-1", []byte("sealed face"), 7, nil); err != nil {
 		t.Fatal(err)
 	}
 	before, err := contacts.Some(ctx, tenant, device, []string{key})
@@ -141,7 +141,7 @@ func TestInvalidateAvatarFindsTheOtherHalfOfAnIdentity(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := contacts.SetAvatar(ctx, tenant, device, lid, "pic-1", []byte("face"), 1); err != nil {
+	if err := contacts.SetAvatar(ctx, tenant, device, lid, "pic-1", []byte("face"), 1, nil); err != nil {
 		t.Fatal(err)
 	}
 

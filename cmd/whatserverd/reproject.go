@@ -16,6 +16,7 @@ import (
 
 	"whatserver2/internal/crypto/seal"
 	"whatserver2/internal/domain"
+	"whatserver2/internal/ingest"
 	"whatserver2/internal/store"
 	"whatserver2/internal/wa/normalize"
 )
@@ -111,7 +112,7 @@ func reproject(args []string) error {
 	if err != nil {
 		return err
 	}
-	sealer, err := seal.NewSealerWithArchiveTenant(tenant, archiveTenant, device, pub, epoch, a.keys)
+	sealer, err := seal.NewSealerWithArchiveTenant(tenant, archiveTenant, device, pub, epoch, ingest.PinnedKeys(a.keys, pub))
 	if err != nil {
 		return err
 	}
@@ -149,7 +150,7 @@ func reproject(args []string) error {
 		if !*apply {
 			continue
 		}
-		if err := writeReprojection(ctx, a, sealer, tenant, device, r, env); err != nil {
+		if err := writeReprojection(ctx, a, sealer, pub.Bytes(), tenant, device, r, env); err != nil {
 			fmt.Printf("  fail %s: %v\n", r.WAID, err)
 			failed++
 			continue
@@ -251,7 +252,9 @@ func (k *keyring) open(ctx context.Context, id uint32, kind seal.Kind,
 	return ck.Open(kind, k.archiveTenant, row, envelope)
 }
 
-func writeReprojection(ctx context.Context, a *app, sealer *seal.Sealer,
+// archiveKey is the key sealer seals to: the row's write names it, so the
+// store refuses it when a reset deleted the content key meanwhile (DS49).
+func writeReprojection(ctx context.Context, a *app, sealer *seal.Sealer, archiveKey []byte,
 	tenant, device uuid.UUID, r store.Reprojection, env domain.Envelope) error {
 	values := map[seal.Kind][]byte{}
 	if env.Content.Body != "" {
@@ -275,6 +278,6 @@ func writeReprojection(ctx context.Context, a *app, sealer *seal.Sealer,
 	// that is used, and duplicating the sealing of a media key here would be a
 	// second place for it to be got wrong. A row with an attachment is left
 	// for it and reported.
-	return a.messages.Reproject(ctx, tenant, device, r.UID, env.Type, keyID,
+	return a.messages.Reproject(ctx, tenant, device, r.UID, env.Type, keyID, archiveKey,
 		sealed[seal.KindBody], sealed[seal.KindPayload], sealed[seal.KindRawProto], nil)
 }
