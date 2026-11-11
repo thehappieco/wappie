@@ -9,6 +9,7 @@ paths = [
  '''internal/crypto/wamedia/testdata/vectors\.json$''',
  '''internal/wsapi/testdata/frames\.json$''',
  '''internal/store/testdata/archive-key-fingerprints\.json$''',
+ '''internal/store/testdata/contact-name-key-ids\.json$''',
  '''web/testdata/browser-grant\.json$''',
  '''packages/client/testdata/browser-grant\.json$''',
  '''packages/client/testdata/node-draft\.json$''',

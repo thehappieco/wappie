@@ -2,12 +2,14 @@ package store_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"whatserver2/internal/crypto/seal"
 	"whatserver2/internal/migrate"
 	"whatserver2/internal/pgtest"
 	"whatserver2/internal/store"
@@ -159,5 +161,190 @@ func TestInvalidateAvatarFindsTheOtherHalfOfAnIdentity(t *testing.T) {
 	}
 	if !rows[0].HasAvatar {
 		t.Error("the stored picture was dropped")
+	}
+}
+
+// TestContactNamesUnderTwoContentKeys: a contact's names are written one
+// at a time, and a content key is replaced after 1000 seals or 15 minutes.
+// A name sealed under one key stays readable after another name of the
+// same contact is sealed under the next. The row's content_key_id is the
+// newest write's key, so it no longer opens the first name. Each name's
+// own key id, read from its envelope, does (DS50).
+func TestContactNamesUnderTwoContentKeys(t *testing.T) {
+	pool, tenant, device, contacts := contactFixture(t)
+	ctx := context.Background()
+	pub, priv, err := seal.GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys := store.NewKeys(pool)
+	if err := keys.CreateArchiveKey(ctx, tenant, device, 1, pub); err != nil {
+		t.Fatal(err)
+	}
+	sealer, err := seal.NewSealer(tenant, device, pub, 1, keys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const key = "5511977776666@s.whatsapp.net"
+	uid := store.ContactUID(device, key)
+
+	// write seals one name and stores it alone, as ingest does for each
+	// name event, then makes the sealer take a new content key.
+	write := func(kind seal.Kind, name string) uint32 {
+		t.Helper()
+		out, id, err := sealer.SealAll(ctx, uid, map[seal.Kind][]byte{kind: []byte(name)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		in := store.ContactName{TenantID: tenant, DeviceID: device, ContactKey: key, ContactPN: key,
+			ContentKeyID: id, ArchiveKey: pub.Bytes()}
+		switch kind {
+		case seal.KindPushName:
+			in.PushNameSealed = out[kind]
+		case seal.KindFullName:
+			in.FullNameSealed = out[kind]
+		case seal.KindBusinessName:
+			in.BusinessNameSealed = out[kind]
+		}
+		if err := contacts.Upsert(ctx, in); err != nil {
+			t.Fatal(err)
+		}
+		if err := sealer.Rotate(ctx); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	push := write(seal.KindPushName, "zé")
+	full := write(seal.KindFullName, "José Silva")
+	business := write(seal.KindBusinessName, "Padaria do Zé")
+	if push == full || full == business {
+		t.Fatalf("content keys %d, %d, %d: the sealer did not take a new key", push, full, business)
+	}
+	// A write with no name, as EnsureIdentity makes, changes no key.
+	if err := contacts.Upsert(ctx, store.ContactName{TenantID: tenant, DeviceID: device, ContactKey: key}); err != nil {
+		t.Fatal(err)
+	}
+
+	open := func(t *testing.T, id uint32, kind seal.Kind, sealed []byte) string {
+		t.Helper()
+		blob, err := keys.SealedContentKey(ctx, tenant, device, id)
+		if err != nil {
+			t.Fatalf("%s names content key %d: %v", kind, id, err)
+		}
+		ck, err := seal.OpenContentKey(priv, tenant, device, id, blob)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := ck.Open(kind, tenant, uid, sealed)
+		if err != nil {
+			t.Fatalf("%s does not open with content key %d: %v", kind, id, err)
+		}
+		return string(got)
+	}
+	listed, err := contacts.List(ctx, tenant, device, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	some, err := contacts.Some(ctx, tenant, device, []string{key})
+	if err != nil {
+		t.Fatal(err)
+	}
+	paged, err := contacts.Page(ctx, tenant, device, "", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, rows := range map[string][]store.ContactRow{"List": listed, "Some": some, "Page": paged} {
+		t.Run(name, func(t *testing.T) {
+			if len(rows) != 1 {
+				t.Fatalf("%d rows, want 1", len(rows))
+			}
+			c := rows[0]
+			if c.ContentKeyID != business {
+				t.Errorf("content_key_id = %d, want %d, the newest write's", c.ContentKeyID, business)
+			}
+			for _, n := range []struct {
+				kind   seal.Kind
+				id     uint32
+				want   uint32
+				sealed []byte
+				name   string
+			}{
+				{seal.KindPushName, c.PushNameKeyID, push, c.PushNameSealed, "zé"},
+				{seal.KindFullName, c.FullNameKeyID, full, c.FullNameSealed, "José Silva"},
+				{seal.KindBusinessName, c.BusinessNameKeyID, business, c.BusinessNameSealed, "Padaria do Zé"},
+			} {
+				if n.id != n.want {
+					t.Errorf("%s names content key %d, want %d", n.kind, n.id, n.want)
+				}
+				if got := open(t, n.id, n.kind, n.sealed); got != n.name {
+					t.Errorf("%s opened to %q, want %q", n.kind, got, n.name)
+				}
+			}
+		})
+	}
+}
+
+// TestContactWriteRefusesNamesUnderAnotherKey: a write names one content
+// key, and every name it carries must be under it. Names sealed one at a
+// time can straddle a new key, and the check at the write (DS49) then
+// covers only the last one (DS50).
+func TestContactWriteRefusesNamesUnderAnotherKey(t *testing.T) {
+	_, tenant, device, contacts := contactFixture(t)
+	ctx := context.Background()
+	pub, _, err := seal.GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	const key = "5511955554444@s.whatsapp.net"
+	uid := store.ContactUID(device, key)
+	sealUnder := func(id uint32, kind seal.Kind, name string) []byte {
+		t.Helper()
+		ck, err := seal.NewContentKey(pub, tenant, device, 1, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out, err := ck.Seal(kind, tenant, uid, []byte(name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	push := sealUnder(1, seal.KindPushName, "zé")
+	full := sealUnder(2, seal.KindFullName, "José Silva")
+	business := sealUnder(2, seal.KindBusinessName, "Padaria do Zé")
+
+	base := store.ContactName{TenantID: tenant, DeviceID: device, ContactKey: key, ContactPN: key}
+	for name, in := range map[string]store.ContactName{
+		"two keys in one write": {PushNameSealed: push, FullNameSealed: full, ContentKeyID: 2},
+		"no key named":          {FullNameSealed: full},
+		"another key named":     {BusinessNameSealed: business, ContentKeyID: 1},
+	} {
+		in.TenantID, in.DeviceID, in.ContactKey, in.ContactPN = base.TenantID, base.DeviceID, base.ContactKey, base.ContactPN
+		if err := contacts.Upsert(ctx, in); !errors.Is(err, store.ErrNameKeyMismatch) {
+			t.Errorf("%s: %v, want ErrNameKeyMismatch", name, err)
+		}
+	}
+	if rows, err := contacts.Some(ctx, tenant, device, []string{key}); err != nil || len(rows) != 0 {
+		t.Fatalf("a refused write stored %d rows (%v)", len(rows), err)
+	}
+
+	// Names under the key the write names are stored.
+	in := base
+	in.FullNameSealed, in.BusinessNameSealed, in.ContentKeyID = full, business, 2
+	if err := contacts.Upsert(ctx, in); err != nil {
+		t.Fatal(err)
+	}
+	in = base
+	in.PushNameSealed, in.ContentKeyID = push, 1
+	if err := contacts.Upsert(ctx, in); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := contacts.Some(ctx, tenant, device, []string{key})
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("%d rows (%v), want 1", len(rows), err)
+	}
+	if c := rows[0]; c.ContentKeyID != 1 || c.PushNameKeyID != 1 || c.FullNameKeyID != 2 || c.BusinessNameKeyID != 2 {
+		t.Fatalf("row %d, names %d, %d, %d; want 1, then 1, 2, 2", c.ContentKeyID,
+			c.PushNameKeyID, c.FullNameKeyID, c.BusinessNameKeyID)
 	}
 }

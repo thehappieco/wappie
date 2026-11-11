@@ -227,6 +227,9 @@
           "avatar_key_id": {
             "type": "integer"
           },
+          "business_name_key_id": {
+            "type": "integer"
+          },
           "business_name_sealed": {
             "contentEncoding": "base64",
             "type": "string"
@@ -243,6 +246,9 @@
           "content_key_id": {
             "type": "integer"
           },
+          "full_name_key_id": {
+            "type": "integer"
+          },
           "full_name_sealed": {
             "contentEncoding": "base64",
             "type": "string"
@@ -252,6 +258,9 @@
           },
           "is_group": {
             "type": "boolean"
+          },
+          "push_name_key_id": {
+            "type": "integer"
           },
           "push_name_sealed": {
             "contentEncoding": "base64",

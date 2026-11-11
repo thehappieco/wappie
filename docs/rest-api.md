@@ -134,6 +134,12 @@ messages; only the persisted archive was queried.
 Contacts are ordered by their stored contact key. Pass `next_key` as `after_key`
 while `has_more` is true. This read neither asks WhatsApp for contacts/avatars nor
 creates missing contacts. Names stay sealed; avatar bytes are not returned.
+The names are written one at a time, so they need not share `content_key_id`,
+which is the key of the names written last. A name under another key carries it
+in `push_name_key_id`, `full_name_key_id` or `business_name_key_id`. Open a name
+with that id when it is present, and with `content_key_id` when it is not: the
+name is then under the row's key, or the server predates those fields. Each
+sealed name also states its key in the clear, after its 8-byte header.
 Local personal-contact snapshots used by MCP are separate from this endpoint
 and are never uploaded to the archive server.
 
