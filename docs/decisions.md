@@ -3035,3 +3035,197 @@ checks `resolve_contact` makes one keys request for names off the row's
 key. The Go frames fixture (`internal/wsapi/testdata/frames.json`) is
 the kit's copy (`TestFixturesMatchTheKit`), so it is not regenerated for
 this.
+
+**DS51. A message that fills a placeholder is sealed to the
+placeholder's uid** (from the contact-names review, X1).
+
+The finding. Ingest picks a fresh uid for each message and seals its
+values to it. The kit binds each value to its row: the AAD is label,
+kind, tenant, row and header (`seal.AAD`), and the row is that uid. A
+reader opens each value with the row's uid (`packages/client`'s opener
+passes `message.uid`, for the body, raw, payload, media key, thumbnail
+and file name alike). A message can fill an empty placeholder instead
+of making a row (`fillStub`: an unsupported row with no body, no payload
+and no attachment, under the same number, chat key and id). The row
+then keeps the placeholder's uid. So its body, raw protobuf and payload
+failed authentication, and readers showed them as tampered. The fill
+also wrote no media row: an attachment's key, thumbnail and file name
+were dropped, and nothing queued its download.
+
+The fix, in the server only.
+
+- `fillStub` fills only a message sealed to the placeholder's uid. A
+  message sealed to another uid gets `store.PlaceholderError`, which
+  names the placeholder's uid, and nothing is written. The check and the
+  update share one WHERE clause (`fillable`).
+- `Pipeline.Ingest` then seals the message again to that uid and inserts
+  it again. Live messages, history and outbound all go through it.
+- That second insert sets `InsertMessage.FillsPlaceholder`. If a purge
+  or an erasure deleted the placeholder in between, the store writes
+  nothing and returns `store.ErrPlaceholderGone`. The pipeline then seals
+  a third time, to a fresh uid, and the message is a new row. So a uid
+  never names a second row. Three seals at most (`maxInsertTries`).
+- The fill writes the attachment's row under the placeholder's uid, as
+  `Insert` does, and the pipeline nudges its download. It also sets the
+  chat's `last_type` when the placeholder was the chat's newest message
+  by timestamp, which is how `upsertChat` picks the newest. (`Reproject`
+  keys on `last_seq` instead.)
+- `InsertResult.Filled` and `Result.Filled` report a fill. A fill is a
+  duplicate too: no new sequence and no event. A reader sees the message
+  when it next reads the chat.
+
+Only its sender fills a placeholder (from the review). Before this
+change a fill read as tampered, so another sender's content in the row
+showed as broken. Now it opens cleanly. The store finds a duplicate by
+number, chat key and id only, and any WhatsApp client can choose a
+message id. So `fillable` also requires the same `is_from_me`. For
+anyone but me it requires the sender to match on a half both rows know:
+key, LID or phone number. A null half matches nothing. My own messages
+match on `is_from_me` alone: only my devices send them, and older rows
+of mine have no sender. Anything else is a plain duplicate, sealed once.
+The cost: a placeholder that knows its sender only by LID stays a
+placeholder when a copy names the sender only by phone number.
+`resolvePhones` adds the phone number to a LID sender when it can, so
+this is rare.
+
+A protocol row is a placeholder too (from the review). The browser's
+reproject retypes a placeholder as `protocol` when its raw protobuf is
+protocol traffic (`MarkProtocol`). A sender key's placeholder is exactly
+that, and it is the row `fillStub` exists for. Before this change such a
+row could never be filled. `MarkProtocol` is the only writer of
+`protocol`, and it leaves the row empty, so `fillable` takes
+`unsupported` or `protocol`. `MarkProtocol` does not touch
+`chats.last_type`, so the chat's guard stays `unsupported`.
+
+Why the store decides. It decides in the insert's transaction, so a
+placeholder written between a lookup and the insert is never missed. A
+lookup before every seal would add a query on the hot path, since
+history redelivers in bulk, and would still need the check. The cost is
+a second seal, and only for a message that fills a placeholder. The
+race path (the insert meets the placeholder by its unique key) does the
+same: the transaction rolls back, its sequence with it, and the pipeline
+seals again.
+
+Why not give the row the sealed uid. The uid is the primary key, and
+other rows name it: `media.message_uid` (a foreign key with no ON
+UPDATE), `ai_derived.message_uid`, `events.message_uid`, the
+`target_uid` of reactions, edits and deletions, and `mcp_outbound`'s
+`message_uid` and `reply_to_uid`. Clients also hold it from the
+placeholder's own event. Keeping the placeholder's uid changes none of
+them.
+
+Lock order. A review asked the fill to lock the workspace before its
+UPDATE, because the message's row trigger takes it after the row. That
+is already so: the `storage_lock` statement trigger (0034) takes the
+workspace's row before the UPDATE locks any message. So a fill waiting
+for a reset holds nothing the reset needs.
+`TestAFillTakesTheWorkspaceFirst` holds the workspace as a reset does
+and locks the message with NOWAIT while the fill waits.
+
+The other paths that write sealed message values:
+
+- `Insert` of a new row seals to the row's own uid. Correct.
+- `Messages.Reproject` (`reproject.apply` and `whatserverd reproject`)
+  seals to the row's own uid. Correct.
+- `MarkProtocol` writes no sealed value. Its rows can now be filled.
+- An edit, a deletion or a reaction is a row of its own; `fillStub` fills
+  only kind `message`.
+- A copy under the conversation's other key (LID or phone number) is a
+  duplicate and fills nothing, as before.
+- A `placeholder` row (the phone masked the message) is not
+  `unsupported`, so nothing fills it.
+- `Router.ingest`'s second try after `ErrArchiveKeyChanged` goes through
+  the same loop.
+
+Rows filled before this change. Their values are sealed to a uid that
+was never stored or logged, and their attachment rows are missing.
+
+- Finding them. The server cannot open them, but it can list them
+  without a key. Nobody has run this on the pilot.
+  - A row whose type carries an attachment (image, video, round video,
+    audio, voice note, document, sticker) and that has no media row.
+    `Insert` and the browser's reproject write the media row in the
+    row's transaction (outbound media too), the command-line reproject
+    skips such rows, and nothing deletes a media row alone. No other
+    path is known to leave this.
+  - Other rows, in part. A new row is sealed under a content key made
+    before its transaction began. A fill under a later key shows as
+    `content_keys.created_at > messages.created_at` (same device, the
+    row's key id). Reprojected rows show up too. A fill under the
+    placeholder's own key does not, and that is the common case for a
+    sender key, whose real message came moments later.
+  - A holder of the archive key decides. A value that does not open
+    under its row's uid, under a content key that opens, is one of them.
+- Repair with the key. Not built. It would run with the archive private
+  key, like `whatserverd reproject`.
+  - The text needs no uid. GCM decrypts in counter mode, and the AAD
+    only feeds the tag. The uid is needed only to authenticate.
+  - The uid can be solved from each value's tag, given the content key:
+    GHASH is linear in the AAD, and the uid is 16 bytes of it. A
+    prototype found it in 80 of 80 tries, with 1 to 4 candidates.
+  - That solve proves little. For one value it always returns some uid,
+    and many rows have one value: a photo, voice note, sticker or
+    document without a caption kept only its raw protobuf. For several
+    values, the same change at the same offset of each ciphertext moves
+    every solved uid by the same amount, so the values still agree (a
+    review demo: 27 and 34 of 40 tries). A whole set copied from another
+    row under the same content key solves to that row's uid.
+  - So the tool must check all of this. The candidate is a UUIDv7. Its
+    time falls in the content key's life (`created_at` to `closed_at`,
+    or `MaxKeyAge`, 15 minutes), with some slack for the two clocks, and
+    after the placeholder's `created_at`. That leaves about 2^-34 for a
+    random candidate. It is no uid the archive names (`messages.uid`,
+    `events.message_uid`). Every value agrees on it. And the body,
+    payload and attachment that `normalize.FromRaw` derives from the
+    decrypted raw protobuf equal the decrypted values: body text sits at
+    other offsets in the raw protobuf, so a same-offset change breaks
+    that.
+  - Even then a repaired row is not authenticated. A set copied from a
+    deleted row under the same key passes every check. The tool logs
+    each row it repairs, and says so.
+  - The repair seals every value again to the row's uid and rebuilds the
+    media row from the raw protobuf through `normalize.FromRaw`, as the
+    browser's reproject does. The command-line reproject attaches no
+    media.
+- Fetch again from WhatsApp. Not done, and not verified.
+  - A redelivery finds a filled row, not a placeholder, so it is a
+    duplicate. The row would first have to become a placeholder again:
+    type `unsupported`, body and payload empty, no media row, raw kept.
+    That changes production data and needs the owner's yes. With the
+    sender check, only the same sender can then fill it.
+  - Then: whatsmeow's single-message resend
+    (`BuildUnavailableMessageRequest`) is on the `wa.Client` interface,
+    but nothing calls it, and whether the phone answers for an old
+    message it already delivered is not known.
+    `BuildHistorySyncRequest` takes any anchor, though `history.backfill`
+    anchors on the chat's oldest stored message. A full history sync
+    after a relink brings what the phone still has.
+  - The repair with the key is the better route: no phone, and no data
+    change before it.
+
+Not here: no migration, and no client change. A fill publishes no
+event, as before. `metrics.Sealed` counts both seals of a fill; it
+counts seals, and both happen.
+
+Tests: `TestARealMessageFillsItsPlaceholder` (ingest: a placeholder,
+then the real message through the pipeline; each value opens under the
+row's uid, the media row exists and its download is queued, the chat's
+type follows, no event, a redelivery changes nothing),
+`TestTwoCopiesFillAPlaceholderOnce` (two copies at once: one fills, one
+is a duplicate, neither fails), `TestAFillThatLostTheRaceTakesThePlaceholder`
+(the placeholder commits while the message waits for a sequence; the
+fill is under its uid and the lost try's sequence is rolled back),
+`TestAPlaceholderDeletedBetweenSealsGivesAFreshUID` (three seals, a new
+row under a fresh uid) and
+`TestAnotherSendersMessageDoesNotFillThroughThePipeline` (ingest).
+`TestAFillSealedToAnotherUIDWritesNothing`, `TestAFillKeepsItsAttachment`,
+`TestARealMessageReplacesTheStubThatStoleItsPlace`,
+`TestOnlyItsSenderFillsAPlaceholder` (another member, no sender, a
+contact reusing my message's id, the same sender marked as mine),
+`TestItsSenderFillsAPlaceholderUnderEitherName` (LID or phone number,
+and mine with no sender stored), `TestAProtocolPlaceholderIsFilled`,
+`TestAFillLeavesANewerPreviewAlone`,
+`TestASealForAGonePlaceholderWritesNothing` and
+`TestAFillTakesTheWorkspaceFirst` (store).
+`TestSealedWritesNameTheirKey`'s placeholder case fills under the
+placeholder's uid.

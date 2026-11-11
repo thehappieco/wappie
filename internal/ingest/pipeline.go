@@ -255,7 +255,16 @@ type Result struct {
 	UID       uuid.UUID
 	Seq       int64
 	Duplicate bool
+	// Filled is true when the message filled an empty placeholder: the
+	// row and its sequence are the placeholder's, so Duplicate is true
+	// too (store.InsertResult.Filled).
+	Filled bool
 }
+
+// maxInsertTries bounds how often Ingest seals one message: to a fresh
+// uid, to the uid of the placeholder it fills, and to a fresh uid again
+// when that placeholder was deleted in between (DS51).
+const maxInsertTries = 3
 
 // Ingest stores one envelope.
 func (p *Pipeline) Ingest(ctx context.Context, env domain.Envelope) (Result, error) {
@@ -265,7 +274,9 @@ func (p *Pipeline) Ingest(ctx context.Context, env domain.Envelope) (Result, err
 	p.resolvePhones(ctx, &env)
 
 	// The row identity is chosen here because the sealed fields bind to it.
-	// UUIDv7 so the primary key stays roughly time-ordered on disk.
+	// UUIDv7 so the primary key stays roughly time-ordered on disk. A
+	// message that fills a placeholder takes the placeholder's uid instead
+	// (the loop below).
 	uid, err := uuid.NewV7()
 	if err != nil {
 		return Result{}, fmt.Errorf("ingest: new uid: %w", err)
@@ -275,10 +286,103 @@ func (p *Pipeline) Ingest(ctx context.Context, env domain.Envelope) (Result, err
 	if err != nil {
 		return Result{}, fmt.Errorf("ingest: device id %q: %w", env.DeviceID, err)
 	}
+	probe := p.probeKeys(ctx, env)
 
+	var in store.InsertMessage
+	var res store.InsertResult
+	fills := false
+	for try := 1; ; try++ {
+		if in, err = p.row(ctx, uid, deviceID, env, probe); err != nil {
+			return Result{}, err
+		}
+		in.FillsPlaceholder = fills
+		res, err = p.messages.Insert(ctx, in)
+		if try == maxInsertTries {
+			break
+		}
+		// The message fills a placeholder, and the row keeps the
+		// placeholder's uid. A sealed value opens only under the uid it
+		// was sealed to, so it is sealed again to that one (DS51).
+		var fill *store.PlaceholderError
+		if errors.As(err, &fill) {
+			uid, fills = fill.UID, true
+			continue
+		}
+		// The placeholder was deleted meanwhile. The message is new
+		// again, and gets a fresh uid rather than the deleted row's.
+		if errors.Is(err, store.ErrPlaceholderGone) {
+			if uid, err = uuid.NewV7(); err != nil {
+				return Result{}, fmt.Errorf("ingest: new uid: %w", err)
+			}
+			fills = false
+			continue
+		}
+		break
+	}
+	if err != nil {
+		p.failed(string(env.Kind), "insert")
+		return Result{}, err
+	}
+	out := Result{UID: res.UID, Seq: res.Seq, Duplicate: res.Duplicate, Filled: res.Filled}
+
+	if res.Filled {
+		// No new row and no new sequence, so no event: a reader sees the
+		// message when it next reads the chat. The attachment is new.
+		p.handled(string(env.Kind), "filled")
+		p.queueMedia(ctx, in, res.UID)
+		return out, nil
+	}
+	if res.Duplicate {
+		// Routine, not exceptional: history sync redelivers what has been seen
+		// and the event stream is at-least-once. Nothing is republished, or a
+		// client would see the same message twice on every backfill.
+		p.handled(string(env.Kind), "duplicate")
+		return out, nil
+	}
+	p.handled(string(env.Kind), "stored")
+	p.queueMedia(ctx, in, res.UID)
+
+	if p.bus != nil {
+		p.bus.Publish(p.tenant, Event{
+			Class: ClassMessage,
+			Seq:   res.Seq, TenantID: p.tenant, DeviceID: deviceID,
+			ChatKey: in.ChatKey, Kind: env.Kind, Type: env.Type, UID: res.UID,
+		})
+		// And the badge, which the store just recomputed and which nothing
+		// else will ever mention. Sent even when the count did not move: the
+		// alternative is remembering what each subscriber last saw, and a
+		// number repeated costs a client one assignment.
+		if res.CountsUnread {
+			unread := res.Unread
+			p.bus.Publish(p.tenant, Event{
+				Class: ClassChat, TenantID: p.tenant, DeviceID: deviceID,
+				ChatKey: in.ChatKey, Ephemeral: true,
+				Chat: &ChatUpdate{ChatKey: in.ChatKey, Unread: &unread},
+			})
+		}
+	}
+	return out, nil
+}
+
+// queueMedia nudges the download of the attachment a write just stored.
+func (p *Pipeline) queueMedia(ctx context.Context, in store.InsertMessage, uid uuid.UUID) {
+	if in.Media == nil || p.media == nil {
+		return
+	}
+	if err := p.media.Enqueue(ctx, p.tenant, uid); err != nil {
+		// The message is already stored; the attachment can be fetched
+		// later. Failing the ingest here would lose the message over a
+		// queue hiccup.
+		p.log.Warn("could not queue a media download",
+			"message", uid, "error", err)
+	}
+}
+
+// row seals env's content to uid and builds the row that stores it.
+func (p *Pipeline) row(ctx context.Context, uid, deviceID uuid.UUID, env domain.Envelope, probe []string) (store.InsertMessage, error) {
 	sealed, keyID, err := p.seal(ctx, uid, env)
 	if err != nil {
-		return Result{}, err
+		return store.InsertMessage{}, err
 	}
 
 	in := store.InsertMessage{
@@ -291,7 +395,7 @@ func (p *Pipeline) Ingest(ctx context.Context, env domain.Envelope) (Result, err
 		ChatLID:   jidString(env.Chat.LID),
 		ChatPN:    jidString(env.Chat.PN),
 		IsGroup:   env.IsGroup,
-		ProbeKeys: p.probeKeys(ctx, env),
+		ProbeKeys: probe,
 
 		SenderKey: jidString(env.Sender.Primary()),
 		SenderLID: jidString(env.Sender.LID),
@@ -327,53 +431,7 @@ func (p *Pipeline) Ingest(ctx context.Context, env domain.Envelope) (Result, err
 	if env.Content.Media != nil {
 		in.Media = mediaRow(env.Type, env.Content.Media, sealed)
 	}
-
-	res, err := p.messages.Insert(ctx, in)
-	if err != nil {
-		p.failed(string(env.Kind), "insert")
-		return Result{}, err
-	}
-	out := Result{UID: res.UID, Seq: res.Seq, Duplicate: res.Duplicate}
-
-	if res.Duplicate {
-		// Routine, not exceptional: history sync redelivers what has been seen
-		// and the event stream is at-least-once. Nothing is republished, or a
-		// client would see the same message twice on every backfill.
-		p.handled(string(env.Kind), "duplicate")
-		return out, nil
-	}
-	p.handled(string(env.Kind), "stored")
-
-	if in.Media != nil && p.media != nil {
-		if err := p.media.Enqueue(ctx, p.tenant, res.UID); err != nil {
-			// The message is already stored; the attachment can be fetched
-			// later. Failing the ingest here would lose the message over a
-			// queue hiccup.
-			p.log.Warn("could not queue a media download",
-				"message", res.UID, "error", err)
-		}
-	}
-
-	if p.bus != nil {
-		p.bus.Publish(p.tenant, Event{
-			Class: ClassMessage,
-			Seq:   res.Seq, TenantID: p.tenant, DeviceID: deviceID,
-			ChatKey: in.ChatKey, Kind: env.Kind, Type: env.Type, UID: res.UID,
-		})
-		// And the badge, which the store just recomputed and which nothing
-		// else will ever mention. Sent even when the count did not move: the
-		// alternative is remembering what each subscriber last saw, and a
-		// number repeated costs a client one assignment.
-		if res.CountsUnread {
-			unread := res.Unread
-			p.bus.Publish(p.tenant, Event{
-				Class: ClassChat, TenantID: p.tenant, DeviceID: deviceID,
-				ChatKey: in.ChatKey, Ephemeral: true,
-				Chat: &ChatUpdate{ChatKey: in.ChatKey, Unread: &unread},
-			})
-		}
-	}
-	return out, nil
+	return in, nil
 }
 
 // seal encrypts every content field of one message under a single content key.
