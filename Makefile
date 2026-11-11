@@ -1,5 +1,5 @@
 .PHONY: help run test test-race lint lint-layout vet fmt cover fuzz dev-up dev-down build tidy check \
-	fixtures-check identifiers-check client-install client-build client-test client-check client-dist-check mcp-check mcp-http-check public-source \
+	fixtures-check identifiers-check client-install client-build client-test client-check client-dist-check reader-inputs-check mcp-check mcp-http-check public-source \
 	enclave-check enclave-image enclave-jail media-worker-check media-jail-check reader-verify
 
 GO      ?= go
@@ -111,6 +111,11 @@ client-check: client-test client-build ## Verify the public SDK
 # reader release; this holds them equal to release A's, c9ec561.
 client-dist-check: ## The reader's measured client equals c9ec561's
 	scripts/check-client-dist.sh
+
+# The rest of the reader image's inputs: packages/mcp and packages/mcp-http
+# as the image keeps them, the attachment workers, nsm-attest and media-jail.
+reader-inputs-check: ## The reader's other measured inputs equal f7babbe's
+	scripts/check-reader-inputs.sh
 
 mcp-check: client-build ## Install and verify the local MCP server
 	$(NPM) --prefix packages/mcp ci

@@ -393,7 +393,8 @@ func (w *keyWorld) grant(ctx context.Context, user uuid.UUID, fingerprint string
 // transaction (DS49). The epoch is reused after a reset, so a grant sealed
 // with the old key at epoch 1 is refused once device-key gave the number
 // a new key at epoch 1, and so is one between the reset and device-key.
-// Each grant the context lists gives the fingerprint to echo.
+// Each grant the context lists names the number's key, for a client to
+// compare with the key it opened.
 func TestPutGrantNamesItsKey(t *testing.T) {
 	w := newKeyWorld(t)
 	ctx := context.Background()

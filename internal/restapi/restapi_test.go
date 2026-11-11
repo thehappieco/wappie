@@ -259,7 +259,8 @@ func TestRestrictedServiceKeyGrantsAndRevocation(t *testing.T) {
 	if grants.UserID != service.ID.String() || len(grants.Grants) != 1 || grants.Grants[0].DeviceID != f.device.String() {
 		t.Fatalf("grants bypassed whitelist: %+v", grants)
 	}
-	// Each grant names its key, which a grant.add of it echoes (DS49).
+	// Each grant names the number's key, which a client compares with the
+	// key it opened before a grant.add (DS49).
 	if want := grantFingerprint(t, f.keys, f.tenant, f.device, 1); grants.Grants[0].Fingerprint != want {
 		t.Fatalf("the grant names the key %q, want %q", grants.Grants[0].Fingerprint, want)
 	}
