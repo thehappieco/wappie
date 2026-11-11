@@ -508,7 +508,7 @@ its send ledger, its usage counts and its notices. An AI integration's results
 stay. On an installation connected to The Happie Co, the record of a
 retirement of Wappie's keys names each key it revoked (its name, prefix,
 class, creator's sub or email address, and the service it acted as) for 13
-months after the run; its counts and who ran it stay
+months after the run; its counts and the OS user it ran as stay
 ([retiring Wappie's keys](docs/deployment.md#retiring-wappies-keys)).
 
 Logs mask identifiers at every level: a JID keeps its server and last four

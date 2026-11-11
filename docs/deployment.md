@@ -748,7 +748,10 @@ sudo systemd-run --uid=wappie --gid=wappie --pipe --wait --collect \
   contract is on, the running server has a transport and a loaded secret,
   and the platform's token feed answers with the stored generation;
   `contract tokens off` refuses every token at once
-  ([the token feed](contract.md#the-token-feed)).
+  ([the token feed](contract.md#the-token-feed)). After a retirement of
+  Wappie's keys, it leaves programs with no credential: the retired keys
+  stay revoked, and keys stay narrowed while the retirement's row exists
+  ([retiring Wappie's keys](#retiring-wappies-keys)).
 - `tokens suspend` stops a token here by its selector, with the platform
   down too, until `tokens lift`; each appends to the stop record (above),
   so `tokens suspend -replay /var/lib/wappie/token-stops.jsonl`, before
@@ -810,8 +813,18 @@ installation runs the same migrations. It refuses unless the contract is
 on and tokens are on, and writes nothing then.
 
 1. **A fresh backup**, which holds the stop record. There is no other way
-   back: the keys stay revoked through every down-step.
-2. **The dry run.** `whatserverd tokens retire-keys -dry-run`, as the
+   back: the keys stay revoked through every down-step. A restore of an
+   older snapshot brings the keys back live, so run the retirement again
+   then ([restoring with the contract](#restoring-with-the-contract),
+   step 7).
+2. **The programs that use the keys.** Each one has a platform token, with
+   its grants sealed on the grant page, or the owner accepts that it
+   stops working. After the apply, `contract tokens off` leaves programs
+   with no credential at all: the retired keys stay revoked, and
+   `whatserverd key` and `bootstrap` keep refusing while the retirement's
+   row exists. Only `contract tokens on` again, or 0053's down-step, gives
+   them one back.
+3. **The dry run.** `whatserverd tokens retire-keys -dry-run`, as the
    server's user, in the `systemd-run` form above. It writes nothing. It
    prints every live key with its name and its creator's sub or address,
    and every standing service account.
@@ -821,21 +834,31 @@ on and tokens are on, and writes nothing then.
      `tee`. `systemd-run --pipe` hands it to the terminal, not the
      journal. Do not keep it after the apply.
    - The command itself writes no file, and logs nothing in the dry run.
-3. **The owner's yes**, to the per-key list and the services to remove.
-4. **The apply**, while the token feed is quiet:
+4. **The owner's yes**, to the per-key list and the services to remove.
+5. **The apply**, while the contract's feeds are quiet:
    `whatserverd tokens retire-keys -apply -confirm N`, with `N` the dry
    run's count of keys to revoke. A different count refuses, and nothing
-   is written: run the dry run again.
+   is written. Then the list has changed: run the dry run again, and get
+   the owner's yes to the new list, through the platform, before the
+   next apply.
    - It is one transaction (the platform's W46, Q3). It holds the
      contract's and the token mode's rows, and every workspace's row,
-     until it commits. While it runs, no token page commits, so no
-     revocation, narrowing or stop from the platform applies, and a
-     capture waits too. On the pilot it takes under a second.
+     until it commits. While it runs, nothing of the contract commits:
+     no token page, so no revocation, narrowing or stop from the platform
+     applies, and no account feed page, so no disable, recovery or belt
+     change applies either. `contract mode` and `contract tokens` wait
+     for it, and a capture waits too. On the pilot it takes under a
+     second. `contract status` shows each feed's last page: run the apply
+     when they are caught up.
    - It prints the same per-key list as the dry run, with `revoked` and
      `kept`. Treat it as the dry run's: to the terminal only.
-   - Its log line, INFO "api keys retired", holds counts, key prefixes
-     and service names only, never a key's name or creator.
-5. **The checks.** Revoked keys get 401, and their sockets close within a
+   - Its INFO line "api keys retired" holds counts, key prefixes and
+     service names only, never a key's name or creator. A command writes
+     its log to its standard output, so under `systemd-run --pipe` the
+     line is printed with the apply's list, and is not kept either. Check
+     the run by `key_retirements`' counts (`revoked`, `services_removed`,
+     `services_kept`) or the printed summary, never by the journal.
+6. **The checks.** Revoked keys get 401, and their sockets close within a
    second. MCP keys and old local MCP tokens still work.
 
 **Run it again after M2L.** 12b's M2L revokes old local MCP tokens and
@@ -847,14 +870,15 @@ again after M2L ships, inside those 13 months (the platform's W46, Q5).
 A run that revokes nothing writes its row all the same.
 
 **What it keeps** (`key_retirements`, one row per apply): when it ran,
-the OS user who ran it, its counts, and a report. The report names each
+the process's OS user (`wappie` in the `systemd-run` form above, never
+the person), its counts, and a report. The report names each
 key it revoked by workspace, prefix, name, class, its creator's
 platform sub or email address, and the service it acted as. Those
 entries go 13 months after the run, with the ended keys themselves. The
-counts, who ran it, and each service account it kept (by user id, so a
+counts, the OS user, and each service account it kept (by user id, so a
 later run finds it) stay. A restore brings the entries back until the
 next hourly pass. 0053's down-step drops the table. The site's privacy
-text lists this beside the ended keys.
+text must list this beside the ended keys before the first apply.
 
 **`-self-hosted`** on `whatserverd key` and `bootstrap` asserts that the
 installation is off the platform: the contract off, tokens off, and no
@@ -899,6 +923,14 @@ this order:
    and (exit 3, "… Wappie holds no generation of the platform's yet: wait
    for the feed's first page") until the feed's first page is stored after
    an observe; run it again then.
+7. If the snapshot is older than a retirement of Wappie's keys, run the
+   retirement again ([retiring Wappie's keys](#retiring-wappies-keys)),
+   once step 6 has turned tokens on. The snapshot holds the retired `rest`
+   and `cli` keys live, and the service accounts the apply removed, and
+   it has no `key_retirements` row. Those keys work again until then,
+   tokens on or not, and nobody is told. Run `tokens retire-keys
+   -dry-run`, get the owner's yes to the list through the platform, then
+   `-apply -confirm N`.
 
 A stop the replay brings back holds only its line: the selector and its
 times, with no note, as made by `wappie`, whoever ran the replay. Of a
@@ -949,6 +981,10 @@ at version 53, so its down-step comes first, before 0052's. In this order:
    local stops and the retirement's record. The keys the retirement
    revoked stay revoked, and the ended keys the hourly pass deleted stay
    deleted.
+   Between step 1 and this step, after a retirement, programs have no
+   credential: no token is accepted, the retired keys stay revoked, and
+   `whatserverd key` and `bootstrap` refuse while the retirement's row
+   exists. Once this step has dropped the row, they issue keys again.
 4. 0052's down-step, if the release being restored is older than 0052
    ([Rolling back below 0052](#rolling-back-below-0052), from its step 2:
    its step 1 ran in step 1 here), and so on down, each from its step 2.

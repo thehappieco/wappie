@@ -2832,13 +2832,16 @@ order (step 3), and holds them to the commit. Inserts with a foreign key
 to those workspaces, a capture's included, wait that fraction of a second.
 One transaction checks `-confirm` once and writes one row per apply.
 
-The share lock on `contract_token_state` also holds back the token feed.
-A token page's commit and `ApplyTokenRecord` take that row FOR UPDATE
+The share locks also hold back the contract's feeds. A token page's
+commit and `ApplyTokenRecord` take `contract_token_state` FOR UPDATE
 (step 2), so no revocation, narrowing or stop from the platform applies
-until the apply commits. Decision 0053 asks for a revocation within a
+until the apply commits. Every commit of the account feed and the
+settings feed takes `contract_state` FOR UPDATE (step 1), so no disable,
+recovery or belt change applies either. `contract mode` and `contract
+tokens` wait as well. Decision 0053 asks for a revocation within a
 second. There is no deadlock, and on the pilot the apply takes under a
 second, so the platform kept the one transaction (W46, Q3). The runbook
-says to run the apply while the token feed is quiet
+says to run the apply while the contract's feeds are quiet
 ([retiring Wappie's keys](deployment.md#retiring-wappies-keys)).
 
 **Ended API keys go 13 months after their end** (the owner's yes of

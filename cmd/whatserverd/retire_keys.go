@@ -22,9 +22,11 @@ import (
 // no consent issued (origin rest or cli), removes the services, and
 // records the run (key_retirements); -confirm must be the dry run's count
 // of keys to revoke. Run again, it revokes nothing, and may remove a
-// service kept before. Its log holds counts, prefixes and service names
-// only. It holds every workspace's row until it commits, so captures wait
-// for that fraction of a second.
+// service kept before. Its log line, on the command's stdout with the
+// list, holds counts, prefixes and service names only. It holds both
+// modes and every workspace's row until it commits, so the contract's
+// feeds, the mode switches and captures wait for that fraction of a
+// second.
 
 // keptWhy says why a standing service account is kept.
 var keptWhy = map[string]string{
