@@ -253,7 +253,7 @@ func TestASnapshotOverALimitByItsTokensGoesWithoutThem(t *testing.T) {
 	if err := pg.InTenantTx(ctx, w.pool, w.team.String(), func(tx pgx.Tx) error {
 		creator := uuid.New()
 		if _, err := tx.Exec(ctx, `INSERT INTO contract_tokens (id, tenant_id, name, created_by, created_at, expires_at)
-			SELECT id, $2, 'Nightly', $3, clock_timestamp(), clock_timestamp() + interval '1 day' FROM unnest($1::uuid[]) id`,
+			SELECT id, $2, 'Nightly', $3, clock_timestamp(), clock_timestamp() + interval '20 minutes' FROM unnest($1::uuid[]) id`,
 			ids, w.team, creator); err != nil {
 			return err
 		}
@@ -284,6 +284,13 @@ func TestASnapshotOverALimitByItsTokensGoesWithoutThem(t *testing.T) {
 		if kept := send(what); kept.Items[0].Tokens != nil || len(kept.Items[0].People) != 1 || len(kept.Items[0].Protected) != 1 {
 			t.Fatalf("%s: the item %+v", what, kept.Items[0])
 		}
+	}
+	// A snapshot without its tokens lists no expiry: the next is due at
+	// the usual time, not at the tokens' expiry 20 minutes out.
+	var ahead time.Duration
+	if err := w.pool.QueryRow(ctx, `SELECT snapshot_due_at - clock_timestamp() FROM contract_workspaces WHERE workspace_id = $1`,
+		w.team).Scan(&ahead); err != nil || ahead < 40*time.Minute {
+		t.Fatalf("over the limit: the next snapshot is due in %v (%v), not the usual time", ahead, err)
 	}
 	lines := logs.Lines("level=ERROR", "goes without its tokens")
 	if len(lines) != 1 || !strings.Contains(lines[0], "workspace="+w.team.String()) || !strings.Contains(lines[0], "reason=tokens") {

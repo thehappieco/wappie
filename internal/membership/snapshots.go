@@ -405,8 +405,13 @@ func (s *snapshotSender) send(ctx context.Context, next store.ContractSnapshotDu
 	outcome, class := snapshotResult(err)
 	// A token's expiry writes nothing: an accepted snapshot is due again
 	// just after the first one it lists, and that one leaves it out (step
-	// 7's plan, 6.2).
-	rec, stored := s.record(ctx, ws, seq, read.MeasuredAt, read.TokensExpire, outcome, class)
+	// 7's plan, 6.2). A snapshot sent without its tokens lists none, so
+	// no expiry makes it due again.
+	expires := read.TokensExpire
+	if left != "" {
+		expires = nil
+	}
+	rec, stored := s.record(ctx, ws, seq, read.MeasuredAt, expires, outcome, class)
 	switch {
 	case !rec.Recorded:
 	case outcome == store.SnapshotAccepted:
