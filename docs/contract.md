@@ -1440,7 +1440,9 @@ by their document): an admin is `not_authorized` here and 403
 `not_authorized` on Wappie's own screen (the owner's Q58). The socket's
 `grant.revoke`, which changes no flag, reads its actor's role again
 under the workspace's lock and refuses an admin on an owner the same
-way, read fail-closed, with a `not_authorized` frame (DS48). When Read
+way, read fail-closed, with a `not_authorized` frame (DS48). On a
+platform token's identity it answers `not_found`: a token is no person,
+and its grants follow its record. When Read
 goes (the stored
 row had it: a drop of read, a remove, the screen's PUT without Read) or
 no flag is left (a remove, the screen's PUT with every flag false, a

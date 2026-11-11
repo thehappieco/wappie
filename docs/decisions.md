@@ -2819,3 +2819,12 @@ permissions screen and the console's flags acts never find it
 connections and integrations (`leaveOwnConnectionsTx`), never a token's
 grant. Nor does a token's grant count for a person: a consent or a
 renewal asks the person's own Read and grant (`consenterReadsTx`).
+
+DS48 keeps to it. A `grant.revoke` of a token's identity is refused
+with `not_found` before anything else, from an owner or an admin: it
+never counts as a person's lost Read, and the token keeps its grant
+(`TestATokenIdentityIsNeverAMember`, `TestTheGrantPagesFrames`). The check at
+every start reads only MCP connections, and a token holds none. A
+token's grant never counts as a person's Read there, and a number whose
+only grants left are tokens' is an orphan
+(`TestConnectionsWithoutReadSweepNobodyReads`).
