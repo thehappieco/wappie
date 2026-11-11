@@ -296,6 +296,7 @@ func TestContractDocsMatchTheCode(t *testing.T) {
 			{"whatserverd tokens suspend -replay F", "suspend -replay F"},
 			{"whatserverd tokens lift SELECTOR|TOKEN|-", "lift SELECTOR|TOKEN|-"},
 			{"whatserverd tokens list", "| list"},
+			{"whatserverd tokens retire-keys -dry-run|-apply -confirm N", "retire-keys -dry-run|-apply -confirm N"},
 		} {
 			says("contract.md", c.doc)
 			if !strings.Contains(c.doc, "settings") {

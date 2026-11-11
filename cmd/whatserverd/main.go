@@ -82,7 +82,7 @@ const commandList = `usage: whatserverd [serve]
                    diff [--tenant T] | mode off|observe | settings off|read|on|status |
                    tokens on|off|status
        whatserverd tokens suspend [-note N] SELECTOR|TOKEN|- | suspend -replay F |
-                   lift SELECTOR|TOKEN|- | list
+                   lift SELECTOR|TOKEN|- | list | retire-keys -dry-run|-apply -confirm N
        whatserverd contract-secret seal | promote | unpromote | drop | reset | capabilities ...
 `
 
