@@ -92,9 +92,10 @@ type TokenGrant struct {
 //  5. its Read on the number is applied;
 //  6. the number is live in the workspace, and the epoch its current one;
 //  7. the number's archive key at that epoch has the grant's fingerprint
-//     (archiveKeyIsTx, DS49's check, which grant.add shares:
-//     ErrArchiveKeyChanged, and also ErrNoArchiveKey with no key): after
-//     an archive reset, a new key takes epoch 1 again;
+//     (archiveKeyIsTx: ErrArchiveKeyChanged, and also ErrNoArchiveKey
+//     with no key): after an archive reset, a new key takes epoch 1
+//     again. DS49 (wappie#75, not on main yet) gives grant.add the same
+//     check;
 //  8. the sealer is an owner or admin of the workspace who reads the number
 //     now;
 //  9. the grant, to the identity, sealed by the sealer.

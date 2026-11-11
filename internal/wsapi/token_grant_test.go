@@ -276,7 +276,8 @@ func TestATokenGrantNeedsAStepUpAndAReader(t *testing.T) {
 // TestAResetNumbersOldKeyGetsNoGrantOnTheSocket (the platform's answer of
 // 2026-11-10, W46 7929b4a): after reset-archive -keep-devices and a new key
 // at epoch 1, a grant sealed for the old key is refused conflict, as
-// grant.add answers it (DS49), and the token's reads stay no_grant; the
+// grant.add will answer it under DS49 (wappie#75, not on main yet), and
+// the token's reads stay no_grant; the
 // grant for the new key lets it read again.
 func TestAResetNumbersOldKeyGetsNoGrantOnTheSocket(t *testing.T) {
 	ts, records := grantSocket(t)

@@ -24,9 +24,10 @@ import (
 // (TokenRecords).
 //
 // A grant also names the archive key it was sealed for, by its fingerprint
-// (store.ArchiveKeyFingerprint, DS49). After an archive reset that kept the
-// numbers, a number's new key takes epoch 1 again, so the epoch alone
-// cannot tell the old key's grant from the new one's. The client computes
+// (store.ArchiveKeyFingerprint; DS49, wappie#75, not on main yet). After
+// an archive reset that kept the numbers, a number's new key takes epoch 1
+// again, so the epoch alone cannot tell the old key's grant from the new
+// one's. The client computes
 // the fingerprint from the key it seals and compares it with the
 // context's; an echo of the context's would let the deleted key through.
 
@@ -272,7 +273,8 @@ func (s *session) tokenGrantRefused(reqID string, token, device uuid.UUID, err e
 	case errors.Is(err, store.ErrNoArchiveKey):
 		s.replyError(reqID, ErrCodeConflict, "this number has no archive key, so there is nothing to grant")
 	case errors.Is(err, store.ErrArchiveKeyChanged):
-		// conflict, as grant.add answers it (DS49).
+		// conflict, as grant.add will answer it under DS49 (wappie#75, not
+		// on main yet).
 		s.replyError(reqID, ErrCodeConflict, "this number's archive key is not the one the grant was sealed for; reload and seal again")
 	case errors.Is(err, store.ErrSealerCannotRead):
 		s.replyError(reqID, ErrCodeNotAuthorized, "only an owner or admin who reads this number now can share its key")

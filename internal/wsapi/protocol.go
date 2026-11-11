@@ -797,13 +797,13 @@ type TokenWaitingList struct {
 // TokenGrantRequest hands a token's identity the key of one number: the
 // number's private archive key at its current epoch, sealed to the token's
 // reading key by the client, and the fingerprint of the archive key whose
-// private half it sealed (store.ArchiveKeyFingerprint, DS49). The client
-// MUST compute that fingerprint itself, from the X25519 public half of the
-// private key it seals, compare it with TokenGrantNumber's, and seal
-// nothing on a mismatch. An echo of the context's value would let a key an
-// archive reset deleted through, at the epoch the new key reuses. A grant
-// for another key, or for a number with no key, is refused conflict, as
-// grant.add answers it.
+// private half it sealed (store.ArchiveKeyFingerprint; DS49, wappie#75,
+// not on main yet). The client MUST compute that fingerprint itself, from
+// the X25519 public half of the private key it seals, compare it with
+// TokenGrantNumber's, and seal nothing on a mismatch. An echo of the
+// context's value would let a key an archive reset deleted through, at the
+// epoch the new key reuses. A grant for another key, or for a number with
+// no key, is refused conflict, as grant.add will answer it under DS49.
 type TokenGrantRequest struct {
 	TokenID               string `json:"token_id"`
 	DeviceID              string `json:"device_id"`
@@ -2008,7 +2008,8 @@ const (
 	// reading key than the one pinned; Wappie could not confirm the token's
 	// record with the platform within the last minute; and the token holds
 	// no applied Read on the number. A grant sealed for another archive key
-	// of the number is conflict, as grant.add answers it (DS49).
+	// of the number is conflict, as grant.add will answer it under DS49
+	// (wappie#75, not on main yet).
 	ErrCodeTokenNotLive      = "token_not_live"
 	ErrCodeReadingKeyChanged = "reading_key_changed"
 	ErrCodeTokenUnconfirmed  = "token_unconfirmed"
