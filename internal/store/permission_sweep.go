@@ -36,12 +36,13 @@ type SweptConnection struct {
 	// its key, or a row older than 0009. Their remedy is device-key.
 	Keyless []uuid.UUID
 	// Orphan are numbers it held that have a key and no grant to anyone
-	// but a connection's account or an account whose membership carries a
-	// deadline, a consent's (wsctl pair -orphan, or device-key with no
-	// account). Their remedy is a grant sealed with the printed key, or
-	// the number deleted and paired again with -grant. Those accounts
-	// never count: their copies are sealed to keys that live only in a
-	// reader, as KeyHolders leaves them out.
+	// but a connection's account, an account whose membership carries a
+	// deadline, a consent's, or a platform token's identity (wsctl pair
+	// -orphan, or device-key with no account). Their remedy is a grant
+	// sealed with the printed key, or the number deleted and paired again
+	// with -grant. Those accounts never count: their copies are sealed to
+	// keys that live only in a reader or with a token's app, as KeyHolders
+	// leaves them out.
 	Orphan []uuid.UUID
 	// Narrowed are numbers its key names that its person reads and its
 	// own account (content, AI) no longer does: a grant.revoke or a PUT on
@@ -203,13 +204,14 @@ func endConnectionsWithoutReadTx(ctx context.Context, tx pgx.Tx, tenant uuid.UUI
 	}
 	// Why, for the remedy the log names: a number nobody reads, with no
 	// key (epoch 0) or with a key and no grant to anyone but a
-	// connection's or a consent's account (Orphan); and a number its
+	// connection's, a consent's or a token's account (Orphan); and a number its
 	// person reads and its own account no longer does.
 	rows, err = tx.Query(ctx, unreadHeld+`SELECT u.id::text, u.device_id, CASE WHEN d.current_epoch = 0 THEN 'keyless' ELSE 'orphan' END
 		FROM unread u JOIN devices d ON d.id = u.device_id AND d.tenant_id = $1 AND d.deleted_at IS NULL
 		WHERE d.current_epoch = 0 OR NOT EXISTS (SELECT 1 FROM device_key_grants g WHERE g.tenant_id = $1 AND g.device_id = d.id
 			AND NOT EXISTS (SELECT 1 FROM mcp_connections c WHERE c.tenant_id = $1 AND c.service_user_id = g.user_id)
-			AND NOT EXISTS (SELECT 1 FROM workspace_memberships m WHERE m.tenant_id = $1 AND m.user_id = g.user_id AND m.expires_at IS NOT NULL))
+			AND NOT EXISTS (SELECT 1 FROM workspace_memberships m WHERE m.tenant_id = $1 AND m.user_id = g.user_id AND m.expires_at IS NOT NULL)
+			AND NOT EXISTS (SELECT 1 FROM users u WHERE u.id = g.user_id AND u.token_identity))
 		UNION ALL
 		SELECT n.id::text, n.device_id, 'narrowed' FROM narrowed n
 		 WHERE NOT EXISTS (SELECT 1 FROM unread u WHERE u.id = n.id AND u.device_id = n.device_id)
