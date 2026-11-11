@@ -2,11 +2,13 @@
 
 ## Public server
 
-Go 1.26.10 and PostgreSQL 18 build and run the server, API administration and Go
+Go 1.26.11 and PostgreSQL 18 build and run the server, API administration and Go
 CLIs. go.mod's `go 1.26.7` is only the oldest toolchain that compiles them;
-build with 1.26.10 or a later patched release: 1.26.7 has net/http advisories
-that 1.26.9 fixes, and 1.26.9 has crypto/x509's GO-2026-6809 (a denylist of
-distrusted intermediate certificates), which 1.26.10 fixes. Node is required only for the optional public TypeScript SDK/account CLI.
+build with 1.26.11 or a later patched release: 1.26.7 has net/http advisories
+that 1.26.9 fixes, 1.26.9 has crypto/x509's GO-2026-6809 (a denylist of
+distrusted intermediate certificates), which 1.26.10 fixes, and 1.26.10 has
+net/http's GO-2026-6859 (an HTTP/1 server crash from a MaxBytesReader header
+race), which 1.26.11 fixes. Node is required only for the optional public TypeScript SDK/account CLI.
 The public repository contains no app, console or billing sources. Standalone
 installations require no Wappie subscription. `WS_WEB_DIR` defaults to empty.
 
