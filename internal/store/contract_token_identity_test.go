@@ -151,13 +151,18 @@ func TestATokenIdentityIsNeverAMember(t *testing.T) {
 	if err := w.seal(token, device, w.owner, 1); err != nil {
 		t.Fatal(err)
 	}
+	// An admin's revoke is refused the same way, before the check that
+	// only an owner changes an owner's access (DS48): a token is never
+	// taken for a person.
+	admin := w.linked("admin", "admin", uuid.New(), true)
 	for name, err := range map[string]error{
 		"grant.add": w.keys.PutGrant(ctx, store.Grant{TenantID: w.tenant, DeviceID: device, UserID: *identity, Epoch: 1, SealedDSK: []byte("g")}, &w.owner),
 		"a permission": w.users.SetDevicePermission(ctx, w.tenant, w.owner,
 			store.DevicePermission{DeviceID: device, UserID: *identity, Read: true}),
-		"a member's update":  w.users.UpdateMember(ctx, w.tenant, w.owner, *identity, "admin", "active"),
-		"a member's removal": w.users.RemoveMember(ctx, w.tenant, w.owner, *identity),
-		"grant.revoke":       w.keys.RevokeGrant(ctx, w.tenant, device, *identity),
+		"a member's update":       w.users.UpdateMember(ctx, w.tenant, w.owner, *identity, "admin", "active"),
+		"a member's removal":      w.users.RemoveMember(ctx, w.tenant, w.owner, *identity),
+		"grant.revoke":            w.keys.RevokeGrant(ctx, w.tenant, w.owner, device, *identity),
+		"an admin's grant.revoke": w.keys.RevokeGrant(ctx, w.tenant, admin, device, *identity),
 	} {
 		if !errors.Is(err, store.ErrNotFound) {
 			t.Errorf("%s on a token identity: %v", name, err)
@@ -238,7 +243,7 @@ func TestATokenNeverCountsAsABackup(t *testing.T) {
 	memberSub := uuid.New()
 	member := w.linked("member", "member", memberSub, true)
 	w.reads(member, device)
-	if err := w.keys.RevokeGrant(ctx, w.tenant, device, w.owner); err != nil {
+	if err := w.keys.RevokeGrant(ctx, w.tenant, w.owner, device, w.owner); err != nil {
 		t.Fatal(err)
 	}
 	if err := w.users.RemoveMember(ctx, w.tenant, w.owner, member); !errors.Is(err, store.ErrLastDeviceReader) {
