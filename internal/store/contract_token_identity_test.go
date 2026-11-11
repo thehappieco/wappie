@@ -1250,9 +1250,11 @@ func TestEveryGrantCountJoinsAMembership(t *testing.T) {
 	}
 	// One account: the grant's user_id = a parameter or an account column,
 	// written grant side first (an anti-join's "c.service_user_id =
-	// g.user_id" names no account).
+	// g.user_id" names no account). A connection's created_by is the one
+	// person who consented (F4's connectionAccountTakesTx); a token never
+	// makes a connection.
 	oneAccount := func(q, ref string) bool {
-		return regexp.MustCompile(`(?i)(^|[^a-z_.])` + ref + `\s*=\s*(\$\d+|[a-z_]+\.(identity_user_id|service_user_id))\b`).MatchString(q)
+		return regexp.MustCompile(`(?i)(^|[^a-z_.])` + ref + `\s*=\s*(\$\d+|[a-z_]+\.(identity_user_id|service_user_id|created_by))\b`).MatchString(q)
 	}
 	bound := func(q, ref string, aliases map[string]bool) bool {
 		for _, m := range regexp.MustCompile(`(?i)(?:(?:^|[^a-z_.])`+ref+`\s*=\s*([a-z_]+)\.(?:user_id|id)\b|\b([a-z_]+)\.(?:user_id|id)\s*=\s*`+ref+`\b)`).FindAllStringSubmatch(q, -1) {
