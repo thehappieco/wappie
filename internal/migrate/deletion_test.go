@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -259,6 +260,30 @@ func TestMigration0050Checks(t *testing.T) {
 	}
 }
 
+// downAbove runs the down-step of every embedded migration above n,
+// newest first, so a chain test names only where it stops, and a new
+// migration edits no chain.
+func downAbove(t *testing.T, pool *pgxpool.Pool, n int) {
+	t.Helper()
+	migrations, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var versions []int
+	for _, m := range migrations {
+		if m.Version > n {
+			versions = append(versions, m.Version)
+		}
+	}
+	slices.Sort(versions)
+	slices.Reverse(versions)
+	for _, v := range versions {
+		if _, err := pool.Exec(t.Context(), downStepSQL(t, v)); err != nil {
+			t.Fatalf("%04d down-step: %v", v, err)
+		}
+	}
+}
+
 // downStepSQL reads the transaction out of a migration's header comment, so
 // the statements tested are the ones an operator copies.
 func downStepSQL(t *testing.T, version int) string {
@@ -358,15 +383,7 @@ func TestMigration0050DownStep(t *testing.T) {
 	}
 	// 0053, 0052 and 0051 come down first, before any other guard is asked.
 	refused("a migration after 0050 is applied")
-	if _, err := pool.Exec(ctx, downStepSQL(t, 53)); err != nil {
-		t.Fatalf("0053's down-step: %v", err)
-	}
-	if _, err := pool.Exec(ctx, downStepSQL(t, 52)); err != nil {
-		t.Fatalf("0052's down-step: %v", err)
-	}
-	if _, err := pool.Exec(ctx, downStepSQL(t, 51)); err != nil {
-		t.Fatalf("0051's down-step: %v", err)
-	}
+	downAbove(t, pool, 50)
 	refused("excluded numbers exist")
 	if _, err := pool.Exec(ctx, `ALTER TABLE devices DISABLE ROW LEVEL SECURITY;
 		UPDATE devices SET deleted_at=NULL, purge_after=NULL, paused=false;

@@ -1083,21 +1083,7 @@ func TestMigration0048DownStepAfter0049(t *testing.T) {
 	if _, err := f.users.Authenticate(ctx, "lia@example.com", "lia-auth-key"); !errors.Is(err, store.ErrBadCredentials) {
 		t.Fatalf("the old password after 0049: %v", err)
 	}
-	if _, err := f.pool.Exec(ctx, downStep(t, 53)); err != nil {
-		t.Fatalf("0053 down-step: %v", err)
-	}
-	if _, err := f.pool.Exec(ctx, downStep(t, 52)); err != nil {
-		t.Fatalf("0052 down-step: %v", err)
-	}
-	if _, err := f.pool.Exec(ctx, downStep(t, 51)); err != nil {
-		t.Fatalf("0051 down-step: %v", err)
-	}
-	if _, err := f.pool.Exec(ctx, downStep(t, 50)); err != nil {
-		t.Fatalf("0050 down-step: %v", err)
-	}
-	if _, err := f.pool.Exec(ctx, downStep(t, 49)); err != nil {
-		t.Fatalf("0049 down-step: %v", err)
-	}
+	downAbove(t, f.pool, 48)
 	if _, err := f.pool.Exec(ctx, downStep(t, 48)); err == nil || !strings.Contains(err.Error(), "created through the identity provider") {
 		t.Fatalf("0048's down-step with a linked account 0049 covered: %v", err)
 	}
@@ -1169,21 +1155,7 @@ func TestMigration0048DownStep(t *testing.T) {
 	// 0053's, 0052's, 0051's and 0050's down-steps come first, then 0049's:
 	// its ledger row. This account was linked after 0049 ran (on the empty
 	// database), so it kept its old password.
-	if _, err := f.pool.Exec(ctx, downStep(t, 53)); err != nil {
-		t.Fatalf("0053 down-step: %v", err)
-	}
-	if _, err := f.pool.Exec(ctx, downStep(t, 52)); err != nil {
-		t.Fatalf("0052 down-step: %v", err)
-	}
-	if _, err := f.pool.Exec(ctx, downStep(t, 51)); err != nil {
-		t.Fatalf("0051 down-step: %v", err)
-	}
-	if _, err := f.pool.Exec(ctx, downStep(t, 50)); err != nil {
-		t.Fatalf("0050 down-step: %v", err)
-	}
-	if _, err := f.pool.Exec(ctx, downStep(t, 49)); err != nil {
-		t.Fatalf("0049 down-step: %v", err)
-	}
+	downAbove(t, f.pool, 48)
 	if _, err := f.pool.Exec(ctx, downStep(t, 48)); err == nil || !strings.Contains(err.Error(), "created through the identity provider") {
 		t.Fatalf("the down-step ran with an account that has no password: %v", err)
 	}

@@ -627,27 +627,7 @@ func TestMigration0047DownStep(t *testing.T) {
 		AND table_name='sessions' AND column_name='authenticated_at'`).Scan(&left); err != nil || left != 1 {
 		t.Fatalf("a refused down-step dropped sessions.authenticated_at: %d %v", left, err)
 	}
-	if _, err := f.pool.Exec(ctx, downStep(t, 53)); err != nil {
-		t.Fatalf("0053 down-step: %v", err)
-	}
-	if _, err := f.pool.Exec(ctx, downStep(t, 52)); err != nil {
-		t.Fatalf("0052 down-step: %v", err)
-	}
-	if _, err := f.pool.Exec(ctx, downStep(t, 51)); err != nil {
-		t.Fatalf("0051 down-step: %v", err)
-	}
-	if _, err := f.pool.Exec(ctx, downStep(t, 50)); err != nil {
-		t.Fatalf("0050 down-step: %v", err)
-	}
-	if _, err := f.pool.Exec(ctx, downStep(t, 49)); err != nil {
-		t.Fatalf("0049 down-step: %v", err)
-	}
-	if _, err := f.pool.Exec(ctx, downStep(t, 48)); err != nil {
-		t.Fatalf("0048 down-step: %v", err)
-	}
-	if _, err := f.pool.Exec(ctx, downStep(t, 47)); err != nil {
-		t.Fatalf("down-step: %v", err)
-	}
+	downAbove(t, f.pool, 46)
 	if err := f.pool.QueryRow(ctx, `SELECT max(version) FROM schema_migrations`).Scan(&version); err != nil || version != 46 {
 		t.Fatalf("ledger at %d %v", version, err)
 	}

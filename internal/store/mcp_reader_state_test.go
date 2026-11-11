@@ -5,9 +5,12 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"whatserver2/internal/migrate"
 	"whatserver2/internal/store"
@@ -208,45 +211,7 @@ func TestMigration0041DownStep(t *testing.T) {
 	// contract) come down first, then 0050 (deleted numbers), 0049 (the end
 	// of the sign-in's rollback window, its ledger row only), 0048 (platform
 	// sign-in), 0047 (fewer steps), 0046, 0045, 0044, 0043, 0042 and 0041.
-	if _, err := f.pool.Exec(ctx, downStep(t, 53)); err != nil {
-		t.Fatalf("0053 down-step: %v", err)
-	}
-	if _, err := f.pool.Exec(ctx, downStep(t, 52)); err != nil {
-		t.Fatalf("0052 down-step: %v", err)
-	}
-	if _, err := f.pool.Exec(ctx, downStep(t, 51)); err != nil {
-		t.Fatalf("0051 down-step: %v", err)
-	}
-	if _, err := f.pool.Exec(ctx, downStep(t, 50)); err != nil {
-		t.Fatalf("0050 down-step: %v", err)
-	}
-	if _, err := f.pool.Exec(ctx, downStep(t, 49)); err != nil {
-		t.Fatalf("0049 down-step: %v", err)
-	}
-	if _, err := f.pool.Exec(ctx, downStep(t, 48)); err != nil {
-		t.Fatalf("0048 down-step: %v", err)
-	}
-	if _, err := f.pool.Exec(ctx, downStep(t, 47)); err != nil {
-		t.Fatalf("0047 down-step: %v", err)
-	}
-	if _, err := f.pool.Exec(ctx, downStep(t, 46)); err != nil {
-		t.Fatalf("0046 down-step: %v", err)
-	}
-	if _, err := f.pool.Exec(ctx, downStep(t, 45)); err != nil {
-		t.Fatalf("0045 down-step: %v", err)
-	}
-	if _, err := f.pool.Exec(ctx, downStep(t, 44)); err != nil {
-		t.Fatalf("0044 down-step: %v", err)
-	}
-	if _, err := f.pool.Exec(ctx, downStep(t, 43)); err != nil {
-		t.Fatalf("0043 down-step: %v", err)
-	}
-	if _, err := f.pool.Exec(ctx, downStep(t, 42)); err != nil {
-		t.Fatalf("0042 down-step: %v", err)
-	}
-	if _, err := f.pool.Exec(ctx, downStep(t, 41)); err != nil {
-		t.Fatalf("down-step: %v", err)
-	}
+	downAbove(t, f.pool, 40)
 	var version int
 	if err := f.pool.QueryRow(ctx, `SELECT max(version) FROM schema_migrations`).Scan(&version); err != nil || version != 40 {
 		t.Fatalf("ledger at %d %v", version, err)
@@ -295,6 +260,30 @@ func TestMigration0041DownStep(t *testing.T) {
 	for _, c := range listed {
 		if c.Reader != store.HostedReader {
 			t.Fatalf("row %s came back with reader %q", c.ID, c.Reader)
+		}
+	}
+}
+
+// downAbove runs the down-step of every embedded migration above n,
+// newest first, so a chain test names only where it stops, and a new
+// migration edits no chain.
+func downAbove(t *testing.T, pool *pgxpool.Pool, n int) {
+	t.Helper()
+	migrations, err := migrate.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var versions []int
+	for _, m := range migrations {
+		if m.Version > n {
+			versions = append(versions, m.Version)
+		}
+	}
+	slices.Sort(versions)
+	slices.Reverse(versions)
+	for _, v := range versions {
+		if _, err := pool.Exec(t.Context(), downStep(t, v)); err != nil {
+			t.Fatalf("%04d down-step: %v", v, err)
 		}
 	}
 }

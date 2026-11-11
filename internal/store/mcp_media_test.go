@@ -240,39 +240,7 @@ func TestMigration0043DownStep(t *testing.T) {
 	// down first, then 0050 (deleted numbers), 0049 (the end of the
 	// sign-in's rollback window, its ledger row only), 0048 (platform
 	// sign-in) and 0047 (fewer steps).
-	if _, err := f.pool.Exec(ctx, downStep(t, 53)); err != nil {
-		t.Fatalf("0053 down-step: %v", err)
-	}
-	if _, err := f.pool.Exec(ctx, downStep(t, 52)); err != nil {
-		t.Fatalf("0052 down-step: %v", err)
-	}
-	if _, err := f.pool.Exec(ctx, downStep(t, 51)); err != nil {
-		t.Fatalf("0051 down-step: %v", err)
-	}
-	if _, err := f.pool.Exec(ctx, downStep(t, 50)); err != nil {
-		t.Fatalf("0050 down-step: %v", err)
-	}
-	if _, err := f.pool.Exec(ctx, downStep(t, 49)); err != nil {
-		t.Fatalf("0049 down-step: %v", err)
-	}
-	if _, err := f.pool.Exec(ctx, downStep(t, 48)); err != nil {
-		t.Fatalf("0048 down-step: %v", err)
-	}
-	if _, err := f.pool.Exec(ctx, downStep(t, 47)); err != nil {
-		t.Fatalf("0047 down-step: %v", err)
-	}
-	if _, err := f.pool.Exec(ctx, downStep(t, 46)); err != nil {
-		t.Fatalf("0046 down-step: %v", err)
-	}
-	if _, err := f.pool.Exec(ctx, downStep(t, 45)); err != nil {
-		t.Fatalf("0045 down-step: %v", err)
-	}
-	if _, err := f.pool.Exec(ctx, downStep(t, 44)); err != nil {
-		t.Fatalf("0044 down-step: %v", err)
-	}
-	if _, err := f.pool.Exec(ctx, downStep(t, 43)); err != nil {
-		t.Fatalf("down-step: %v", err)
-	}
+	downAbove(t, f.pool, 42)
 	var version int
 	if err := f.pool.QueryRow(ctx, `SELECT max(version) FROM schema_migrations`).Scan(&version); err != nil || version != 42 {
 		t.Fatalf("ledger at %d %v", version, err)

@@ -672,15 +672,7 @@ func TestDownStepAfterDeletionAndRecovery(t *testing.T) {
 	}
 	down51 := func() {
 		t.Helper()
-		if _, err := w.pool.Exec(ctx, downStep(t, 53)); err != nil {
-			t.Fatalf("0053 down-step: %v", err)
-		}
-		if _, err := w.pool.Exec(ctx, downStep(t, 52)); err != nil {
-			t.Fatalf("0052 down-step: %v", err)
-		}
-		if _, err := w.pool.Exec(ctx, downStep(t, 51)); err != nil {
-			t.Fatalf("0051 down-step: %v", err)
-		}
+		downAbove(t, w.pool, 50)
 	}
 	up51 := func() {
 		t.Helper()
