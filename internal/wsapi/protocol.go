@@ -1433,10 +1433,20 @@ type ContactSummary struct {
 	ContactPN  string `json:"contact_pn,omitempty"`
 	IsGroup    bool   `json:"is_group,omitempty"`
 
+	// ContentKeyID is the content key of the names written last. The
+	// names are written one at a time and a content key is replaced after
+	// 1000 seals or 15 minutes, so two names of one contact can be under
+	// different keys. A name under another key than this one has it in its
+	// *_key_id field below, and a reader opens the name with it. A name
+	// without one is under ContentKeyID: it is the row's key, or the
+	// server predates these fields (DS50).
 	ContentKeyID       uint32 `json:"content_key_id,omitempty"`
 	PushNameSealed     []byte `json:"push_name_sealed,omitempty"`
 	FullNameSealed     []byte `json:"full_name_sealed,omitempty"`
 	BusinessNameSealed []byte `json:"business_name_sealed,omitempty"`
+	PushNameKeyID      uint32 `json:"push_name_key_id,omitempty"`
+	FullNameKeyID      uint32 `json:"full_name_key_id,omitempty"`
+	BusinessNameKeyID  uint32 `json:"business_name_key_id,omitempty"`
 
 	// HasAvatar says a picture is stored without sending it. A thousand
 	// contacts with a picture each is tens of megabytes, and a chat list needs
