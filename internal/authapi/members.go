@@ -38,6 +38,11 @@ func (h *Handler) memberError(w http.ResponseWriter, err error) {
 		fail(w, http.StatusServiceUnavailable, "workspace_busy", "another change to this workspace is still running; try again in a few seconds")
 	case errors.Is(err, store.ErrMembershipForbidden):
 		fail(w, http.StatusForbidden, "not_authorized", "this action requires a workspace owner or an authorized administrator")
+	case errors.Is(err, store.ErrConnectionAccountGrant):
+		// An assistant connection's own account holds what it was
+		// consented to (DS48).
+		fail(w, http.StatusForbidden, "not_authorized",
+			"an assistant connection's account takes only a number its key names and its person reads")
 	case errors.Is(err, store.ErrLastOwner):
 		fail(w, http.StatusConflict, "last_owner", "the workspace must retain an active owner")
 	case errors.Is(err, store.ErrLastDeviceReader):

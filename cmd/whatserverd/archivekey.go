@@ -72,19 +72,11 @@ func deviceKey(args []string) error {
 		return err
 	}
 
-	pub, priv, err := seal.GenerateKeyPair()
-	if err != nil {
-		return err
-	}
-	raw, err := priv.Bytes()
-	if err != nil {
-		return err
-	}
-	const epoch = 1
-	if err := keys.CreateArchiveKey(ctx, tenant, deviceID, epoch, pub); err != nil {
-		return err
-	}
-
+	// The accounts are chosen and checked before the key is made. A
+	// refusal after it would leave a key nobody holds, its private half
+	// discarded unprinted, and device-key refuses a number that has a
+	// key.
+	//
 	// Sealed to the accounts named, so reading this archive is a matter of
 	// signing in rather than of keeping a secret in a file.
 	//
@@ -100,17 +92,40 @@ func deviceKey(args []string) error {
 	if err != nil {
 		return err
 	}
+	userKeys := make([]seal.PublicKey, len(accounts))
+	for i, u := range accounts {
+		if userKeys[i], err = seal.ParsePublicKey(u.PublicKey); err != nil {
+			return fmt.Errorf("device-key: account %s has an unusable public key: %w", u.Email, err)
+		}
+		// An assistant connection's own account takes only what its
+		// consent named (DS48).
+		if err := keys.CheckGrant(ctx, tenant, deviceID, u.ID); errors.Is(err, store.ErrConnectionAccountGrant) {
+			return fmt.Errorf("device-key: account %s is an assistant connection's own account; grant the number to a person", u.Email)
+		} else if err != nil {
+			return fmt.Errorf("device-key: account %s: %w", u.Email, err)
+		}
+	}
 	archiveTenant, err := keys.ArchiveTenant(ctx, tenant, deviceID)
 	if err != nil {
 		return err
 	}
+
+	pub, priv, err := seal.GenerateKeyPair()
+	if err != nil {
+		return err
+	}
+	raw, err := priv.Bytes()
+	if err != nil {
+		return err
+	}
+	const epoch = 1
+	if err := keys.CreateArchiveKey(ctx, tenant, deviceID, epoch, pub); err != nil {
+		return err
+	}
+
 	granted := 0
-	for _, u := range accounts {
-		userPub, err := seal.ParsePublicKey(u.PublicKey)
-		if err != nil {
-			return fmt.Errorf("device-key: account %s has an unusable public key: %w", u.Email, err)
-		}
-		sealed, err := seal.SealDirect(userPub, seal.KindDeviceGrant, archiveTenant,
+	for i, u := range accounts {
+		sealed, err := seal.SealDirect(userKeys[i], seal.KindDeviceGrant, archiveTenant,
 			seal.GrantRow(archiveTenant, deviceID, u.ID, epoch), epoch, raw)
 		if err != nil {
 			return err
@@ -155,8 +170,17 @@ Create an account and run this again for the next device, and there will be
 nothing to save by hand.
 `, base64.RawURLEncoding.EncodeToString(raw))
 	}
+	fmt.Print(deviceKeyRestart)
 	return nil
 }
+
+// deviceKeyRestart ends device-key's output, whatever it printed before:
+// a running server caches each number's key (ingest's pipelineFor), and
+// nothing tells it the key changed.
+const deviceKeyRestart = `
+Restart wappie-api now if it is running. A running server keeps sealing to the
+old key until it restarts.
+`
 
 // resolveDeviceAnywhere finds a device without being told its tenant.
 //

@@ -17,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	kc "github.com/thehappieco/kit/contract"
 
+	"whatserver2/internal/domain"
 	"whatserver2/internal/obs"
 	"whatserver2/internal/store"
 	"whatserver2/internal/wa"
@@ -378,7 +379,7 @@ func TestFlagsActsLockOrder(t *testing.T) {
 				return err
 			},
 			"a key revoked": func() error {
-				return w.keys.RevokeGrant(lctx, w.tenant, device, other)
+				return w.keys.RevokeGrant(lctx, w.tenant, w.owner, device, other)
 			},
 			"a member disabled": func() error {
 				return w.users.UpdateMember(lctx, w.tenant, w.owner, target, "member", "disabled")
@@ -442,11 +443,12 @@ func TestFlagsActsLockOrder(t *testing.T) {
 	}
 }
 
-// TestOwnConnectionsLockOrder (the plan's 3.2 and 5.4, DS47, the
+// TestOwnConnectionsLockOrder (the plan's 3.2 and 5.4, DS47, DS48, the
 // platform's 0061): a drop of read and a remove whose people have
 // connections and integrations of every kind on the number and another (a
-// media one among them), which end whole, and Wappie's own screen without
-// Read, at the same time as every writer of those connections' rows (a
+// media one among them), which end whole, Wappie's own screen without
+// Read, a lone grant.revoke, and the start's check with leftovers of its
+// own to end, at the same time as every writer of those connections' rows (a
 // revoke, an integration paused and one revoked, a reader's question, a
 // notice raised, the person disabled, another removed, the number deleted,
 // a key shared, a content and a metadata consent prepared before the drop
@@ -500,7 +502,18 @@ func TestOwnConnectionsLockOrder(t *testing.T) {
 		}
 		theirs, _ := w.connect(t, w.owner, store.KindContent, device)
 		media := w.connectMedia(t, removed, device, w.shared)
-		before := []string{media.ID}
+		// What the start's check ends (DS48): a person whose grant on the
+		// shared number went before F4, with an AI integration on it alone,
+		// which only the check ends, and one on it and the round's number,
+		// which the check and the number's deletion race to end. AI
+		// integrations, which the workspace's cap does not count.
+		stale, _ := w.actor(t, "admin", "admin")
+		w.reads(t, stale, device)
+		w.reads(t, stale, w.shared)
+		staleShared, _ := w.connect(t, stale, store.KindAI, w.shared)
+		staleBoth, _ := w.connect(t, stale, store.KindAI, device, w.shared)
+		w.execOne(t, `DELETE FROM device_key_grants WHERE device_id = $1 AND user_id = $2`, w.shared, stale)
+		before := []string{media.ID, staleShared, staleBoth}
 		for _, m := range mine {
 			before = append(before, m.both, m.ai, m.meta)
 		}
@@ -530,6 +543,16 @@ func TestOwnConnectionsLockOrder(t *testing.T) {
 			"the screen without read": func() error {
 				_, err := w.users.SetDevicePermissionEnded(lctx, w.tenant, admin, store.DevicePermission{DeviceID: device, UserID: screened})
 				return raced(err)
+			},
+			// A lone grant.revoke on the same person, and the start's
+			// check, take the same locks in the same order (DS48).
+			"a grant revoked": func() error {
+				_, err := w.keys.RevokeGrantEnded(lctx, w.tenant, admin, device, screened)
+				return raced(err)
+			},
+			"the start's check": func() error {
+				_, err := store.EndConnectionsWithoutRead(lctx, w.pool)
+				return err
 			},
 			"a connection revoked": func() error {
 				_, err := w.conns.Revoke(lctx, w.tenant, w.owner, mine[dropped].both)
@@ -647,7 +670,144 @@ func TestOwnConnectionsLockOrder(t *testing.T) {
 			before); n != 0 {
 			t.Fatalf("round %d: %d of the people's connections made before it are live", round, n)
 		}
+		// The check ended something in every round, under the same locks
+		// as everyone else.
+		if r := w.row(t, staleShared); r.status != "revoked" || r.reason != store.ReasonAccessLost {
+			t.Fatalf("round %d: the check's leftover %+v", round, r)
+		}
 		w.endAll(t)
+	}
+	if strings.Contains(logs.String(), "deadlocked") {
+		t.Fatalf("a deadlock, retried:\n%s", logs.String())
+	}
+}
+
+// TestResetArchiveLockOrder (DS48, the platform's F5): the operator's
+// archive reset, its numbers kept or not, takes the workspace's lock first,
+// as every act on access does, and ends every live connection before its
+// deletes. It runs at the same time as ingest (whose sequence is the
+// tenants row), a consent of each kind and a renewal recorded, a lone
+// grant.revoke, the start's check, the screen without Read, a key shared,
+// a revoke, a reader's question and a notice raised, many rounds: nothing
+// deadlocks (no 40P01), every call ends without an error but the answers a
+// race may give, and no connection is live after a round: one recorded
+// before the reset ends with it, one recorded after is refused.
+func TestResetArchiveLockOrder(t *testing.T) {
+	ctx := context.Background()
+	w := newOwnWorld(t)
+	messages := store.NewMessages(w.pool)
+	logs := &syncBuffer{}
+	lctx := obs.WithLogger(ctx, slog.New(slog.NewTextHandler(logs, nil)))
+	allowed := store.StatusAllowed{Content: func(uuid.UUID) bool { return true }, AI: func(uuid.UUID) bool { return true }}
+	// What a race may answer: the connection ended, the person's Read, the
+	// number or its key gone (a foreign key's 23503, or the ownership
+	// trigger's WS002, for a row whose number or key the reset deleted
+	// first).
+	raced := func(err error) error {
+		if errors.Is(err, store.ErrMCPConnectionState) || errors.Is(err, store.ErrMCPConnectionNotFound) ||
+			errors.Is(err, store.ErrNotFound) || errors.Is(err, store.ErrNumberGone) || errors.Is(err, store.ErrMCPKeyUnsuitable) ||
+			sqlState(err) == "23503" || sqlState(err) == "WS002" {
+			return nil
+		}
+		return err
+	}
+	for round := range 6 {
+		keep := round%2 == 0
+		person, _ := w.actor(t, "admin", "admin")
+		screened, _ := w.actor(t, "admin", "admin")
+		number, other := w.number(t, fmt.Sprintf("Round %d", round)), w.number(t, fmt.Sprintf("Other %d", round))
+		for _, d := range []uuid.UUID{number, other} {
+			w.reads(t, w.owner, d)
+			w.reads(t, person, d)
+			w.reads(t, screened, d)
+		}
+		content, _ := w.connect(t, person, store.KindContent, number, other)
+		_, _ = w.connect(t, person, store.KindAI, number)
+		meta, _ := w.connect(t, screened, store.KindMetadata, number)
+		renewal := w.renewal(t, person, number, other)
+		prepared := w.prepare(t, screened, store.KindMetadata, number, other)
+		preparedContent := w.prepare(t, person, store.KindContent, other)
+		insert := func(c context.Context, waID string) error {
+			_, err := messages.Insert(c, store.InsertMessage{UID: uuid.New(), TenantID: w.tenant, DeviceID: number, WAID: waID,
+				ChatKey: "chat", Kind: domain.KindMessage, Type: domain.TypeText, Source: domain.SourceLive, TS: time.Now(), BodySealed: []byte{1}})
+			return err
+		}
+		// The chat is there already, so ingest updates its row.
+		if err := insert(ctx, fmt.Sprintf("first-%d", round)); err != nil {
+			t.Fatal(err)
+		}
+		calls := map[string]func() error{
+			"the reset": func() error {
+				_, err := store.ResetArchive(lctx, w.pool, w.tenant, keep)
+				return err
+			},
+			"a message ingested": func() error {
+				return raced(insert(lctx, fmt.Sprintf("second-%d", round)))
+			},
+			"a consent recorded": func() error {
+				_, err := w.conns.Create(lctx, w.tenant, screened, prepared)
+				return raced(err)
+			},
+			"a content consent recorded": func() error {
+				_, err := w.conns.Create(lctx, w.tenant, person, preparedContent)
+				return raced(err)
+			},
+			"a renewal": func() error {
+				_, err := w.conns.Renew(lctx, w.tenant, person, content, renewal)
+				return raced(err)
+			},
+			"a grant revoked": func() error {
+				_, err := w.keys.RevokeGrantEnded(lctx, w.tenant, w.owner, number, screened)
+				return raced(err)
+			},
+			"the start's check": func() error {
+				_, err := store.EndConnectionsWithoutRead(lctx, w.pool)
+				return err
+			},
+			"the screen without read": func() error {
+				_, err := w.users.SetDevicePermissionEnded(lctx, w.tenant, w.owner, store.DevicePermission{DeviceID: other, UserID: person})
+				return raced(err)
+			},
+			"a key shared": func() error {
+				return raced(w.keys.PutGrant(lctx, store.Grant{TenantID: w.tenant, DeviceID: number, UserID: w.owner, Epoch: 1,
+					SealedDSK: []byte("again")}, &w.owner))
+			},
+			"a connection revoked": func() error {
+				_, err := w.conns.Revoke(lctx, w.tenant, w.owner, meta)
+				return raced(err)
+			},
+			"a reader's question": func() error {
+				_, err := w.conns.StatusFor(lctx, "enclave", content, allowed)
+				return raced(err)
+			},
+			"a notice raised": func() error {
+				_, err := w.conns.RaiseNotice(lctx, store.HostedReader, meta, "daily_messages")
+				return raced(err)
+			},
+		}
+		var wg sync.WaitGroup
+		errs := make(chan error, len(calls))
+		start := make(chan struct{})
+		for name, call := range calls {
+			wg.Go(func() {
+				<-start
+				if err := call(); err != nil {
+					errs <- fmt.Errorf("round %d, %s: %w", round, name, err)
+				}
+			})
+		}
+		close(start)
+		wg.Wait()
+		close(errs)
+		for err := range errs {
+			t.Error(err)
+		}
+		if t.Failed() {
+			return
+		}
+		if n := w.count(t, `SELECT count(*) FROM mcp_connections WHERE status IN ('pending', 'active', 'reseal')`); n != 0 {
+			t.Fatalf("round %d: %d connections live after the reset", round, n)
+		}
 	}
 	if strings.Contains(logs.String(), "deadlocked") {
 		t.Fatalf("a deadlock, retried:\n%s", logs.String())

@@ -204,6 +204,11 @@ func TestConsoleParityFlags(t *testing.T) {
 	if co := remove(soloConsole, p.owner); co != kc.CodeNotAuthorized {
 		t.Fatalf("an admin's remove of an owner: the runner %s", co)
 	}
+	// The socket's grant.revoke reads the role again and keeps the same
+	// rule (DS48): not_authorized, a frame, before the last reader.
+	if fo := p.revoke(t, adminToken, soloFrame, p.owner); fo != kc.CodeNotAuthorized {
+		t.Fatalf("an admin's grant.revoke of an owner: %s", fo)
+	}
 	// The last reader is kept by both, for another owner.
 	second, secondToken := p.person(t, "duda", "owner")
 	secondSub := p.link(t, second, "owner")

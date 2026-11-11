@@ -225,7 +225,7 @@ func TestDeviceAndContentPermissions(t *testing.T) {
 	if _, err := seal.OpenContentKey(f.private, f.tenant, f.device, 1, keys.Keys[0].Sealed); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.keys.RevokeGrant(context.Background(), f.tenant, f.device, member.ID); err != nil {
+	if err := f.keys.RevokeGrant(context.Background(), f.tenant, owner.ID, f.device, member.ID); err != nil {
 		t.Fatal(err)
 	}
 	f.get(t, "/v1/messages/"+row.UID.String(), memberToken, 403, nil)

@@ -242,7 +242,7 @@ func TestRESTDeviceScanFiltersAliasesAndPermissions(t *testing.T) {
 	for _, path := range []string{base, "/v1/devices/" + f.device.String() + "/contacts"} {
 		f.get(t, path, scoped, 200, nil)
 	}
-	if err := f.keys.RevokeGrant(ctx, f.tenant, f.device, service.ID); err != nil {
+	if err := f.keys.RevokeGrant(ctx, f.tenant, owner.ID, f.device, service.ID); err != nil {
 		t.Fatal(err)
 	}
 	for _, path := range []string{base, "/v1/devices/" + f.device.String() + "/contacts"} {
@@ -340,7 +340,7 @@ func TestRESTNewReadsRevalidateAccessAfterBlockedQuery(t *testing.T) {
 				err = f.api.Revoke(ctx, f.tenant.String(), verified.Prefix)
 			} else {
 				want = http.StatusForbidden
-				err = f.keys.RevokeGrant(ctx, f.tenant, f.device, reader.ID)
+				err = f.keys.RevokeGrant(ctx, f.tenant, owner.ID, f.device, reader.ID)
 			}
 			if err != nil {
 				t.Fatal(err)

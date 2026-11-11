@@ -201,7 +201,7 @@ func recoveredStrandedTx(ctx context.Context, tx pgx.Tx, device uuid.UUID) error
 }
 
 // strandBusy is ErrWorkspaceBusy for an act that gave up waiting for a
-// lock (holdOwnersMailedTx's lock_timeout).
+// lock (holdOwnersMailedTx's lock_timeout, and the start's check's).
 func strandBusy(err error) error {
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == "55P03" {

@@ -550,7 +550,7 @@ func TestReaderSafetyIgnoresConnectionService(t *testing.T) {
 	// An abandoned provisional account does not count either.
 	f.prepareContent(ctx, t, f.owner)
 
-	if err := f.grants.RevokeGrant(ctx, f.tenant, f.device, f.owner); !errors.Is(err, store.ErrLastDeviceReader) {
+	if err := f.grants.RevokeGrant(ctx, f.tenant, f.owner, f.device, f.owner); !errors.Is(err, store.ErrLastDeviceReader) {
 		t.Fatalf("the owner gave up the last envelope with only a connection service holding a copy: %v", err)
 	}
 	if err := f.users.SetDevicePermission(ctx, f.tenant, f.owner, store.DevicePermission{DeviceID: f.device, UserID: f.owner}); !errors.Is(err, store.ErrLastDeviceReader) {
@@ -567,7 +567,7 @@ func TestReaderSafetyIgnoresConnectionService(t *testing.T) {
 	// A person with a grant is still a backup.
 	member, _ := transferOwner(t, f.archive, "member")
 	f.ownerReads(ctx, t, member, f.device)
-	if err := f.grants.RevokeGrant(ctx, f.tenant, f.device, f.owner); err != nil {
+	if err := f.grants.RevokeGrant(ctx, f.tenant, f.owner, f.device, f.owner); err != nil {
 		t.Fatalf("a person's backup did not count: %v", err)
 	}
 }

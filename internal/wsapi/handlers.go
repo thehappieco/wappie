@@ -191,6 +191,13 @@ func (s *session) handlePair(ctx context.Context, f Frame) {
 				TenantID: tenantUUID, DeviceID: deviceUUID, UserID: user,
 				Epoch: 1, SealedDSK: g.SealedDSK,
 			}, nil); err != nil {
+				if errors.Is(err, store.ErrConnectionAccountGrant) {
+					// A new number is no assistant connection's (DS48).
+					s.cleanupFailedPairing(ctx, tenant, dev.ID)
+					s.replyError(f.ReqID, ErrCodeNotAuthorized,
+						"a grant names an assistant connection's account, which takes only the numbers it was consented to")
+					return
+				}
 				s.log.Error("could not record a key grant", "device", dev.ID, "error", err)
 				s.cleanupFailedPairing(ctx, tenant, dev.ID)
 				s.replyError(f.ReqID, ErrCodeInternal, "could not record a key grant")

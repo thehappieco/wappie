@@ -187,7 +187,7 @@ func TestPresenceStreamIsFilteredByTenantAndGrantedDevice(t *testing.T) {
 		}
 	}
 	retainBackupReader(t, c.pool, c.tenant, device)
-	if err := keys.RevokeGrant(ctx, c.tenant, device, member.ID); err != nil {
+	if err := keys.RevokeGrant(ctx, c.tenant, workspaceOwner(t, c.pool, c.tenant), device, member.ID); err != nil {
 		t.Fatal(err)
 	}
 	expectAccessClosed(t, conn)

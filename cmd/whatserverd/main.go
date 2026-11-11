@@ -593,6 +593,9 @@ func setupWith(ctx context.Context, withWA, migrations bool) (*app, func(), erro
 		// The grant page asks the platform for a token's record by a
 		// signed GET when its last one is over a minute old.
 		TokenRecords: a.members,
+		// A grant.revoke that took a person's Read tells the readers of
+		// their connections it ended (DS48).
+		MCPReaders: &a.readers,
 		// "Link again" on a logged-out number (decision 0057).
 		Relink: &relink.Service{
 			Devices: a.devices, Pairer: relink.FromRegistry(registry), LIDs: wa.NewLIDMap(container),
@@ -788,6 +791,10 @@ func serve() error {
 			errc <- err
 		}
 	}()
+	// The read check at every start (DS48), once the listener is bound:
+	// the process this one replaces has let go of the port by then, and
+	// its sockets are ending. In serve only, and it never fails the start.
+	go a.checkReadAtStart(ctx, &a.readers)
 
 	select {
 	case err := <-errc:
@@ -939,9 +946,9 @@ func (a *app) authHandler() *authapi.Handler {
 }
 
 // mcpReaders tells the readers through the MCP routes' handler, which
-// routes builds after the contract's acts and the auth routes take this:
-// nothing until then, nor in a process without MCP, where the readers'
-// re-tell is all there is.
+// routes builds after the contract's acts, the auth routes and the socket
+// server take this: nothing until then, nor in a process without MCP,
+// where the readers' re-tell is all there is.
 type mcpReaders struct {
 	h atomic.Pointer[mcpauth.Handler]
 }

@@ -1050,6 +1050,10 @@ a `DELETE` of grants removes zero rows under FORCE RLS, silently):
 | a number's deletion (`device.delete`, [devices.md](devices.md#deletion-and-recovery)), or a restore's replay excluding it again: every live connection whose key names the number, any kind | `access_lost` |
 | a move to Personal ([device-personal-transfer.md](device-personal-transfer.md)): the mover's own live connections to the number, any kind | `access_lost` |
 | a person's Read on a number taken, or no flag left them on it (Wappie's permissions screen, the console's `item.flags_drop` of read or of the last flag left, and `item.access_remove`; DS47, the platform's 0061): every live connection they consented to and every AI integration they created that holds the number, any kind, whole, one holding other numbers too | `access_lost` |
+| the socket's `grant.revoke` that leaves a person who has the Read flag no grant at the number's current epoch (DS48, the platform's 0061): the same connections as the row above; a dormant grant's revoke (no Read flag) ends nothing | `access_lost` |
+| the socket's `grant.revoke` of a connection's own account (`service_user_id`) that deletes a grant, or Wappie's PUT that takes that account's Read or a grant: that connection, whole (DS48) | `access_lost` |
+| the operator's `reset-archive` (`ResetArchive`), before its deletes: every live connection of the workspace, any kind (DS48) | `access_lost` |
+| the check at every start (DS48, in `serve` once the listener is bound): every live connection whose person does not read one of its numbers, any kind, whole; a number with no archive key, or with a key nobody holds, is read by nobody; a person waiting for a rotated number's new key keeps theirs; also a content connection or AI integration whose own account no longer reads a number its key names | `access_lost` |
 
 `ExpireServiceAccounts(ctx, pool)`, run beside `ExpireMCPConnections`, applies
 `removeServiceAccountTx` per tenant to every membership past `expires_at` that
@@ -1364,23 +1368,49 @@ the lifecycle with connection ids, reasons and counts.
   epoch; consent, renewal and the drop all hold the workspace's tenants
   row, so a consent prepared before the drop and recorded after it is
   refused.
-- Not swept (asked of the platform): a connection already live whose
-  person has no Read on a number its key names, a metadata one given
-  before 0061 (it asked no Read then) or a content one or AI integration
-  left by a lost Read before F3. With no Read to take, a drop of read
-  never reaches it; it ends when the person's access to that number is
-  removed (a remove, the screen's PUT with no flag, a drop of their last
-  flag), on the number's deletion or move, on a revoke, or at its expiry
-  (a content or AI one cannot renew without Read). Whether R3 ends them
-  once at its first start (`access_lost`, readers told) is the
-  platform's to say; until then they are kept (DS47).
-- Still open (0061's third rule; a small follow-up after R3): a
-  `grant.revoke` alone that leaves the person no grant at the number's
-  current epoch counts as Read taken away, even with the Read flag kept,
-  and will end their connections the same way. Today the socket's
-  `grant.revoke` leaves them as they were. A rotation of the number's key
-  (connections go to `reseal`) and a grant replaced in the same
-  transaction do not count.
+- The check at every start (DS48, the platform's answer): `serve` runs
+  it once the listener is bound, never the command line, and it never
+  fails the start. A connection already live whose person has no Read
+  on a number it holds ends, whole, `access_lost`, its reader told: a
+  metadata one given before 0061 (it asked no Read then), a content one
+  or AI integration left by a lost Read before F3, or one whose person
+  lost their grant to a lone `grant.revoke` before F4. So does a content
+  connection or AI integration whose own account no longer reads a
+  number its key names, narrowed by a `grant.revoke` or a PUT on that
+  account before F4; its log line names a new consent as the remedy.
+  After the first pass, an end means an older binary served a reset, a
+  lone revoke or such a narrowing, or a path missed one. A person
+  waiting for a rotated number's new key
+  (the Read flag, a grant at an earlier epoch whose key is not retired,
+  none at the current one) keeps theirs. A number with no archive key
+  (epoch 0) or with a key no person holds is read by nobody, so the check
+  ends the connections that hold it, and its log line names the remedy:
+  `whatserverd device-key -device <id> -grant <email>` then a new
+  consent for the first; a grant sealed with the printed key, or the
+  number deleted and paired again with `-grant`, for the second. The
+  check locks nothing in the steady state: it reads each workspace's
+  candidates first, and locks only one that has some.
+- 0061's third rule (DS48): a `grant.revoke` alone that leaves the
+  person no grant at the number's current epoch counts as Read taken
+  away when they have the Read flag, which it keeps, and ends their
+  connections the same way in its transaction; their readers are told
+  after the commit. A dormant grant (no Read flag) gives no Read, so its
+  revoke ends nothing. A rotation of the number's key and a grant
+  replaced in the same transaction do not count. A rotation sends
+  content connections to `reseal`; a metadata connection never reseals,
+  so a person left out of one would keep it to its expiry. No code
+  rotates or retires a key until the platform decides how (DS48). Only
+  an owner revokes an owner's grant (`not_authorized`). A `grant.revoke`
+  of a connection's own account ends that connection whole, and
+  `grant.add` gives that account only a number its key names and its
+  person reads. Wappie's PUT on that account follows both rules.
+- The operator's archive reset (DS48): it counts as Read taken away
+  from everyone. Under the workspace's lock, before its deletes, it
+  ends every live connection of the workspace, `access_lost`;
+  wappie-api's `WatchRevocations` tells the readers once it runs. The
+  operator stops wappie-api before the reset and starts it after
+  (docs/devices.md). A consent whose key names no number any more is
+  refused.
 - How each host presents `reconsent_required` and its link (UNCONFIRMED;
   elicitation is 2d).
 
