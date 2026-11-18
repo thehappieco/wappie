@@ -105,6 +105,13 @@ type InsertMessage struct {
 	// checks nothing.
 	ArchiveKey []byte
 
+	// FillsPlaceholder is set when the message was sealed again to the
+	// uid a PlaceholderError named. Insert then only fills that
+	// placeholder. If no row holds the message any more, it writes
+	// nothing and returns ErrPlaceholderGone, so a uid never names a
+	// second row (DS51).
+	FillsPlaceholder bool
+
 	Media *InsertMedia
 }
 
@@ -130,7 +137,31 @@ type InsertResult struct {
 	// this statement produced.
 	CountsUnread bool
 	Unread       int32
+
+	// Filled is true when the message filled an empty placeholder
+	// (fillStub). The row keeps the placeholder's uid and sequence, so
+	// Duplicate is true too, and now holds this message and its
+	// attachment.
+	Filled bool
 }
+
+// PlaceholderError is Insert's answer to a message that would fill an
+// empty placeholder (fillStub) but was sealed to another uid. The row
+// keeps the placeholder's uid, and a sealed value opens only under the
+// uid it was sealed to. Nothing was written. The caller seals the
+// message again to UID and inserts it again (DS51).
+type PlaceholderError struct{ UID uuid.UUID }
+
+func (e *PlaceholderError) Error() string {
+	return fmt.Sprintf("store: the message fills placeholder %s and must be sealed to its uid", e.UID)
+}
+
+// ErrPlaceholderGone is Insert's answer to a message sealed to a
+// placeholder's uid (InsertMessage.FillsPlaceholder) when no row holds the
+// message any more: a purge or an erasure deleted the placeholder in
+// between. Nothing was written. The caller seals the message to a fresh
+// uid and inserts it again (DS51).
+var ErrPlaceholderGone = errors.New("store: the placeholder this message was sealed for is gone")
 
 // Insert stores one message and everything that follows from it, atomically.
 //
@@ -176,9 +207,15 @@ func (m *Messages) Insert(ctx context.Context, in InsertMessage) (InsertResult, 
 			// the real message. That happens because a group message carrying a
 			// Signal sender key used to arrive twice under one id, the key
 			// first, and the key took the row.
-			return fillStub(ctx, tx, in, existingUID)
+			return fillStub(ctx, tx, in, existingUID, &res)
 		case !errors.Is(err, pgx.ErrNoRows):
 			return fmt.Errorf("store: check for an existing message: %w", err)
+		}
+		if in.FillsPlaceholder {
+			// Sealed to a placeholder's uid, and the placeholder is gone. A
+			// new row under that uid would give a deleted row's uid to
+			// another row.
+			return ErrPlaceholderGone
 		}
 
 		rel, targetUID, err := resolveTarget(ctx, tx, in, keys)
@@ -372,7 +409,7 @@ func insertMessageRow(ctx context.Context, tx pgx.Tx, in InsertMessage, seq int6
 			in.DeviceID, in.ChatKey, in.WAID).Scan(&res.UID, &res.Seq); err != nil {
 			return err
 		}
-		return fillStub(ctx, tx, in, res.UID)
+		return fillStub(ctx, tx, in, res.UID, res)
 	}
 	if err != nil {
 		return fmt.Errorf("store: insert message: %w", err)
@@ -393,46 +430,112 @@ func insertMessageRow(ctx context.Context, tx pgx.Tx, in InsertMessage, seq int6
 // can ever put the real message back. So a row that carries nothing gives way
 // to one that carries something.
 //
-// Narrow on purpose. It only fires when the stored row is an unsupported
-// placeholder with no body, no payload and no attachment, and only for an
-// incoming row that actually has content. A real message is never overwritten
-// by anything, including another copy of itself.
-func fillStub(ctx context.Context, tx pgx.Tx, in InsertMessage, uid uuid.UUID) error {
+// Narrow on purpose. It only fires when the stored row is an empty placeholder
+// from the same sender (fillable), and only for an incoming row that actually
+// has content. A real message is never overwritten by anything, including
+// another copy of itself.
+//
+// The row keeps the placeholder's uid, and every sealed value binds to the
+// uid it was sealed to. So the message must be sealed to the placeholder's
+// uid. One sealed to another uid fills nothing: it gets a PlaceholderError,
+// and the caller seals it again (DS51). The attachment's row and the chat
+// list's type are written with the fill.
+func fillStub(ctx context.Context, tx pgx.Tx, in InsertMessage, uid uuid.UUID, res *InsertResult) error {
 	if in.Type == domain.TypeUnsupported || in.Kind != domain.KindMessage {
 		return nil
 	}
 	if len(in.BodySealed) == 0 && len(in.PayloadSealed) == 0 && in.Media == nil {
 		return nil
 	}
+	guard := []any{uid, in.IsFromMe, nullable(in.SenderKey), nullable(in.SenderLID), nullable(in.SenderPN)}
 
+	if in.UID != uid {
+		var stub bool
+		if err := tx.QueryRow(ctx,
+			`SELECT EXISTS (SELECT 1 FROM messages WHERE uid = $1 AND `+fillable+`)`,
+			guard...).Scan(&stub); err != nil {
+			return fmt.Errorf("store: check placeholder: %w", err)
+		}
+		if stub {
+			return &PlaceholderError{UID: uid}
+		}
+		return nil
+	}
+
+	// The update's statement trigger (storage_lock) takes the workspace's
+	// row before the update locks the message's, the same order as Insert.
 	tag, err := tx.Exec(ctx, `
 		UPDATE messages SET
-			kind = $2, type = $3, unsupported_field = NULL,
-			content_key_id = $4, body_sealed = $5, raw_sealed = $6, payload_sealed = $7,
-			reply_to = $8, is_forwarded = $9, forwarding_score = $10,
-			view_once = $11, ephemeral = $12
-		 WHERE uid = $1
-		   AND type = 'unsupported'
-		   -- Length rather than IS NULL: an empty bytea and a null both mean
-		   -- "carries nothing", and which one was written depends on the
-		   -- driver rather than on anything meaningful.
-		   AND coalesce(length(body_sealed), 0) = 0
-		   AND coalesce(length(payload_sealed), 0) = 0
-		   AND NOT EXISTS (SELECT 1 FROM media WHERE message_uid = $1)`,
-		uid, string(in.Kind), string(in.Type),
-		nullableKeyID(in.ContentKeyID), in.BodySealed, in.RawSealed, in.PayloadSealed,
-		nullable(in.ReplyTo), in.IsForwarded, in.ForwardingScore,
-		in.ViewOnce, in.Ephemeral)
+			kind = $6, type = $7, unsupported_field = NULL,
+			content_key_id = $8, body_sealed = $9, raw_sealed = $10, payload_sealed = $11,
+			reply_to = $12, is_forwarded = $13, forwarding_score = $14,
+			view_once = $15, ephemeral = $16
+		 WHERE uid = $1 AND `+fillable,
+		append(guard, string(in.Kind), string(in.Type),
+			nullableKeyID(in.ContentKeyID), in.BodySealed, in.RawSealed, in.PayloadSealed,
+			nullable(in.ReplyTo), in.IsForwarded, in.ForwardingScore,
+			in.ViewOnce, in.Ephemeral)...)
 	if err != nil {
 		return fmt.Errorf("store: fill placeholder: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
 		return nil
 	}
-	// The update's trigger took the workspace's row; the transaction
-	// rolls back unless the content key is still there.
-	return contentKeyIsTx(ctx, tx, in.DeviceID, in.ContentKeyID, in.ArchiveKey)
+	// The transaction holds the workspace's row; it rolls back unless the
+	// content key is still there.
+	if err := contentKeyIsTx(ctx, tx, in.DeviceID, in.ContentKeyID, in.ArchiveKey); err != nil {
+		return err
+	}
+	if in.Media != nil {
+		// The placeholder had none: the update's guard says so.
+		if err := insertMediaRow(ctx, tx, in, uid); err != nil {
+			return err
+		}
+	}
+	// The chat list says "unsupported" while the placeholder is its newest
+	// message. Newest by timestamp, as upsertChat picks it. MarkProtocol
+	// leaves last_type alone, so a protocol placeholder shows as
+	// "unsupported" there too.
+	if _, err := tx.Exec(ctx, `
+		UPDATE chats SET last_type = $3
+		 WHERE device_id = $1 AND chat_key = $2 AND last_type = 'unsupported'
+		   AND last_ts IS NOT DISTINCT FROM (SELECT ts FROM messages WHERE uid = $4)`,
+		in.DeviceID, in.ChatKey, string(in.Type), uid); err != nil {
+		return fmt.Errorf("store: fill placeholder's chat: %w", err)
+	}
+	res.Filled = true
+	return nil
 }
+
+// fillable is the WHERE clause of a row fillStub may fill. One text for
+// the check and the update. $1 is the row's uid, $2 the message's
+// is_from_me, and $3, $4 and $5 its sender's key, LID and phone number.
+//
+// An empty placeholder: unsupported, or retyped protocol by MarkProtocol
+// (the browser's reproject does that to a sender key's placeholder, the
+// very row this exists for), with no body, no payload and no attachment.
+// Length rather than IS NULL: an empty bytea and a null both mean
+// "carries nothing", and which one was written depends on the driver
+// rather than on anything meaningful.
+//
+// From the same sender. A fill used to read as tampered, so another
+// sender's content in the row showed as broken. Now it opens cleanly, so
+// the row must not take content from anyone but its sender. is_from_me
+// must agree: a contact reusing the id of my message does not fill it.
+// For my own messages that is enough, since only my devices send them,
+// and their sender is often not stored. Anyone else must match on a
+// half both sides know (key, LID or phone number). A null half matches
+// nothing, so someone else's placeholder with no sender stored is never
+// filled.
+const fillable = `type IN ('unsupported', 'protocol')
+		   AND coalesce(length(body_sealed), 0) = 0
+		   AND coalesce(length(payload_sealed), 0) = 0
+		   AND NOT EXISTS (SELECT 1 FROM media WHERE message_uid = $1)
+		   AND is_from_me = $2
+		   AND (is_from_me
+		        OR sender_key IN ($3, $4, $5)
+		        OR sender_lid = $4
+		        OR sender_pn = $5)`
 
 // expiresAt computes when the sender intended the message to vanish.
 //
