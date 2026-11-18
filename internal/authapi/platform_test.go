@@ -239,6 +239,7 @@ type platformAnswer struct {
 		ID         string `json:"id"`
 		TenantID   string `json:"tenant_id"`
 		Email      string `json:"email"`
+		Name       string `json:"name"`
 		PublicKey  string `json:"public_key"`
 		WrappedUSK string `json:"wrapped_usk"`
 		AuthSource string `json:"auth_source"`

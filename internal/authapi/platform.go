@@ -158,7 +158,9 @@ type platformAccountRequest struct {
 	Ticket       string `json:"ticket"`
 	PublicKey    string `json:"public_key"`
 	PlatformWrap string `json:"platform_wrap"`
-	DisplayName  string `json:"display_name,omitempty"`
+	// DisplayName is only a fallback: id.'s name, on the ticket, wins
+	// (DS52). Old pages still send it.
+	DisplayName string `json:"display_name,omitempty"`
 }
 
 type platformLinkRequest struct {
@@ -353,6 +355,14 @@ func (h *Handler) platformSession(w http.ResponseWriter, r *http.Request) {
 		h.log().Warn("kept an account's address: the identity provider's new one belongs to another account")
 	} else if err != nil {
 		h.log().Warn("could not record the identity provider's address", "error", err)
+	}
+	// id. owns the display name (DS52): userinfo's name is copied before
+	// the session is issued, so its user carries it. A sign-in never fails
+	// for it, as for the address.
+	if name, err := h.Users.SyncPlatformName(r.Context(), user.ID, ui.Name); err != nil {
+		h.log().Warn("could not record the identity provider's name", "error", err)
+	} else if name != "" {
+		user.Name = name
 	}
 	wrap, err := h.Users.PlatformWrap(r.Context(), user.ID, ui.ProductKeyID)
 	if errors.Is(err, store.ErrNotFound) {
