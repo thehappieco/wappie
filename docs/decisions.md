@@ -1583,8 +1583,9 @@ makes binding. 0051 records no owner count.
 2026-10-14). The key is the record, never a setting, so a container, a
 restored `runtime.env` or a return to `off` never reopens them; only the
 0051 down-step does. `409 invitations_paused`, not `managed_elsewhere`:
-at observe the platform's invitations do not reach Wappie. Service
-invitations stay open.
+at observe the platform's invitations do not reach Wappie (DS53 uses
+`managed_elsewhere` for an account's own acts). Service invitations stay
+open.
 
 **DB7. One leader for all background contract work**, by the advisory lock
 `contract` held on its own connection (`pg.Locker.Hold`), whose loss ends
@@ -3299,10 +3300,10 @@ hand before enforce. Stopping growth now keeps that list from growing.
 
 The rule, in core:
 
-- The gate is DS52's notion of a platform account, the one the step-up
-  already uses (`stepsUpAtProvider`): `auth_source = 'platform'` while the
-  identity provider is configured (`WS_PLATFORM_ISSUER`), which only the
-  hosted build is. `authapi.platformManaged` holds it. No new setting: with
+- The gate is `auth_source = 'platform'` (the account DS52's name rule
+  reads), and only while the identity provider is configured
+  (`WS_PLATFORM_ISSUER`), which only the hosted build is, as the step-up's
+  `stepsUpAtProvider` requires. `authapi.platformManaged` holds it. No new setting: with
   the provider unset (self-hosted, or a rollback of the provider), no
   account is the platform's and nothing changes. It does not depend on the
   contract's mode.
@@ -3330,6 +3331,10 @@ and removal, accept-invite, reveal, the name edit and the last-owner
 checks in platform teams, in place of `invitations_paused`; and
 `GET /v1/auth/workspaces` gains a per-workspace flag for the UI. Until the
 cloud console hides its create and invite controls, they answer this 409.
+
+Unlike DB6, `managed_elsewhere` is used before enforce, by the platform's
+choice (item 9). Until E1 applies documents, a workspace or person added in
+the console does not appear here.
 
 Tests: `TestPlatformAccountsCreateNoWorkspace` (a platform account's
 create is refused and writes no tenant or membership; a local account's,
