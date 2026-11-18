@@ -92,6 +92,10 @@ The act then goes on, and each deleted number it leaves with no key holder keeps
 
 In a team a platform document names, person invitations (owner, admin or member) are paused while Wappie observes the platform's members ([the contract](contract.md#person-invitations-into-platform-teams)): issuing one (`POST /v1/auth/workspaces/invites`, the console's invite form), regenerating one, accepting one (`POST /v1/auth/workspaces/accept-invite`, or an invited sign-up) and the operator's `whatserverd invite` are refused with `409 invitations_paused`, before anything is spent, so a pending code stays valid. Service invitations stay open. The record of the team is the key, in every mode: only the 0051 down-step reopens them.
 
+### Platform accounts add no workspace or person
+
+In the hosted build (the identity provider configured), an account that signs in through The Happie Co (`auth_source=platform`) neither creates a workspace (`POST /v1/auth/workspaces`) nor invites a person, in any workspace: issuing a person's invitation (`POST /v1/auth/workspaces/invites`) and regenerating one (`POST .../invites/{id}/regenerate`) answer `409 managed_elsewhere`, since The Happie Co's console manages its workspaces and members (DS53 in [decisions](decisions.md)). Nothing is written, and a code that would have been regenerated stays valid. Service invitations stay open. Existing workspaces, members and pending invitations are unchanged, and a pending code is still revealed, revoked and redeemed. Local accounts and self-hosted builds are unchanged. Enforce widens `managed_elsewhere` to the other member acts ([the contract](contract.md#what-enforce-adds)).
+
 ## Delivery phases
 
 | Phase | Status | Changes |

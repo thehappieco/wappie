@@ -3283,3 +3283,59 @@ name and is the fallback without one) and
 `TestPlatformProfileNameIsTheProviders` (a platform account's `PUT` keeps
 the name and saves the photo, an empty name too, a bad photo is still
 refused; a local account's `PUT` is unchanged).
+
+## A platform account adds no workspace or person here (2026-11-18)
+
+**DS53. In the hosted build, a platform account creates no workspace and
+invites no person** (the platform's answers on enforce of 2026-11-18, item
+9: stop growth now, before enforce). The Happie Co's console manages the
+workspaces and members of an account that signs in through it.
+
+Why now: decision 0040 ties membership to the platform, and until enforce
+applies its documents every team created here, and every person invited
+into one, is something the platform does not know. A team made here is an
+`unnamed_tenant` that `contract diff` lists and that has to be retired by
+hand before enforce. Stopping growth now keeps that list from growing.
+
+The rule, in core:
+
+- The gate is DS52's notion of a platform account, the one the step-up
+  already uses (`stepsUpAtProvider`): `auth_source = 'platform'` while the
+  identity provider is configured (`WS_PLATFORM_ISSUER`), which only the
+  hosted build is. `authapi.platformManaged` holds it. No new setting: with
+  the provider unset (self-hosted, or a rollback of the provider), no
+  account is the platform's and nothing changes. It does not depend on the
+  contract's mode.
+- `POST /v1/auth/workspaces` answers `409 managed_elsewhere` ("The Happie
+  Co's console manages this account's workspaces and members; create
+  workspaces and invite people there") before anything is read or written.
+- `POST /v1/auth/workspaces/invites` for a person (owner, admin or member)
+  answers the same, and so does `POST .../invites/{id}/regenerate` of a
+  person's invitation, which would issue a new code; the old code is not
+  revoked (`store.ErrManagedElsewhere`, refused before the revoke).
+- Service invitations are not this decision's: a standing one and a content
+  consent's provisional one are issued and regenerated as before (step 7
+  decides them).
+- Nothing stored changes. Existing workspaces, members and pending
+  invitations stay: a pending code is still listed, revealed, revoked and
+  redeemed, by a platform account too. A local account, even in a team
+  where a platform account is owner, invites people as before.
+- A new platform account's own personal workspace is not this rule's: it
+  is its home (DB2).
+- The operator's `whatserverd invite` and `bootstrap` are not an account's
+  acts and stay.
+
+What enforce adds (E3): `managed_elsewhere` widens to member role, status
+and removal, accept-invite, reveal, the name edit and the last-owner
+checks in platform teams, in place of `invitations_paused`; and
+`GET /v1/auth/workspaces` gains a per-workspace flag for the UI. Until the
+cloud console hides its create and invite controls, they answer this 409.
+
+Tests: `TestPlatformAccountsCreateNoWorkspace` (a platform account's
+create is refused and writes no tenant or membership; a local account's,
+and the same platform account's with the provider unset, create a team)
+and `TestPlatformAccountsInviteNoPerson` (every person role refused, and a
+person's regeneration, with the old code kept; the pending code is listed,
+revealed and redeemed; a service invitation is issued and regenerated; a
+local owner of the same team, and the platform account with the provider
+unset, invite a person).

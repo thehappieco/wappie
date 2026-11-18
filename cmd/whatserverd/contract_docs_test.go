@@ -218,6 +218,7 @@ func TestContractDocsMatchTheCode(t *testing.T) {
 			},
 			"accounts-workspaces.md": {
 				"people join this team through The Happie Co; person invitations are paused here until Wappie applies the platform's members",
+				"The Happie Co's console manages this account's workspaces and members; create workspaces and invite people there",
 			},
 		} {
 			for _, line := range lines {
