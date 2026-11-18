@@ -85,6 +85,18 @@ the browser vault as it does after a password sign-in, through
   account keeps its `users.email`, because its legacy password wrap was bound
   to it (after 0049 too); the link row records id.'s address, and an
   invitation addressed to that address is accepted too.
+- id. alone owns a platform account's display name (`users.name`; DS52 in
+  [decisions](decisions.md)). userinfo's `name` (the page asks for the
+  `profile` scope) is copied at each `/platform/session` sign-in, before the
+  session is issued, so its `user.name` carries it. An empty name, or one
+  Wappie would not accept (a control character, over 80 runes), keeps the
+  stored one; a failure to record it is a warning, never a refused
+  sign-in. A new account takes id.'s name (the page's `display_name` is
+  only a fallback), and a linked legacy account adopts it at the link
+  (keeping its own when id. gave none). `PUT /v1/auth/profile` ignores the
+  name of such an account and saves its photo only
+  ([accounts](accounts-workspaces.md)). A local or self-hosted account keeps
+  its own name and edits it as before.
 - So Wappie counts an account's address as verified when it is the link
   row's (`platform_identities.email`), beside a completed sign-up
   verification: always for an account created through id., and for a
@@ -290,7 +302,8 @@ Refusals:
 
 ### `POST /v1/auth/platform/account {ticket, public_key, platform_wrap, display_name?}`
 
-For a `new` ticket. Once the contract has been observed, the ticket is
+For a `new` ticket. The account's name is id.'s, from the ticket;
+`display_name` is used only when id. gave none (DS52). Once the contract has been observed, the ticket is
 read (not spent) and the sub subscribed first, for its home
 ([below](#the-contract-at-sign-in)). Then one transaction:
 
@@ -330,7 +343,9 @@ One transaction, under the account's lock. It:
 1. spends the ticket;
 2. checks again that the account is active, a person, local and unlinked, and
    that the hash the proof was checked against is unchanged;
-3. inserts the link and the wrap and sets `auth_source = 'platform'`;
+3. inserts the link and the wrap and sets `auth_source = 'platform'`; the
+   account adopts id.'s name from the ticket, or keeps its own when id.
+   gave none (DS52);
 4. revokes every session and every Wappie passkey of the account;
 5. records `platform_linked {from: "legacy" | "legacy_recovery"}`.
 

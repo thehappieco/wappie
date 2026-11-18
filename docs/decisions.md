@@ -3229,3 +3229,53 @@ and mine with no sender stored), `TestAProtocolPlaceholderIsFilled`,
 `TestAFillTakesTheWorkspaceFirst` (store).
 `TestSealedWritesNameTheirKey`'s placeholder case fills under the
 placeholder's uid.
+
+## id. owns a platform account's display name (2026-11-18)
+
+**DS52. A platform account's name is id.'s** (the platform's console-trim
+decisions of 2026-11-18, Q2: id. alone owns the display name; hosted
+Wappie reads it at each sign-in and drops its own name edit; self-hosted
+keeps its own).
+
+Before this, Wappie copied id.'s name only when it created the account,
+and preferred the page's `display_name` over it. After that the name was
+Wappie's own, edited in the console, and drifted from id.'s.
+
+The change, in core:
+
+- `/platform/session` copies userinfo's `name` into `users.name`
+  (`store.SyncPlatformName`) after the address and before the session is
+  issued, so its `user.name` carries it. The server reads userinfo itself
+  with the one-use token, so the name is id.'s, never a claim of the
+  browser's (the shell's `display_name` is not used).
+- An empty name, or one `validProfileName` refuses (a control character,
+  over 80 runes), keeps the stored one: a missing claim never blanks an
+  account. A failure is a warning; a sign-in never fails for it, as for
+  the address.
+- Only `auth_source = 'platform'` people are touched. Local accounts,
+  services and every self-hosted account keep their own name.
+- A new account takes the ticket's name (id.'s); `display_name` is the
+  fallback when id. gave none, so old pages keep working.
+- A linked legacy account adopts the ticket's name at the link, or keeps
+  its own when id. gave none. The rewrap ticket carries no name; the next
+  sign-in copies it.
+- `PUT /v1/auth/profile` ignores `name` for a platform account and saves
+  the avatar only, answering with the stored name. Ignoring rather than
+  refusing keeps photo saves from open tabs and old bundles working, and
+  cannot race the sign-in's copy. It also lets a platform account with an
+  empty name save a photo, which `invalid_profile` refused before.
+
+Not here: the hosted console's read-only name (cloud, console-trim, which
+moves its core pin to this change), and the workspace name, which the
+contract does not carry.
+
+Tests: `TestPlatformNameFollowsTheProvider` (each sign-in, the session's
+user, `/profile` and `/me`; empty, blank, control-character and 81-rune
+names keep the stored one, 80 runes is taken; a local account is not
+touched; a linked account takes the name at the link and follows it),
+`TestPlatformLinkWithNoNameKeepsTheAccounts`,
+`TestPlatformNewAccountNameIsTheProviders` (`display_name` loses to id.'s
+name and is the fallback without one) and
+`TestPlatformProfileNameIsTheProviders` (a platform account's `PUT` keeps
+the name and saves the photo, an empty name too, a bad photo is still
+refused; a local account's `PUT` is unchanged).

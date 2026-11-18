@@ -280,6 +280,49 @@ func (u *Users) SyncPlatformEmail(ctx context.Context, ident PlatformIdentity, e
 	return nil
 }
 
+// SyncPlatformName records the provider's display name (userinfo's "name")
+// at a sign-in: id. alone owns the name of an account that signs in
+// through it, and Wappie follows it (DS52). An empty or invalid name (a
+// control character, over 80 runes) keeps the stored one, as a missing
+// claim must never blank an account. It returns the name the account has
+// taken, or "" when it kept its own. Only a person signing in through the
+// provider is touched: a local account, or a service, never is.
+func (u *Users) SyncPlatformName(ctx context.Context, userID uuid.UUID, name string) (string, error) {
+	name = strings.TrimSpace(name)
+	if !validProfileName(name, true) {
+		return "", nil
+	}
+	home, err := u.identityTenant(ctx, userID)
+	if err != nil {
+		return "", fmt.Errorf("store: platform name: %w", err)
+	}
+	var took bool
+	err = pg.InTenantTx(ctx, u.pool, home.String(), func(tx pgx.Tx) error {
+		var platform bool
+		var stored string
+		if err := tx.QueryRow(ctx, `SELECT auth_source = 'platform' AND role <> 'service', name FROM users WHERE id = $1 FOR UPDATE`, userID).
+			Scan(&platform, &stored); err != nil {
+			return err
+		}
+		if !platform {
+			return nil
+		}
+		took = true
+		if stored == name {
+			return nil
+		}
+		_, err := tx.Exec(ctx, `UPDATE users SET name = $2, updated_at = now() WHERE id = $1`, userID, name)
+		return err
+	})
+	if err != nil {
+		return "", fmt.Errorf("store: platform name: %w", err)
+	}
+	if !took {
+		return "", nil
+	}
+	return name, nil
+}
+
 // ---------------------------------------------------------------------------
 // Tickets
 // ---------------------------------------------------------------------------
@@ -430,7 +473,9 @@ type NewPlatformUser struct {
 	Ticket    string
 	PublicKey []byte
 	Wrap      []byte
-	Name      string
+	// Name is the page's display name: used only when the ticket carries
+	// no name of id.'s (DS52).
+	Name string
 	// Home is the platform's personal workspace of the ticket's sub, the
 	// first workspace of Doc: the person's personal workspace is created
 	// with this id (the reply's Q1), and refused with ErrHomeTaken when a
@@ -506,7 +551,10 @@ func (u *Users) SignupPlatform(ctx context.Context, in NewPlatformUser) (User, t
 			return err
 		}
 		authTime, sub = t.AuthTime, t.Sub
-		if name == "" {
+		// id.'s name wins: the page's display_name is only the fallback
+		// when id. gave none (DS52). The ticket's name was trimmed and
+		// checked when it was issued.
+		if t.Name != "" {
 			name = t.Name
 		}
 		email, err := signupEmail(t.Email)
@@ -775,7 +823,14 @@ func (u *Users) LinkLegacy(ctx context.Context, in LegacyLink) (User, error) {
 		if _, err := tx.Exec(ctx, `INSERT INTO platform_wraps (user_id, product_key_id, wrap) VALUES ($1, $2, $3)`, user.ID, t.ProductKeyID, in.Wrap); err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx, `UPDATE users SET auth_source = 'platform', updated_at = now() WHERE id = $1`, user.ID); err != nil {
+		// The account adopts id.'s name, which it follows from now on
+		// (DS52); with none, it keeps its own.
+		name := strings.TrimSpace(t.Name)
+		if !validProfileName(name, true) {
+			name = ""
+		}
+		if _, err := tx.Exec(ctx, `UPDATE users SET auth_source = 'platform',
+			name = CASE WHEN $2 <> '' THEN $2 ELSE name END, updated_at = now() WHERE id = $1`, user.ID, name); err != nil {
 			return err
 		}
 		// Wappie's own passkeys unlock the legacy wrap: after the link the
