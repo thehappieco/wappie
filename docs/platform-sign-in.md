@@ -88,7 +88,9 @@ the browser vault as it does after a password sign-in, through
 - id. alone owns a platform account's display name (`users.name`; DS52 in
   [decisions](decisions.md)). userinfo's `name` (the page asks for the
   `profile` scope) is copied at each `/platform/session` sign-in, before the
-  session is issued, so its `user.name` carries it. An empty name, or one
+  session is issued, so its `user.name` carries it. A session the page
+  restores from its vault does not pass there, so it shows the name it had
+  until the next sign-in at id. An empty name, or one
   Wappie would not accept (a control character, over 80 runes), keeps the
   stored one; a failure to record it is a warning, never a refused
   sign-in. A new account takes id.'s name (the page's `display_name` is

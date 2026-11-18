@@ -3264,6 +3264,10 @@ The change, in core:
   refusing keeps photo saves from open tabs and old bundles working, and
   cannot race the sign-in's copy. It also lets a platform account with an
   empty name save a photo, which `invalid_profile` refused before.
+- The copy happens at a sign-in at id., the decision's "at each sign-in":
+  a session the page restores from its vault (a reload, a new tab) does
+  not pass `/platform/session`, so a long-lived session keeps showing the
+  name it had until the next full sign-in at id.
 
 Not here: the hosted console's read-only name (cloud, console-trim, which
 moves its core pin to this change), and the workspace name, which the
