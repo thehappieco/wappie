@@ -246,6 +246,10 @@ jobs:
       - run: make media-jail-check
       - run: make nsm-attest-check
       - run: make enclave-image ENCLAVE_TAG=wappie-reader:ci
+      # The clock: the sign of nsm-timefeed's samples, and chronyd's step,
+      # maxchange exits and boot gate, with the image's own chronyd and
+      # configuration (deploy/enclave/chrony/test-chrony.sh).
+      - run: make chrony-check ENCLAVE_TAG=wappie-reader:ci
       # The jail itself: the escape tests, media-jail's signals and table, and
       # every corpus file through the workers under media-jail, natively and
       # with the 4.14 blob kernel's fallbacks.

@@ -4,8 +4,9 @@
 # copies packages/mcp and packages/mcp-http whole, prunes src/ and test/,
 # deletes *.ts and *.map, and installs each package's production
 # dependencies from its lockfile. It builds the attachment workers from
-# their own files, and nsm-attest and media-jail from their Cargo files and
-# sources. All of it goes into PCR0, built by the Dockerfile and build.sh
+# their own files, nsm-attest and media-jail from their Cargo files and
+# sources, and chronyd from the vendored chrony tarball, with its
+# configuration and start script. All of it goes into PCR0, built by the Dockerfile and build.sh
 # (which writes the KMS key ARNs into constants.mjs), so those two are
 # compared too. A change to any of these bytes needs a reader release.
 # This check refuses one: it compares every such file at a
@@ -34,6 +35,9 @@ mkdir -p "$work/base" "$work/head"
 
 # The paths the image takes, as the Dockerfile copies them. The workers'
 # directory is removed from mcp-http's copy and built from its own files.
+# From deploy/enclave/chrony only the files the image takes are listed: its
+# README.md and test-chrony.sh never reach the image
+# (deploy/enclave/test_build.py checks the list against the Dockerfile).
 paths=(packages/mcp packages/mcp-http deploy/enclave)
 worker=packages/mcp-http/enclave/media/worker
 worker_files=("$worker/package.json" "$worker/package-lock.json" "$worker/image.mjs"
@@ -41,7 +45,10 @@ worker_files=("$worker/package.json" "$worker/package-lock.json" "$worker/image.
 enclave_files=(deploy/enclave/Dockerfile deploy/enclave/build.sh deploy/enclave/entrypoint.sh
 	deploy/enclave/nsm-attest/Cargo.toml deploy/enclave/nsm-attest/Cargo.lock deploy/enclave/nsm-attest/src
 	deploy/enclave/media-jail/Cargo.toml deploy/enclave/media-jail/Cargo.lock deploy/enclave/media-jail/src
-	deploy/enclave/media-jail/profiles)
+	deploy/enclave/media-jail/profiles
+	deploy/enclave/chrony/chrony-4.9.tar.gz deploy/enclave/chrony/chrony-4.9.tar.gz.sha256
+	deploy/enclave/chrony/common.conf deploy/enclave/chrony/boot.conf deploy/enclave/chrony/run.conf
+	deploy/enclave/chrony/wappie-clock-start)
 
 git -C "$root" cat-file -e "$base^{commit}" 2>/dev/null || {
 	echo "check-reader-inputs: $base is not in this repository (git fetch origin $base)" >&2
@@ -66,8 +73,10 @@ measured() {
 				find "$p" -path "$worker" -prune -o -type d \( -name src -o -name test -o -name node_modules \) -prune -o \
 					-type f ! -name '*.ts' ! -name '*.map' -print
 			done
+			# A path the tree lacks (new since the baseline, or removed) is
+			# skipped; the comparison then reports its files.
 			for f in "${worker_files[@]}" "${enclave_files[@]}"; do
-				[ -e "$f" ] && find "$f" -type f -print
+				if [ -e "$f" ]; then find "$f" -type f -print; fi
 			done
 		} | LC_ALL=C sort | while IFS= read -r f; do sum "$f"; done
 	)

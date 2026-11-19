@@ -79,3 +79,8 @@ enclave both exit 2, which is what the image check expects.
 checks the exit codes and the fake-drift marker. The tests run only there
 (Linux: they use its clocks and adjtimex). `tests/fixtures/` holds two
 attestation documents made by `tests/fixtures/make-fixtures.mjs`.
+
+`examples/fake-feed.rs` is nsm-timefeed's cycle with a fake NSM whose time is
+the system time plus an offset read from a file. It is for
+`deploy/enclave/chrony/test-chrony.sh` only: the Dockerfile copies `src/`
+alone, so it never reaches the image, and `cargo test` only compiles it.

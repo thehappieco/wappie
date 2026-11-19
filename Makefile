@@ -1,6 +1,6 @@
 .PHONY: help run test test-race lint lint-layout vet fmt cover fuzz dev-up dev-down build tidy check \
 	fixtures-check identifiers-check client-install client-build client-test client-check client-dist-check reader-inputs-check mcp-check mcp-http-check public-source \
-	enclave-check enclave-image enclave-jail media-worker-check media-jail-check nsm-attest-check reader-verify
+	enclave-check enclave-image enclave-jail chrony-check media-worker-check media-jail-check nsm-attest-check reader-verify
 
 GO      ?= go
 PKGS    := ./...
@@ -150,6 +150,13 @@ enclave-image: ## Build and check the reader enclave image (arm64 Docker)
 # CORPUS): privileged Docker on an arm64 host with cgroup v2.
 enclave-jail: ## Run the jail checks and the worker corpus under media-jail (arm64, privileged)
 	sh deploy/enclave/check-image.sh --jail $(ENCLAVE_TAG)
+
+# The clock on a built image (deploy/enclave/chrony/test-chrony.sh): the
+# image's chronyd and configuration against nsm-timefeed's cycle with a fake
+# NSM. chronyd runs with -x, so the host clock is never touched and no
+# privilege is needed. About six minutes.
+chrony-check: ## Run the image's chronyd against a fake NSM feed (arm64 Docker, after enclave-image)
+	sh deploy/enclave/chrony/test-chrony.sh $(ENCLAVE_TAG)
 
 # The attachment workers (§16.11): their own package, installed as the image
 # installs it (no install scripts, pdf.js's optional canvas removed).

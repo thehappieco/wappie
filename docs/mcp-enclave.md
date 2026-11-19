@@ -2360,7 +2360,9 @@ manifest into `measurements.json`: every npm lock the image is installed
 from (client, mcp, mcp-http, the reader's and the workers'), and the sha256
 of every tarball a lock pins from outside the npm registry (the kit's release
 asset, SheetJS), each kept as `tarballs/<name>` (its `file`) for the reader
-release (§9).
+release (§9). Under `sources` it records the C source the image builds,
+chrony's release tarball, by name, version and sha256. That tarball is
+vendored in `deploy/enclave/chrony`, so the source commit already carries it.
 
 **Kernel requirements.** Required, and present on the blob:
 `CONFIG_MEMCG`, `CONFIG_CGROUP_PIDS`, `CONFIG_SECCOMP_FILTER`,
