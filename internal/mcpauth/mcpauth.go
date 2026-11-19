@@ -197,6 +197,9 @@ type Handler struct {
 	requests *requestCache
 	replay   *replayCache
 	dropped  *refusalDrops
+	// clocks are the attested readers' clocks as their requests show them
+	// (skew.go).
+	clocks *readerClocks
 	// sendChecks are the sends' freshness checks (freshness.go).
 	sendChecks *sendChecks
 	// notices are the notice e-mails on their way, for WaitNotices.
@@ -214,6 +217,7 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	h.readers = h.configuredReaders()
 	h.requests = newRequestCache()
 	h.replay = newReplayCache(replayCap)
+	h.clocks = newReaderClocks()
 	h.dropped = newRefusalDrops()
 	h.sendChecks = newSendChecks()
 	mux.HandleFunc("GET /v1/mcp/requests/{id}", h.descriptor)

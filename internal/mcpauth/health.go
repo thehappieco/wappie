@@ -2,6 +2,7 @@ package mcpauth
 
 import (
 	"context"
+	"errors"
 	"time"
 )
 
@@ -13,7 +14,10 @@ import (
 // consents use and logs what the reader says about itself: the image it runs
 // (PCR0), the certificate key it serves (SPKI), the KMS policy it sees and
 // how long its certificate has left. Every one of those is public, and a
-// change in any of them is worth a line in the log.
+// change in any of them is worth a line in the log. The line also carries
+// the reader's clock as its last request here showed it (skew.go), and a 401
+// to the health check says a clock past the signature's window is the
+// likely cause.
 
 const (
 	// healthEvery is how often each reader is asked.
@@ -64,6 +68,9 @@ func (h *Handler) checkReader(parent context.Context, a *AttestedReader, failure
 			return failures
 		}
 		failures++
+		if errors.Is(err, errHealthzUnauthorized) {
+			h.noteHealthzRefused(parent, a, time.Now())
+		}
 		if failures >= healthFailures {
 			h.log().Warn("an attested reader is not answering its health check", "reader", a.ID, "failures", failures, "error", err)
 		} else {
@@ -79,6 +86,9 @@ func (h *Handler) checkReader(parent context.Context, a *AttestedReader, failure
 		"pcr0", fingerprint(&health.PCR0), "spki", fingerprint(health.TLSSPKISHA256),
 		"policy", fingerprint(health.PolicySHA256), "relay_secrets", health.RelaySecrets,
 	}
+	// The reader's clock as its last request here showed it, signed or
+	// only claimed (skew.go); none until it has sent one.
+	attrs = append(attrs, h.clockAttrs(a.ID, time.Now())...)
 	days := -1
 	if health.CertNotAfter != nil {
 		days = int(time.Until(*health.CertNotAfter).Hours() / 24)

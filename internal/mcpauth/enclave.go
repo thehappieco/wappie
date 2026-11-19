@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/thehappieco/kit/reqhmac"
+
 	"whatserver2/internal/ratelimit"
 	"whatserver2/internal/store"
 )
@@ -69,6 +71,9 @@ func (h *Handler) signed(limit int64, next signedHandler) http.HandlerFunc {
 		now := time.Now()
 		got, err := readSignedHeaders(r.Header, now)
 		if err != nil {
+			if errors.Is(err, reqhmac.ErrStale) {
+				h.noteStaleClock(r.Context(), caller, r.Header, now)
+			}
 			h.refuse(w, caller, err)
 			return
 		}
@@ -94,6 +99,8 @@ func (h *Handler) signed(limit int64, next signedHandler) http.HandlerFunc {
 			h.refuse(w, caller, err)
 			return
 		}
+		// Signed and new: the timestamp is the reader's own clock.
+		h.noteReaderClock(r.Context(), caller, got.unix, now)
 		next(w, r, caller, body)
 	}
 }
