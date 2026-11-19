@@ -104,6 +104,27 @@ func TestForAuthRefusesEveryPartWithItsCode(t *testing.T) {
 		{"the creator disabled here", kc.UseSuspendedHere, func(*tokentest.Token) {
 			w.ExecIn(`UPDATE users SET status = 'disabled' WHERE id = $1`, w.Owner)
 		}, func(*tokentest.Token) { w.ExecIn(`UPDATE users SET status = 'active' WHERE id = $1`, w.Owner) }},
+		{"the contract's disable the belt misses (disabled, no disabled_at)", kc.UseSuspendedHere, func(*tokentest.Token) {
+			w.Exec(`UPDATE contract_accounts SET doc = jsonb_set(doc, '{status}', '"disabled"'), disabled_at = NULL WHERE sub = $1`, w.OwnerSub)
+			w.Scoped(func(tx pgx.Tx) error {
+				ctx := context.Background()
+				if _, err := tx.Exec(ctx, `SELECT set_config('app.contract_apply', 'on', true)`); err != nil {
+					return err
+				}
+				var by string
+				if err := tx.QueryRow(ctx, `UPDATE users SET status = 'disabled' WHERE id = $1 RETURNING coalesce(disabled_by, '')`, w.Owner).
+					Scan(&by); err != nil {
+					return err
+				}
+				if by != "contract" {
+					return errors.New("the disable is not the contract's: " + by)
+				}
+				return nil
+			})
+		}, func(*tokentest.Token) {
+			w.ExecIn(`UPDATE users SET status = 'active' WHERE id = $1`, w.Owner)
+			w.Exec(`UPDATE contract_accounts SET doc = jsonb_set(doc, '{status}', '"active"') WHERE sub = $1`, w.OwnerSub)
+		}},
 		{"local_rule: the creator a member", kc.UseSuspendedHere, func(*tokentest.Token) {
 			w.ExecIn(`UPDATE workspace_memberships SET role = 'member' WHERE user_id = $1`, w.Owner)
 		}, func(*tokentest.Token) {

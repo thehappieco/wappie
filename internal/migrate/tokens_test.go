@@ -172,8 +172,10 @@ func TestMigration0053DownStep(t *testing.T) {
 	if err := run(ctx, at52, lg, migrationsThrough(t, 52)); err != nil {
 		t.Fatal(err)
 	}
+	// At 53, as a binary that knows no later migration leaves it: 0055's
+	// own down-step comes first otherwise (TestMigration0055DownStep).
 	pool := pgtest.Empty(t)
-	if err := Run(ctx, pool, lg); err != nil {
+	if err := run(ctx, pool, lg, migrationsThrough(t, 53)); err != nil {
 		t.Fatal(err)
 	}
 	var super, bypass bool
@@ -301,7 +303,7 @@ func TestMigration0053DownStep(t *testing.T) {
 	if err := run(ctx, pool, lg, migrationsThrough(t, 52)); err != nil {
 		t.Fatalf("a binary that knows 52 after the down-step: %v", err)
 	}
-	if err := Run(ctx, pool, lg); err != nil {
+	if err := run(ctx, pool, lg, migrationsThrough(t, 53)); err != nil {
 		t.Fatalf("0053 again: %v", err)
 	}
 	// And the chain: 0053 down, then 0052 down, with settings off for
@@ -930,7 +932,7 @@ func TestMigration0053WaitsForBilling(t *testing.T) {
 			t.Fatalf("%s beside a billing request: the request %v, the migration %v", name, countErr, err)
 		}
 	}
-	beside("0053", func() error { return Run(ctx, pool, lg) })
+	beside("0053", func() error { return run(ctx, pool, lg, migrationsThrough(t, 53)) })
 	beside("0053's down-step", func() error {
 		_, err := pool.Exec(ctx, downStepSQL(t, 53))
 		return err

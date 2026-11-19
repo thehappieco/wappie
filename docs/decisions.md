@@ -3355,6 +3355,112 @@ revealed and redeemed; a service invitation is issued and regenerated; a
 local owner of the same team, and the platform account with the provider
 unset, invite a person).
 
+## Applying the platform's documents (enforce E1)
+
+**DS54. At enforce, Wappie applies each held person's stored document (the
+platform's answers of 2026-11-18).** The code ships inert: `contract apply`
+refuses until the mode is `enforce` (E2), and `-dry-run` lists what it
+would do, read-only, in any mode.
+
+- The document decides memberships in every workspace it records. A
+  membership it lists is added, given its role, or set active. A person's
+  membership in a recorded workspace it does not list is removed with every
+  effect of a removal (connections, keys, grants, sessions, invitations, AI
+  keychain items), without the owners' refusals. A removal that would
+  strand a number waits until the platform's generation is confirmed, then
+  records `item.stranded` with no cause. Service accounts, memberships with
+  a deadline, token identities, teams no document names and people with no
+  platform link are not touched. A personal workspace that differs from the
+  document's is held, never moved.
+- A team the document names and Wappie lacks is created with the
+  platform's id and name, with no capacity limit and no avatar. A team's
+  name and closure follow its `wversion`: closed suspends the workspace
+  (everything stops, owners included, and capture is released); reopened
+  activates it again, only when the contract suspended it. A personal
+  workspace whose name the document leaves null is named "Espaço pessoal"
+  in its owner's language (Portuguese when none is set).
+- A disable, or a `disabled_at` that rises, suspends the person: every
+  session, API key and connection ends, and keys, permissions and
+  memberships stay. Only a disable the contract made is lifted by a
+  document; an operator's disable (any other, marked by `users.disabled_by`)
+  stands.
+- `sessions_revoked_at` ends every session whose family began before it.
+  `credentials_revoked_at` stops what the person made before it: their API
+  keys, MCP and AI connections, AI keychain items, their pending
+  invitations, and the keys of standing service accounts they invited
+  before it (though redeemed after), removing each such account where every
+  number it holds keeps a human holder, and keeping it keyless otherwise.
+  Platform tokens are not written to: the belt refuses them from the stored
+  document.
+- A closed account is suspended and leaves every team at once, but a team
+  whose number it is the last key holder of: that loss waits for the
+  closing's confirmation too. After a fresh signed answer confirms the
+  closing, its personal workspace's numbers are deleted (logged out, purged
+  within 30 days), and after the purge the account is forgotten and
+  unsubscribed, only while its document still says closed. A document that
+  says anything else before the confirmation drops the closing's record.
+  The record of the closing (sub and times) stays 13 months.
+- Owners' member disables and Wappie's strand override leave hosted (E3);
+  the workspace avatar is retired there (E3, C1) and E1 deletes none. Going
+  back to observe undoes nothing.
+- Service users with no membership: retire-keys never sees them, so the
+  pass revokes any key still acting as one and deletes stray grants; the
+  rows stay until their records age out.
+
+One transaction per account, in DB23's order with DS14's and DB25's:
+`contract_state` FOR SHARE, the account's row, the records by id, every
+workspace row FOR UPDATE in id order, the person, then each workspace's
+connections and rows. Each step compares the document with the tables, so
+a pass run again changes nothing, and `applied_*` (0055) records how far it
+got. Logs carry ids, codes and counts only.
+
+Where E1 reads the design narrowly, or departs from it:
+
+- A restart nulls `contract_workspaces.applied_wversion` with `wversion`,
+  and keeps `applied_status`: it says whose suspension a closed team's is,
+  so a reopen after a restart still lifts only the contract's.
+- `users.disabled_by` is set by a `BEFORE INSERT OR UPDATE OF status`
+  trigger. An operator's disable of an account the contract disabled
+  becomes the operator's; the contract never takes over an operator's.
+- An owner's `number_stranded` notice of a loss the platform made, and a
+  closing's deleted-number notices, are raised by the app:
+  `device_notices.raised_by_kind` gains `app` in 0055.
+- A kept sole-reader service is its own action (`service_kept`), and an
+  operator's disable that stands is `operator_disable`.
+- A recovery's stop and observe's `credentials_would_stop` count a
+  connection in `reseal` as live, as every other path does.
+- The leader's pass (E2) also deletes closing records forgotten over 13
+  months ago (`RetainClosings`).
+
+Two questions stay the platform's: whether "an operator's local disable
+stands" is the account's only (E1 reads `users.status`; a membership an
+owner disabled before enforce, on a membership the document lists, is set
+active again, with no grant restored), and whether a keyless service
+account that is a number's sole key holder counts as stopped for W45, or
+the number should be stranded once the generation is confirmed.
+
+Tests: `TestApplyRefusesBeforeEnforce`, `TestApplyDryRunWritesNothing`,
+`TestApplyAddsMembershipFromDocument`, `TestApplyCreatesTeamFromDocument`,
+`TestApplyChangesRole`, `TestApplyReenablesListedDisabledMembership`,
+`TestApplyLossSharesRemoveMemberEffects`,
+`TestApplyLossThatStrandsWaitsForConfirmation`,
+`TestApplyLeavesServicesProvisionalAndTokenIdentities`,
+`TestApplyLeavesUnnamedTeamsAndNoSubPeople`, `TestApplyHoldsPersonalMismatch`,
+`TestApplyRenamesTeamByWVersion`, `TestApplyClosesAndReopensTeam`,
+`TestApplyNamesPersonalWorkspace`, `TestApplySuspendsDisabledAccount`,
+`TestApplyReenablesOnlyItsOwnDisable`, `TestUsersDisabledByTrigger`,
+`TestApplyEndsSessionsByFamilyStart`, `TestApplyStopsCredentialsBeforeRecovery`,
+`TestApplyCredentialsKeepSoleReaderService`, `TestApplyCredentialsLeaveTokenRows`,
+`TestApplyIsIdempotent`, `TestApplyResumesAfterCrash`,
+`TestApplyKeepsEverythingBackAtObserve`, `TestApplyLockOrder`,
+`TestSweepOrphanServices`, `TestApplyClosingSuspendsAndRemoves`,
+`TestConfirmClosingQuarantinesPersonalNumbers`, `TestForgetWaitsForPurge`,
+`TestForgetClosedAccount` (store); `TestMigration55UpAndDown`,
+`TestMigration55Checks` (migrate); `TestMembersApplyTellsEndedReaders`,
+`TestObserveNeverApplies`, `TestConfirmClosingNeedsFreshClosedAnswer`,
+`TestApplyLogsIdsOnly` (membership); `TestContractApplyDryRun`,
+`TestContractApplyRefusesBeforeEnforce` (whatserverd).
+
 ## Platform tokens in Wappie (step 7)
 
 The platform's design of 2026-10-26 (`contract-tokens-and-settings.md`,

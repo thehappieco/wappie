@@ -372,40 +372,56 @@ func (u *Users) removeMember(ctx context.Context, tenant, actor, target uuid.UUI
 		if err := strandTx(ctx, tx, tenant, actor, target, strandRevoked, stranded); err != nil {
 			return err
 		}
-		// A consent does not outlive the person who gave it in this
-		// workspace, and a connection does not outlive its service account.
-		if err := endConnectionsOfMemberTx(ctx, tx, tenant, target, true); err != nil {
-			return err
-		}
-		// Keep attribution for previously issued tokens and other members' key
-		// grants. A snapshot avoids granting access to the former member's profile.
-		if _, err := tx.Exec(ctx, `INSERT INTO workspace_member_history(tenant_id,user_id,email) VALUES($1,$2,$3)
-			ON CONFLICT(tenant_id,user_id) DO UPDATE SET email=excluded.email,removed_at=now()`, tenant, target, email); err != nil {
-			return err
-		}
-		if _, err := tx.Exec(ctx, `UPDATE sessions SET revoked_at=now() WHERE tenant_id=$1 AND user_id=$2 AND revoked_at IS NULL`, tenant, target); err != nil {
-			return err
-		}
-		// An old invitation must not silently undo the removal. Accepted and
-		// unrelated invitations remain historical records, managed separately.
-		if _, err := tx.Exec(ctx, `UPDATE invites SET revoked_at=now() WHERE tenant_id=$1
-			AND (created_by=$2 OR email=$3) AND completed_at IS NULL AND revoked_at IS NULL`, tenant, target, email); err != nil {
-			return err
-		}
-		// Unbound workspace tokens may also have been created by this person.
-		// Revoking only acts_as would leave those known credentials usable.
-		if _, err := tx.Exec(ctx, `UPDATE api_keys SET revoked_at=now() WHERE tenant_id=$1
-			AND (acts_as=$2 OR created_by=$2) AND revoked_at IS NULL`, tenant, target); err != nil {
-			return err
-		}
-		if _, err := tx.Exec(ctx, `DELETE FROM device_key_grants WHERE tenant_id=$1 AND user_id=$2`, tenant, target); err != nil {
-			return err
-		}
-		// Membership foreign keys also remove device permissions and reading
-		// preferences; no credentials or settings in another workspace cascade.
-		_, err = tx.Exec(ctx, `DELETE FROM workspace_memberships WHERE tenant_id=$1 AND user_id=$2`, tenant, target)
+		_, err = removeMembershipTx(ctx, tx, tenant, target, email)
 		return err
 	}))
+}
+
+// removeMembershipTx is a removal's effects, after its refusals and its
+// strandings: the connections the member is part of end, the history keeps
+// the address, the member's sessions in the workspace end, their pending
+// invitations (and those to their address) are revoked, every key they
+// created or that acts as them is revoked, their grants go, and the
+// membership goes with what its foreign keys cascade (permissions, reading
+// preferences). removeMember and the contract's apply of a lost membership
+// (applyMembershipLossTx) share it. It returns the connections it ended,
+// for their readers to be told. The caller holds pg.InTenantTx(tenant), or
+// app.tenant_id, and the workspace's row lock.
+func removeMembershipTx(ctx context.Context, tx pgx.Tx, tenant, target uuid.UUID, email string) ([]EndedConnection, error) {
+	// A consent does not outlive the person who gave it in this
+	// workspace, and a connection does not outlive its service account.
+	ended, err := endConnectionsOfMemberListTx(ctx, tx, tenant, target, true)
+	if err != nil {
+		return nil, err
+	}
+	// Keep attribution for previously issued tokens and other members' key
+	// grants. A snapshot avoids granting access to the former member's profile.
+	if _, err := tx.Exec(ctx, `INSERT INTO workspace_member_history(tenant_id,user_id,email) VALUES($1,$2,$3)
+		ON CONFLICT(tenant_id,user_id) DO UPDATE SET email=excluded.email,removed_at=now()`, tenant, target, email); err != nil {
+		return nil, err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE sessions SET revoked_at=now() WHERE tenant_id=$1 AND user_id=$2 AND revoked_at IS NULL`, tenant, target); err != nil {
+		return nil, err
+	}
+	// An old invitation must not silently undo the removal. Accepted and
+	// unrelated invitations remain historical records, managed separately.
+	if _, err := tx.Exec(ctx, `UPDATE invites SET revoked_at=now() WHERE tenant_id=$1
+		AND (created_by=$2 OR email=$3) AND completed_at IS NULL AND revoked_at IS NULL`, tenant, target, email); err != nil {
+		return nil, err
+	}
+	// Unbound workspace tokens may also have been created by this person.
+	// Revoking only acts_as would leave those known credentials usable.
+	if _, err := tx.Exec(ctx, `UPDATE api_keys SET revoked_at=now() WHERE tenant_id=$1
+		AND (acts_as=$2 OR created_by=$2) AND revoked_at IS NULL`, tenant, target); err != nil {
+		return nil, err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM device_key_grants WHERE tenant_id=$1 AND user_id=$2`, tenant, target); err != nil {
+		return nil, err
+	}
+	// Membership foreign keys also remove device permissions and reading
+	// preferences; no credentials or settings in another workspace cascade.
+	_, err = tx.Exec(ctx, `DELETE FROM workspace_memberships WHERE tenant_id=$1 AND user_id=$2`, tenant, target)
+	return ended, err
 }
 
 // removeServiceAccountTx revokes every key acting as a service account and

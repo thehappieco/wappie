@@ -94,7 +94,7 @@ func DifferenceAttrs(d store.ContractDifference) []any {
 		attrs = append(attrs, "sessions", d.Count)
 	case store.DiffCredentialsWouldStop:
 		id("sub", d.Sub)
-		attrs = append(attrs, "keys", d.Keys, "connections", d.Connections, "services", d.Services)
+		attrs = append(attrs, "keys", d.Keys, "connections", d.Connections, "services", d.Services, "invites", d.Invites)
 	}
 	return attrs
 }

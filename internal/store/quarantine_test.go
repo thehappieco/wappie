@@ -814,6 +814,12 @@ func TestQuarantineScopeHasOneDoor(t *testing.T) {
 		// its key goes, on a deleted number too, which 0036's ownership
 		// trigger checks against devices.
 		"RetainAPIKeys": true,
+		// The contract's apply at enforce (DS54): a deletion's body, shared
+		// by the owner's and the app's (a closed account's personal
+		// numbers, which their confirmation lists and its forgetting
+		// counts); and a loss the platform made, which strands live and
+		// deleted numbers alike.
+		"quarantineTx": true, "quarantinePersonalTx": true, "Contract.forgetClosed": true, "strandByAppTx": true,
 	}
 	const guc = "app.device_quarantine"
 	var found []string

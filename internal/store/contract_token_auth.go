@@ -165,11 +165,7 @@ func newTokenLiveParts(now, id, tenant string) tokenLiveParts {
 		Modes: `EXISTS (SELECT 1 FROM contract_token_state ts0 CROSS JOIN contract_state cs0
 	WHERE ts0.mode = 'on' AND ts0.caught_up_at IS NOT NULL AND cs0.mode <> 'off')`,
 		NotSuspended: r.Replace(`NOT EXISTS (SELECT 1 FROM (` + tokenSuspendedSQL + `) x WHERE x.token_id = {id})`),
-		Belt: `NOT EXISTS (SELECT 1 FROM contract_accounts a WHERE a.sub = t.created_by AND a.doc IS NOT NULL
-	AND (a.disabled_at > t.created_at OR a.credentials_revoked_at > t.created_at
-	     OR NOT EXISTS (SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(a.doc->'workspaces') = 'array'
-	                                                       THEN a.doc->'workspaces' ELSE '[]' END) aw
-	                    WHERE aw->>'id' = t.tenant_id::text)))`,
+		Belt:         `NOT ` + tokenBeltRefusesSQL,
 		TenantActive: r.Replace(`EXISTS (SELECT 1 FROM tenants tw WHERE tw.id = {tenant} AND tw.status = 'active')`),
 	}
 }

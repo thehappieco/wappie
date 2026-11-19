@@ -48,8 +48,8 @@ const (
 	// DiffSessionsWouldEnd: live sessions whose family began before
 	// sessions_revoked_at.
 	DiffSessionsWouldEnd = "sessions_would_end"
-	// DiffCredentialsWouldStop: keys, connections and standing service
-	// accounts made before credentials_revoked_at.
+	// DiffCredentialsWouldStop: keys, connections, standing service
+	// accounts and pending invitations made before credentials_revoked_at.
 	DiffCredentialsWouldStop = "credentials_would_stop"
 	// DiffUnnamedTenant: a local team no document names (contract diff
 	// only).
@@ -72,8 +72,8 @@ type ContractDifference struct {
 	// Count is personal_mismatch's numbers in the local personal workspace,
 	// or sessions_would_end's sessions.
 	Count int64
-	// Keys, Connections and Services are credentials_would_stop's.
-	Keys, Connections, Services int64
+	// Keys, Connections, Services and Invites are credentials_would_stop's.
+	Keys, Connections, Services, Invites int64
 	// TenantMissing: platform_only for a workspace Wappie has none of.
 	TenantMissing bool
 }
@@ -415,10 +415,7 @@ func differencesTx(ctx context.Context, tx pgx.Tx, sub uuid.UUID) ([]ContractDif
 	// What enforce would end.
 	if sessionsRevoked != nil {
 		var n int64
-		if err := tx.QueryRow(ctx, `SELECT count(*) FROM sessions s WHERE s.user_id = $1 AND s.revoked_at IS NULL
-				AND s.expires_at > clock_timestamp()
-				AND (SELECT min(f.created_at) FROM sessions f WHERE f.user_id = $1 AND f.family_id = s.family_id) < $2`,
-			user, *sessionsRevoked).Scan(&n); err != nil {
+		if err := tx.QueryRow(ctx, `SELECT count(*) FROM sessions s WHERE `+sessionsBeforeSQL, user, *sessionsRevoked).Scan(&n); err != nil {
 			return nil, err
 		}
 		if n > 0 {
@@ -430,7 +427,7 @@ func differencesTx(ctx context.Context, tx pgx.Tx, sub uuid.UUID) ([]ContractDif
 		if err != nil {
 			return nil, err
 		}
-		if d.Keys+d.Connections+d.Services > 0 {
+		if d.Keys+d.Connections+d.Services+d.Invites > 0 {
 			add(d)
 		}
 	}
@@ -438,59 +435,18 @@ func differencesTx(ctx context.Context, tx pgx.Tx, sub uuid.UUID) ([]ContractDif
 }
 
 // credentialsTx counts what the person made before at that enforce would
-// stop (README 6.2, credentials_revoked_at): API keys of their own (a
-// connection's key counts as its connection), MCP connections still live
-// and AI connections (keychain entries) in their workspaces, and standing
-// service accounts they invited that are still members.
+// stop (README 6.2, credentials_revoked_at), as credentialTargetsTx reads
+// it for the apply: API keys of their own (a connection's key counts as
+// its connection), MCP connections still live and AI connections (keychain
+// entries) in their workspaces, standing service accounts they invited
+// that are still members, and their pending invitations.
 func credentialsTx(ctx context.Context, tx pgx.Tx, user uuid.UUID, tenants []uuid.UUID, at time.Time) (ContractDifference, error) {
-	d := ContractDifference{Kind: DiffCredentialsWouldStop}
-	if err := tx.QueryRow(ctx, `SELECT
-			(SELECT count(*) FROM api_keys k WHERE k.created_by = $1 AND k.revoked_at IS NULL AND k.created_at < $2
-			    AND (k.expires_at IS NULL OR k.expires_at > clock_timestamp())
-			    AND NOT EXISTS (SELECT 1 FROM mcp_connections c WHERE c.api_key_id = k.id)),
-			(SELECT count(*) FROM mcp_connections c WHERE c.created_by = $1 AND c.status IN ('pending', 'active') AND c.created_at < $2)`,
-		user, at).Scan(&d.Keys, &d.Connections); err != nil {
-		return d, err
-	}
-	rows, err := tx.Query(ctx, `SELECT tenant_id, claimed_by FROM invites WHERE created_by = $1 AND role = 'service'
-		AND NOT provisional AND completed_at IS NOT NULL AND completed_at < $2 AND claimed_by IS NOT NULL`, user, at)
+	t, err := credentialTargetsTx(ctx, tx, user, tenants, at)
 	if err != nil {
-		return d, err
+		return ContractDifference{}, err
 	}
-	type service struct{ tenant, user uuid.UUID }
-	services, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (service, error) {
-		var s service
-		err := row.Scan(&s.tenant, &s.user)
-		return s, err
-	})
-	if err != nil {
-		return d, err
-	}
-	for _, s := range services {
-		if err := scope(ctx, tx, s.tenant, uuid.Nil); err != nil {
-			return d, err
-		}
-		var live bool
-		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM workspace_memberships WHERE tenant_id = $1 AND user_id = $2
-			AND status = 'active' AND expires_at IS NULL)`, s.tenant, s.user).Scan(&live); err != nil {
-			return d, err
-		}
-		if live {
-			d.Services++
-		}
-	}
-	for _, t := range tenants {
-		if err := scope(ctx, tx, t, uuid.Nil); err != nil {
-			return d, err
-		}
-		var n int64
-		if err := tx.QueryRow(ctx, `SELECT count(*) FROM ai_keychain WHERE tenant_id = $1 AND user_id = $2
-			AND deleted_at IS NULL AND created_at < $3`, t, user, at).Scan(&n); err != nil {
-			return d, err
-		}
-		d.Connections += n
-	}
-	return d, nil
+	return ContractDifference{Kind: DiffCredentialsWouldStop, Keys: int64(len(t.keys)),
+		Connections: int64(len(t.connections) + len(t.keychain)), Services: int64(len(t.services)), Invites: int64(len(t.invites))}, nil
 }
 
 // noSubTx lists, for each of the workspaces that is a platform workspace

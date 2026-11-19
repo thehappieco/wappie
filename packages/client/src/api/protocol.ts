@@ -203,9 +203,13 @@ export interface DeviceNotice {
   last_raised_at?: string
   pauses: number
   several_actors: boolean
-  /** The person who acted, or a key's creator. */
+  /** The person who acted, or a key's creator; absent when the app acted. */
   raised_by_name?: string
-  raised_by_kind: 'person' | 'key'
+  /**
+   * app: Wappie itself, for the platform (a number_stranded notice of a
+   * membership the platform ended, a closing's number_deleted): nobody to name.
+   */
+  raised_by_kind: 'person' | 'key' | 'app'
   /**
    * For number_deleted: until when an owner can recover it; for
    * number_stranded: its purge, absent once the number is recovered.

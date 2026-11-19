@@ -699,6 +699,7 @@ whatserverd contract mode off|observe
 whatserverd contract settings off|read [--platform-told]
 whatserverd contract settings status [--check]
 whatserverd contract tokens on|off|status
+whatserverd contract apply -dry-run [-sub S]|-confirm N
 whatserverd tokens suspend [-note N] SELECTOR|TOKEN|-
 whatserverd tokens suspend -replay F
 whatserverd tokens lift SELECTOR|TOKEN|-
@@ -708,8 +709,8 @@ whatserverd tokens retire-keys -dry-run|-apply -confirm N
 
 Run them as the server's user, with the socket's group and its
 configuration, and from the server's own working directory, as the
-deletion commands above: `status`, `diff`, `mode`, `settings` and `tokens`
-read the `.env` of their working directory (a root-only one stops them before they do
+deletion commands above: `status`, `diff`, `mode`, `settings`, `tokens` and
+`apply` read the `.env` of their working directory (a root-only one stops them before they do
 anything) and the database, which they never migrate, refusing a schema
 that is not exactly this binary's. `check` reads neither a `.env` nor the
 database, only its environment and the secret's files. For example:
@@ -956,6 +957,35 @@ rotation happened after the platform's backup, Wappie holds a secret the
 platform no longer has: `contract check` exits `3`, and the owner
 reinstalls it (`contract-secret reset`, then the install).
 
+### Rolling back below 0055
+
+A binary older than 0055 (the enforce apply's markers, DS54) refuses a
+database at version 55, so its down-step comes first, before 0053's. In
+this order:
+
+1. Only when the target release is older than 0053 too: step 1 of each
+   older rollback, now, with this release's binary while the database is
+   still at 55. `contract tokens`, `contract settings` and `contract mode`
+   refuse a database that is not at their binary's version, so once
+   0055's down-step has run no binary runs them: none sits at 53 or 54.
+   That is `contract tokens off` ([Rolling back below
+   0053](#rolling-back-below-0053), step 1), and for older targets
+   `contract settings off --platform-told` (below 0052) or `contract mode
+   off` (below 0051), which turns tokens and settings off with it.
+   `contract mode off` also meets 0055's own guard, which refuses at
+   enforce.
+2. Stop the server and the billing service.
+3. Check the file's sha256 against the release's (`migration55_sha256`),
+   and run the down-step in the header of `0055_contract_enforce.sql` as
+   the owner of the tables. It refuses at enforce and while a migration
+   after 0055 is applied, and a refusal changes nothing. It drops the
+   apply's markers and the closing records, a transfer record whose actor
+   was forgotten and an owner's notice the app raised, each counted; keys
+   and connections ended with 0055's reasons stay ended, without a reason;
+   an account the contract disabled and a team it suspended stay so.
+4. Then, if the release is older still, 0053's steps 2 and 3 (its step 1
+   ran in step 1 here), and so on.
+
 ### Rolling back below 0053
 
 A binary older than 0053 (the contract's token part) refuses a database
@@ -970,8 +1000,10 @@ at version 53, so its down-step comes first, before 0052's. In this order:
    0051, `contract mode off`, which turns tokens and settings off with it
    ([Rolling back below 0051](#rolling-back-below-0051), step 1).
    `contract tokens`, `contract settings` and `contract mode` refuse a
-   database that is not at their binary's version, so after 0053's
-   down-step none of them runs.
+   database that is not at their binary's version, so after 0055's
+   down-step (or 0053's) none of them runs: with 0055 applied, this step
+   runs first, before 0055's down-step ([Rolling back below
+   0055](#rolling-back-below-0055), step 1).
 2. Stop the server, and every other process that runs this release's store
    code against the database (the hosted billing service is one).
 3. The down-step in the header of `0053_contract_tokens.sql`, after

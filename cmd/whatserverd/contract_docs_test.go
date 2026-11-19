@@ -293,6 +293,7 @@ func TestContractDocsMatchTheCode(t *testing.T) {
 			{"whatserverd contract settings off|read|on [--platform-told]", "settings off|read|on|status"},
 			{"whatserverd contract settings status [--check]", "settings off|read|on|status"},
 			{"whatserverd contract tokens on|off|status", "tokens on|off|status"},
+			{"whatserverd contract apply -dry-run [-sub S]|-confirm N", "apply -dry-run [-sub S]|-confirm N"},
 			{"whatserverd tokens suspend [-note N] SELECTOR|TOKEN|-", "tokens suspend [-note N] SELECTOR|TOKEN|-"},
 			{"whatserverd tokens suspend -replay F", "suspend -replay F"},
 			{"whatserverd tokens lift SELECTOR|TOKEN|-", "lift SELECTOR|TOKEN|-"},
@@ -646,7 +647,7 @@ func TestContractDocsMatchTheCode(t *testing.T) {
 			store.ContractErrorSnapshotInvalid, store.ContractErrorEventParked, store.ContractErrorEventsRefused, store.ContractErrorEventActor,
 			store.ContractErrorCommandInvalid, store.ContractErrorCommandStuck, store.ContractErrorSectionInvalid,
 			store.ContractErrorSectionParked, store.ContractErrorResultParked, store.ContractErrorTokenFeedSilent, store.ContractErrorTokenLookupInvalid,
-			store.ContractErrorTokenResetLoop} {
+			store.ContractErrorTokenResetLoop, store.ContractErrorApplyFailed, store.ContractErrorClosingContradicted} {
 			says("contract.md", "`"+class+"`")
 		}
 		says("contract-events.md", "`"+store.ContractErrorEventActor+"`")

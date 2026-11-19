@@ -502,216 +502,250 @@ func (d *Devices) Quarantine(ctx context.Context, tenant, actor, device uuid.UUI
 		if err := requireOwnerTx(ctx, tx, tenant, actor); err != nil {
 			return err
 		}
-		return withQuarantine(ctx, tx, func() error {
-			var deletedAt, purgeAfter *time.Time
-			var noLeftover, pending bool
-			var statusReason string
-			err := tx.QueryRow(ctx, `SELECT deleted_at, purge_after, wa_leftover IS NULL, status_reason,
-				lid IS NULL AND pn IS NULL AND last_connected_at IS NULL
-				FROM devices WHERE id = $1 FOR UPDATE`, device).Scan(&deletedAt, &purgeAfter, &noLeftover, &statusReason, &pending)
-			if errors.Is(err, pgx.ErrNoRows) {
-				return ErrNotFound
-			}
-			if err != nil {
-				return err
-			}
-			if deletedAt != nil {
-				out.Already, out.DeletedAt, out.PurgeAfter = true, *deletedAt, *purgeAfter
-				out.Unlinked, out.NoteCode = noLeftover, noteCode(!noLeftover, statusReason)
-				return nil
-			}
-			if pending {
-				return ErrPendingDevice
-			}
+		return quarantineTx(ctx, tx, tenant, device, quarantineBy{actor: &actor, acknowledged: acknowledged}, &out)
+	})
+	return out, err
+}
 
-			// (c) Everyone who reads it now, the owner included for the
-			// event; the others must all have been acknowledged.
-			readers, err := readersTx(ctx, tx, tenant, device)
-			if err != nil {
-				return err
+// quarantineBy is who deletes a number, and on what terms: an owner
+// (actor), whose acknowledgement must cover every other reader; or, with
+// no actor, the app (the contract's confirmed closing of an account,
+// DS54), which needs none and records the app as the actor, with the purge
+// no later than purgeBy when it is set.
+type quarantineBy struct {
+	actor        *uuid.UUID
+	acknowledged []uuid.UUID
+	purgeBy      *time.Time
+}
+
+// quarantineTx is a deletion's checks and writes once the actor is
+// allowed: Quarantine's body, and the contract's closing's for each number
+// of a closed account's personal workspace (quarantineNumberByAppTx). The
+// caller holds pg.InTenantTx(tenant), or app.tenant_id.
+func quarantineTx(ctx context.Context, tx pgx.Tx, tenant, device uuid.UUID, by quarantineBy, out *Quarantined) error {
+	actor := by.actor
+	return withQuarantine(ctx, tx, func() error {
+		var deletedAt, purgeAfter *time.Time
+		var noLeftover, pending bool
+		var statusReason string
+		err := tx.QueryRow(ctx, `SELECT deleted_at, purge_after, wa_leftover IS NULL, status_reason,
+			lid IS NULL AND pn IS NULL AND last_connected_at IS NULL
+			FROM devices WHERE id = $1 FOR UPDATE`, device).Scan(&deletedAt, &purgeAfter, &noLeftover, &statusReason, &pending)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		if deletedAt != nil {
+			out.Already, out.DeletedAt, out.PurgeAfter = true, *deletedAt, *purgeAfter
+			out.Unlinked, out.NoteCode = noLeftover, noteCode(!noLeftover, statusReason)
+			return nil
+		}
+		if pending {
+			return ErrPendingDevice
+		}
+
+		// (c) Everyone who reads it now, the owner included for the
+		// event; the others must all have been acknowledged. The app has
+		// nobody to acknowledge for it: every reader is told.
+		readers, err := readersTx(ctx, tx, tenant, device)
+		if err != nil {
+			return err
+		}
+		var others []Person
+		var told []uuid.UUID
+		readerSubs, readerUsers := readerIDs(readers)
+		for _, r := range readers {
+			if actor != nil && r.UserID == *actor {
+				continue
 			}
-			var others []Person
-			var told []uuid.UUID
-			readerSubs, readerUsers := readerIDs(readers)
-			for _, r := range readers {
-				if r.UserID == actor {
-					continue
-				}
-				others = append(others, r.Person)
-				told = append(told, r.UserID)
-			}
+			others = append(others, r.Person)
+			told = append(told, r.UserID)
+		}
+		if actor != nil {
 			for _, r := range others {
-				if !slices.Contains(acknowledged, r.UserID) {
+				if !slices.Contains(by.acknowledged, r.UserID) {
 					return &ErrDeviceHasReaders{Readers: others}
 				}
 			}
+		}
 
-			// (d) Assistant connections whose key names the number end: a
-			// renewal must name exactly the old key's numbers, so a
-			// narrowed one could never renew again.
-			rows, err := tx.Query(ctx, `SELECT c.id, c.client_name, c.kind, c.api_key_id FROM mcp_connections c
-				JOIN api_key_devices x ON x.api_key_id = c.api_key_id AND x.device_id = $2
-				WHERE c.tenant_id = $1 AND c.status IN ('pending', 'active', 'reseal') ORDER BY c.id`, tenant, device)
-			if err != nil {
-				return err
-			}
-			var endedKeys []uuid.UUID
-			ended, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (EndedAssistant, error) {
-				var a EndedAssistant
-				var key uuid.UUID
-				err := row.Scan(&a.ID, &a.ClientName, &a.Kind, &key)
-				a.Kind = assistantKind(a.Kind)
-				endedKeys = append(endedKeys, key)
-				return a, err
-			})
-			if err != nil {
-				return err
-			}
-			for _, a := range ended {
-				if _, err := endMCPConnectionTx(ctx, tx, tenant, a.ID.String(), statusRevoked, ReasonAccessLost); err != nil {
-					return err
-				}
-			}
-			out.AssistantsEnded = append([]EndedAssistant{}, ended...)
-
-			// (e) Off every key restricted to it. 0026's trigger keeps them
-			// restricted and bumps each one's access_version; none is
-			// revoked.
-			rows, err = tx.Query(ctx, `WITH gone AS (DELETE FROM api_key_devices WHERE device_id = $1 RETURNING api_key_id)
-				SELECT k.id, k.prefix, k.name FROM gone JOIN api_keys k ON k.id = gone.api_key_id
-				WHERE k.revoked_at IS NULL ORDER BY k.created_at, k.id`, device)
-			if err != nil {
-				return err
-			}
-			type narrowedRow struct {
-				id  uuid.UUID
-				key NarrowedKey
-			}
-			narrowed, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (narrowedRow, error) {
-				var k narrowedRow
-				err := row.Scan(&k.id, &k.key.ID, &k.key.Name)
-				return k, err
-			})
-			if err != nil {
-				return err
-			}
-			// A connection's own key is the connection's, reported as ended.
-			out.KeysNarrowed = []NarrowedKey{}
-			for _, k := range narrowed {
-				if !slices.Contains(endedKeys, k.id) {
-					out.KeysNarrowed = append(out.KeysNarrowed, k.key)
-				}
-			}
-
-			// (e2) Off every platform token (the plan's 5.6): its perms on
-			// the number go, each instance kept off for good (item_deleted),
-			// and the token identities' grants on it, in this write, under
-			// the workspace's row (DB25 steps 3, 5 and 6). No token row is
-			// touched: the perms' NOTIFY and the deleted number's refusal
-			// close what it no longer allows, and a recovery gives nothing
-			// back.
-			if err := dropNumberTokensTx(ctx, tx, device, "item_deleted"); err != nil {
-				return err
-			}
-
-			// (f) Its downloads in flight go back to the queue, while the
-			// number can still be written to.
-			if _, err := tx.Exec(ctx, `UPDATE media SET download_status = 'pending', claimed_at = NULL
-				WHERE download_status = 'downloading' AND message_uid IN (SELECT uid FROM messages WHERE device_id = $1)`, device); err != nil {
-				return err
-			}
-
-			// (g) Excluded. One clock for both dates, so the window is
-			// exactly 30 days; a dead status is kept, so a recovered number
-			// is never offered a resume it cannot do; and the session's
-			// fingerprint is in the commit, so it is known even if this
-			// process dies before the logout. With no session there is
-			// nothing to log out, and that outcome is written here, once:
-			// RecordUnlink only reads it back, so a second record of the
-			// same deletion (the janitor's, racing the handler's) cannot
-			// rewrite a confirmed logout as "already disconnected".
-			sessions, err := sessionTableTx(ctx, tx)
-			if err != nil {
-				return err
-			}
-			var jid *string
-			var reg *int64
-			if sessions {
-				err := tx.QueryRow(ctx, `SELECT w.jid, w.registration_id FROM whatsmeow_device w
-					JOIN devices d ON d.pn = w.jid WHERE d.id = $1`, device).Scan(&jid, &reg)
-				if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-					return err
-				}
-			}
-			var lbl, pn string
-			if err := tx.QueryRow(ctx, `WITH now AS (SELECT clock_timestamp() AS t)
-				UPDATE devices SET deleted_at = now.t, deleted_by = $2, purge_after = now.t + interval '30 days', paused = true,
-				  pause_cause = 'deletion',
-				  status = CASE WHEN $3::text IS NULL AND status <> 'banned' THEN 'logged_out'
-				                WHEN status IN ('logged_out', 'banned') THEN status ELSE 'offline' END,
-				  status_reason = CASE WHEN $3::text IS NULL THEN '`+reasonNoSession+`'
-				                       WHEN status IN ('logged_out', 'banned') THEN status_reason ELSE '`+reasonDeleted+`' END,
-				  wa_leftover = CASE WHEN $3::text IS NULL THEN NULL
-				                     ELSE jsonb_build_object('jid', $3::text, 'registration_id', $4::bigint) END
-				FROM now WHERE devices.id = $1
-				RETURNING deleted_at, purge_after, label, coalesce(pn, '')`, device, actor, jid, reg).
-				Scan(&out.DeletedAt, &out.PurgeAfter, &lbl, &pn); err != nil {
-				return err
-			}
-			if jid != nil && reg != nil {
-				out.Session = &WASession{JID: *jid, RegistrationID: *reg}
-			}
-			itemName, hint := itemLabel(device, lbl, pn)
-
-			// (h) Its readers, and the workspace's other owners, are told in
-			// Wappie's own pages. A pause notice gives way to the deletion's.
-			if _, err := tx.Exec(ctx, `DELETE FROM device_notices WHERE device_id = $1 AND kind = 'sync_paused'`, device); err != nil {
-				return err
-			}
-			if _, err := tx.Exec(ctx, `INSERT INTO device_notices (tenant_id, device_id, user_id, kind, label, hint, raised_by, raised_by_kind, until)
-				SELECT $1, $2, u, 'number_deleted', $3, $4, $5, 'person', $6
-				FROM (SELECT unnest($7::uuid[]) AS u
-				      UNION SELECT m.user_id FROM workspace_memberships m JOIN users o ON o.id = m.user_id
-				       WHERE m.tenant_id = $1 AND m.role = 'owner' AND m.status = 'active' AND o.status = 'active' AND m.user_id <> $5) people
-				ON CONFLICT (tenant_id, device_id, user_id, kind) WHERE seen_at IS NULL DO UPDATE
-				SET label = excluded.label, hint = excluded.hint, raised_at = excluded.raised_at, raised_by = excluded.raised_by,
-				    raised_by_kind = excluded.raised_by_kind, until = excluded.until, purged_at = NULL`,
-				tenant, device, itemName, hint, actor, out.PurgeAfter, told); err != nil {
-				return err
-			}
-
-			// (i) Everyone else who held a grant or a permission on it
-			// reconnects without it; the owner's socket stays, so the reply
-			// arrives.
-			if _, err := tx.Exec(ctx, `UPDATE workspace_memberships SET access_version = access_version
-				WHERE tenant_id = $1 AND user_id <> $2 AND user_id IN (
-				  SELECT user_id FROM device_key_grants WHERE device_id = $3
-				  UNION SELECT user_id FROM device_permissions WHERE device_id = $3)`, tenant, actor, device); err != nil {
-				return err
-			}
-
-			// (j) The event, with the readers the number had, the owner
-			// among them when they read it.
-			sub, err := actorSubTx(ctx, tx, actor)
-			if err != nil {
-				return err
-			}
-			if err := recordEvent(ctx, tx, tenant, itemEvent{
-				Type: eventDeleted, ItemID: device, DedupeKey: dedupeKey(eventDeleted, device, out.DeletedAt),
-				OccurredAt: out.DeletedAt, ActorKind: "person", ActorSub: sub, ActorUserID: &actor,
-				ReaderSubs: readerSubs, ReaderUserIDs: readerUsers, Label: itemName, Hint: hint,
-				DeletedAt: &out.DeletedAt, PurgeAfter: &out.PurgeAfter,
-			}); err != nil {
-				return err
-			}
-
-			// (k) Every process hears it at the commit, and lets go of the
-			// number before its supervisor's next tick.
-			_, err = tx.Exec(ctx, `SELECT pg_notify($1, $2)`, DeviceExcludedChannel, tenant.String()+":"+device.String())
+		// (d) Assistant connections whose key names the number end: a
+		// renewal must name exactly the old key's numbers, so a
+		// narrowed one could never renew again.
+		rows, err := tx.Query(ctx, `SELECT c.id, c.client_name, c.kind, c.api_key_id FROM mcp_connections c
+			JOIN api_key_devices x ON x.api_key_id = c.api_key_id AND x.device_id = $2
+			WHERE c.tenant_id = $1 AND c.status IN ('pending', 'active', 'reseal') ORDER BY c.id`, tenant, device)
+		if err != nil {
 			return err
+		}
+		var endedKeys []uuid.UUID
+		ended, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (EndedAssistant, error) {
+			var a EndedAssistant
+			var key uuid.UUID
+			err := row.Scan(&a.ID, &a.ClientName, &a.Kind, &key)
+			a.Kind = assistantKind(a.Kind)
+			endedKeys = append(endedKeys, key)
+			return a, err
 		})
+		if err != nil {
+			return err
+		}
+		for _, a := range ended {
+			if _, err := endMCPConnectionTx(ctx, tx, tenant, a.ID.String(), statusRevoked, ReasonAccessLost); err != nil {
+				return err
+			}
+		}
+		out.AssistantsEnded = append([]EndedAssistant{}, ended...)
+
+		// (e) Off every key restricted to it. 0026's trigger keeps them
+		// restricted and bumps each one's access_version; none is
+		// revoked.
+		rows, err = tx.Query(ctx, `WITH gone AS (DELETE FROM api_key_devices WHERE device_id = $1 RETURNING api_key_id)
+			SELECT k.id, k.prefix, k.name FROM gone JOIN api_keys k ON k.id = gone.api_key_id
+			WHERE k.revoked_at IS NULL ORDER BY k.created_at, k.id`, device)
+		if err != nil {
+			return err
+		}
+		type narrowedRow struct {
+			id  uuid.UUID
+			key NarrowedKey
+		}
+		narrowed, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (narrowedRow, error) {
+			var k narrowedRow
+			err := row.Scan(&k.id, &k.key.ID, &k.key.Name)
+			return k, err
+		})
+		if err != nil {
+			return err
+		}
+		// A connection's own key is the connection's, reported as ended.
+		out.KeysNarrowed = []NarrowedKey{}
+		for _, k := range narrowed {
+			if !slices.Contains(endedKeys, k.id) {
+				out.KeysNarrowed = append(out.KeysNarrowed, k.key)
+			}
+		}
+
+		// (e2) Off every platform token (the plan's 5.6): its perms on
+		// the number go, each instance kept off for good (item_deleted),
+		// and the token identities' grants on it, in this write, under
+		// the workspace's row (DB25 steps 3, 5 and 6). No token row is
+		// touched: the perms' NOTIFY and the deleted number's refusal
+		// close what it no longer allows, and a recovery gives nothing
+		// back.
+		if err := dropNumberTokensTx(ctx, tx, device, "item_deleted"); err != nil {
+			return err
+		}
+
+		// (f) Its downloads in flight go back to the queue, while the
+		// number can still be written to.
+		if _, err := tx.Exec(ctx, `UPDATE media SET download_status = 'pending', claimed_at = NULL
+			WHERE download_status = 'downloading' AND message_uid IN (SELECT uid FROM messages WHERE device_id = $1)`, device); err != nil {
+			return err
+		}
+
+		// (g) Excluded. One clock for both dates, so the window is
+		// exactly 30 days (the app's, no later than purgeBy); a dead
+		// status is kept, so a recovered number is never offered a
+		// resume it cannot do; and the session's fingerprint is in the
+		// commit, so it is known even if this process dies before the
+		// logout. With no session there is nothing to log out, and that
+		// outcome is written here, once: RecordUnlink only reads it back,
+		// so a second record of the same deletion (the janitor's, racing
+		// the handler's) cannot rewrite a confirmed logout as "already
+		// disconnected".
+		sessions, err := sessionTableTx(ctx, tx)
+		if err != nil {
+			return err
+		}
+		var jid *string
+		var reg *int64
+		if sessions {
+			err := tx.QueryRow(ctx, `SELECT w.jid, w.registration_id FROM whatsmeow_device w
+				JOIN devices d ON d.pn = w.jid WHERE d.id = $1`, device).Scan(&jid, &reg)
+			if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+				return err
+			}
+		}
+		var lbl, pn string
+		if err := tx.QueryRow(ctx, `WITH now AS (SELECT clock_timestamp() AS t)
+			UPDATE devices SET deleted_at = now.t, deleted_by = $2,
+			  purge_after = least(now.t + interval '30 days', coalesce($5::timestamptz, now.t + interval '30 days')), paused = true,
+			  pause_cause = 'deletion',
+			  status = CASE WHEN $3::text IS NULL AND status <> 'banned' THEN 'logged_out'
+			                WHEN status IN ('logged_out', 'banned') THEN status ELSE 'offline' END,
+			  status_reason = CASE WHEN $3::text IS NULL THEN '`+reasonNoSession+`'
+			                       WHEN status IN ('logged_out', 'banned') THEN status_reason ELSE '`+reasonDeleted+`' END,
+			  wa_leftover = CASE WHEN $3::text IS NULL THEN NULL
+			                     ELSE jsonb_build_object('jid', $3::text, 'registration_id', $4::bigint) END
+			FROM now WHERE devices.id = $1
+			RETURNING deleted_at, purge_after, label, coalesce(pn, '')`, device, actor, jid, reg, by.purgeBy).
+			Scan(&out.DeletedAt, &out.PurgeAfter, &lbl, &pn); err != nil {
+			return err
+		}
+		if jid != nil && reg != nil {
+			out.Session = &WASession{JID: *jid, RegistrationID: *reg}
+		}
+		itemName, hint := itemLabel(device, lbl, pn)
+
+		// (h) Its readers, and the workspace's other owners, are told in
+		// Wappie's own pages. A pause notice gives way to the deletion's.
+		raisedBy := actorPerson
+		if actor == nil {
+			raisedBy = actorApp
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM device_notices WHERE device_id = $1 AND kind = 'sync_paused'`, device); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO device_notices (tenant_id, device_id, user_id, kind, label, hint, raised_by, raised_by_kind, until)
+			SELECT $1, $2, u, 'number_deleted', $3, $4, $5, $8, $6
+			FROM (SELECT unnest($7::uuid[]) AS u
+			      UNION SELECT m.user_id FROM workspace_memberships m JOIN users o ON o.id = m.user_id
+			       WHERE m.tenant_id = $1 AND m.role = 'owner' AND m.status = 'active' AND o.status = 'active'
+			         AND m.user_id IS DISTINCT FROM $5) people
+			ON CONFLICT (tenant_id, device_id, user_id, kind) WHERE seen_at IS NULL DO UPDATE
+			SET label = excluded.label, hint = excluded.hint, raised_at = excluded.raised_at, raised_by = excluded.raised_by,
+			    raised_by_kind = excluded.raised_by_kind, until = excluded.until, purged_at = NULL`,
+			tenant, device, itemName, hint, actor, out.PurgeAfter, told, raisedBy); err != nil {
+			return err
+		}
+
+		// (i) Everyone else who held a grant or a permission on it
+		// reconnects without it; the owner's socket stays, so the reply
+		// arrives.
+		if _, err := tx.Exec(ctx, `UPDATE workspace_memberships SET access_version = access_version
+			WHERE tenant_id = $1 AND user_id IS DISTINCT FROM $2 AND user_id IN (
+			  SELECT user_id FROM device_key_grants WHERE device_id = $3
+			  UNION SELECT user_id FROM device_permissions WHERE device_id = $3)`, tenant, actor, device); err != nil {
+			return err
+		}
+
+		// (j) The event, with the readers the number had, the owner
+		// among them when they read it; the app's has no actor.
+		ev := itemEvent{
+			Type: eventDeleted, ItemID: device, DedupeKey: dedupeKey(eventDeleted, device, out.DeletedAt),
+			OccurredAt: out.DeletedAt, ActorKind: actorApp,
+			ReaderSubs: readerSubs, ReaderUserIDs: readerUsers, Label: itemName, Hint: hint,
+			DeletedAt: &out.DeletedAt, PurgeAfter: &out.PurgeAfter,
+		}
+		if actor != nil {
+			sub, err := actorSubTx(ctx, tx, *actor)
+			if err != nil {
+				return err
+			}
+			ev.ActorKind, ev.ActorSub, ev.ActorUserID = actorPerson, sub, actor
+		}
+		if err := recordEvent(ctx, tx, tenant, ev); err != nil {
+			return err
+		}
+
+		// (k) Every process hears it at the commit, and lets go of the
+		// number before its supervisor's next tick.
+		_, err = tx.Exec(ctx, `SELECT pg_notify($1, $2)`, DeviceExcludedChannel, tenant.String()+":"+device.String())
+		return err
 	})
-	return out, err
 }
 
 // DeviceExcludedChannel is the notification a deletion sends at its commit,
