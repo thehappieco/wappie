@@ -133,7 +133,7 @@ export async function startEnclave(options = {}) {
 
   const memory = createMemSampler()
   const health = createHealthLine({
-    log, now, started: now(),
+    log,
     probe: () => clockSkew({ url: overrides.clockUrl, fetch: options.fetch, now }),
     fields: () => ({
       ...mediaHealth(), ...(facts.content?.sending.counts() ?? {}), ...(facts.content?.ai?.counts() ?? {}),

@@ -24,6 +24,9 @@ import { configFor, providerFor, tierOf } from './provider.mjs'
 export const BODY_LIMITS = { mcp: 1024 * 1024, link: 96 * 1024, as: 16 * 1024 }
 export const MCP_PER_MINUTE = 60
 export const ATTESTATION_PER_MINUTE = 10
+// All addresses together (reader 0.6.1): each request runs nsm-attest, and
+// the NSM and the single vCPU are shared with nsm-timefeed, which keeps the clock.
+export const ATTESTATION_ALL_PER_MINUTE = 60
 
 /** Whether `address` lies in one of a console token's allowed networks (§19.18); an empty list allows every network. */
 export function networkAllowed(networks, address) {
@@ -123,7 +126,8 @@ export function createRouter({ state, metadata, as, internal, verifier, limiter,
         meta.route = `${request.method} /attestation`
         if (request.method !== 'GET') return refuse(405, 'method_not_allowed')
         const taken = limiter.take('attestation', ip, ATTESTATION_PER_MINUTE)
-        if (!taken.ok) { meta.code = 'rate_limited'; return Response.json({ code: 'rate_limited' }, { status: 429, headers: { 'Cache-Control': 'no-store', 'Retry-After': String(taken.retryAfter) } }) }
+        const all = taken.ok ? limiter.take('attestation_all', 'all', ATTESTATION_ALL_PER_MINUTE) : taken
+        if (!all.ok) { meta.code = 'rate_limited'; return Response.json({ code: 'rate_limited' }, { status: 429, headers: { 'Cache-Control': 'no-store', 'Retry-After': String(all.retryAfter) } }) }
         const params = new URL(request.url).searchParams
         const nonce = params.getAll('nonce').length === 1 && [...params.keys()].length === 1 ? decodeNonce(params.get('nonce')) : null
         if (!nonce) { meta.code = 'bad_request'; return refuse(400, 'bad_request') }

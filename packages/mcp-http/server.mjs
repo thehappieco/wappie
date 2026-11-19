@@ -193,7 +193,9 @@ export async function startReader(options = {}) {
     site: { console: config.consoleURL, documentation: config.links?.documentation } })
 
   const handlerFor = listener => async (req, res) => {
-    const started = now(), meta = {}
+    // The duration is on the monotonic clock: a step of the system clock
+    // must not make it negative (the log schema would drop the line).
+    const started = performance.now(), meta = {}
     let response
     try {
       const request = await toWebRequest(req, publicOrigin, bodyLimitFor(req.url.split('?')[0]))
@@ -204,7 +206,7 @@ export async function startReader(options = {}) {
       response = Response.json({ code: 'internal_error' }, { status: 500, headers: { 'Cache-Control': 'no-store' } })
     }
     try { await sendWebResponse(res, response) } catch { /* the peer went away */ }
-    log.request({ route: meta.route ?? 'unmatched', status: response.status, ms: now() - started, connection: meta.connection, client: meta.client, code: meta.code, flags: meta.flags })
+    log.request({ route: meta.route ?? 'unmatched', status: response.status, ms: Math.max(0, Math.round(performance.now() - started)), connection: meta.connection, client: meta.client, code: meta.code, flags: meta.flags })
   }
   const servers = injected ? [[injected.public, 'public'], ...(injected.internal ? [[injected.internal, 'internal']] : [])] : [[server, undefined]]
   for (const [target, listener] of servers) {
