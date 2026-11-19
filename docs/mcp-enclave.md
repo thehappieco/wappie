@@ -211,8 +211,11 @@ codes: `ok`, `starting`, `helper_stale`, `nsm_stale`, `boot_refused`,
 `nsm_node_proof`; `starting` is the helper's own state until its first good
 NSM sample, so it also follows a restart of nsm-timefeed while the enclave
 runs, and has nothing to do with the `/internal` 503 `starting`);
-how many times this Node process has logged `clock_sources_disagree` for a
-KMS proof (it starts at 0 when Node restarts); the KMS check's range for the
+how many times the reader has logged `clock_sources_disagree` for a KMS
+proof in this enclave boot (kept in `/run/wappie/clock_disagree_kms`, so it
+goes on across a Node restart and starts at 0 only with a new `boot_id`; a
+value higher than the last one seen for a `boot_id` is a new disagreement);
+the KMS check's range for the
 reader's clock minus true time, in ms; and the helper's ledger of
 corrections over the last hour and day. Those last four, like the first
 four, are the health line's values (null where the line omits them).
