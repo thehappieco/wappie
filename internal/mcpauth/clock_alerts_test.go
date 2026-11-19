@@ -649,3 +649,37 @@ func writeAlertState(t *testing.T, dir string, st *alertState) {
 		t.Fatal(err)
 	}
 }
+
+// docs/mcp-enclave.md §5.1 says the alerts' words, thresholds, files and
+// log as the code has them.
+func TestClockAlertsMatchTheDocs(t *testing.T) {
+	b, err := os.ReadFile("../../docs/mcp-enclave.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc := strings.Join(strings.Fields(string(b)), " ")
+	says := []string{
+		"open " + itoa(int64(clockUnknownAfter/time.Minute)) + " minutes after it began",
+		"at most once per " + itoa(int64(alertWindow/time.Hour)) + " h",
+		"every " + itoa(int64(alertWindow/time.Hour)) + " h while it stays open",
+		"at most every " + itoa(int64(alertRetry/time.Minute)) + " minutes",
+		"BAD within " + itoa(int64(watchdogBadWithin/time.Minute)) + " minutes",
+		"WARN at most every " + itoa(int64(alertStateWarnEvery/time.Minute)) + " minutes",
+		"`" + ReaderAlertsFile + "`", "`" + ReaderAlertsTestFile + "`",
+		"`" + strings.TrimSuffix(ReaderAlertsFile, ".json") + ".lock`",
+		"`event=reader_alert cause=<word> outcome=sent|suppressed|failed`",
+		"`reader clock alerts on`", "`reader clock alerts off`",
+		"`Wappie reader alert: <word>`", "`test: 1`",
+	}
+	for _, w := range []string{mailer.ReaderAlertCapExceeded, mailer.ReaderAlertNSMKMSDisagree, mailer.ReaderAlertClockUnknown, mailer.ReaderAlertWatchdogRestart} {
+		says = append(says, "| `"+w+"` |")
+	}
+	for _, c := range ReaderClockCodes {
+		says = append(says, "`"+c+"`")
+	}
+	for _, s := range says {
+		if !strings.Contains(doc, s) {
+			t.Errorf("docs/mcp-enclave.md does not say %q", s)
+		}
+	}
+}

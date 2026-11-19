@@ -181,7 +181,7 @@ The migration header holds the down-step, checksum-gated against
 | `WS_PLATFORM_ID_ADDR` | Development only: the `host:port` the userinfo request dials, because Go does not resolve `*.localhost`. The request's Host still names the issuer. | empty |
 | `WS_PLATFORM_CONSOLE_ORIGIN` | The Happie Co's console (`https://console.thehappie.co`, or `http://console.thehappie.localhost:8290` in development), whose shared shell the settings screens draw ([below](#the-shared-shell)) | empty: the screens draw their own menu only |
 | `WS_LOCAL_LOGIN` | `on`, `link_only` or `off` | `on` |
-| `WS_SECURITY_ALERT_EMAIL` | The operator's address for the account-key alert (needs mail) | empty |
+| `WS_SECURITY_ALERT_EMAIL` | The operator's address for the account-key alert and the reader clock alerts (`docs/mcp-enclave.md` §5.1) (needs mail) | empty |
 
 Validation:
 
