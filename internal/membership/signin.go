@@ -85,6 +85,8 @@ type Members struct {
 	// sessions after an apply changed access; nil skips it.
 	Readers ApplyReaders
 	Sockets ApplySockets
+	// applier is the store's apply, Contract unless a test replaces it.
+	applier applier
 
 	mu    sync.Mutex
 	state store.ContractState

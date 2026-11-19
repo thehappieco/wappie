@@ -35,7 +35,7 @@ func PersonalWorkspaceName(locale string) string {
 // document names: every stored document that lists it leaves its name null.
 const docNameNullSQL = `NOT EXISTS (SELECT 1 FROM contract_accounts a
 		CROSS JOIN LATERAL jsonb_array_elements(a.doc->'workspaces') x
-		WHERE a.doc IS NOT NULL AND x->>'id' = $1::text AND x->>'name' IS NOT NULL)`
+		WHERE a.doc IS NOT NULL AND (x->>'id')::uuid = $1 AND x->>'name' IS NOT NULL)`
 
 // renamePersonalTx renames user's personal workspace to the name of locale
 // when the apply has named it (its record's applied_wversion is set) and

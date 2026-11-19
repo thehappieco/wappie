@@ -34,6 +34,23 @@ type ApplySockets interface {
 	RevalidateAccess()
 }
 
+// applier is what Apply asks of the store (*store.Contract): a test's
+// fake stands in for it past the store's enforce gate.
+type applier interface {
+	EnsureTeams(ctx context.Context, sub uuid.UUID) ([]uuid.UUID, error)
+	PendingWorkspacesOf(ctx context.Context, sub uuid.UUID) ([]uuid.UUID, error)
+	ApplyWorkspace(ctx context.Context, id uuid.UUID) (store.ApplyResult, error)
+	ApplyAccount(ctx context.Context, sub uuid.UUID) (store.ApplyResult, error)
+	ConfirmClosing(ctx context.Context, sub uuid.UUID, fresh store.ContractDoc) (store.ClosingResult, error)
+}
+
+func (m *Members) applies() applier {
+	if m.applier != nil {
+		return m.applier
+	}
+	return m.Contract
+}
+
 // applyBatch is how many subs, workspaces and closings one pass of
 // ApplyPending takes of each.
 const applyBatch = 100
@@ -44,7 +61,7 @@ const applyBatch = 100
 // store.ErrApplyNeedsEnforce.
 func (m *Members) Apply(ctx context.Context, sub uuid.UUID) (store.ApplyResult, error) {
 	res := store.ApplyResult{Sub: sub}
-	created, err := m.Contract.EnsureTeams(ctx, sub)
+	created, err := m.applies().EnsureTeams(ctx, sub)
 	if err != nil {
 		return res, m.applyFailed(ctx, sub, err)
 	}
@@ -52,18 +69,18 @@ func (m *Members) Apply(ctx context.Context, sub uuid.UUID) (store.ApplyResult, 
 		res.Absorb(store.ApplyResult{Actions: []store.ApplyAction{{Kind: store.ApplyTeamCreated, Workspace: id}},
 			Counts: store.ApplyCounts{TeamsCreated: 1}})
 	}
-	ws, err := m.Contract.PendingWorkspacesOf(ctx, sub)
+	ws, err := m.applies().PendingWorkspacesOf(ctx, sub)
 	if err != nil {
 		return res, m.applyFailed(ctx, sub, err)
 	}
 	for _, id := range ws {
-		w, err := m.Contract.ApplyWorkspace(ctx, id)
+		w, err := m.applies().ApplyWorkspace(ctx, id)
 		if err != nil {
 			return res, m.applyFailed(ctx, sub, err)
 		}
 		res.Absorb(w)
 	}
-	a, err := m.Contract.ApplyAccount(ctx, sub)
+	a, err := m.applies().ApplyAccount(ctx, sub)
 	res.Absorb(a)
 	res.Version, res.Held, res.OperatorDisable = a.Version, a.Held, a.OperatorDisable
 	m.applied(ctx, res)
@@ -177,7 +194,7 @@ func (m *Members) confirmClosing(ctx context.Context, sub uuid.UUID) {
 	if err != nil {
 		return
 	}
-	res, err := m.Contract.ConfirmClosing(ctx, sub, doc)
+	res, err := m.applies().ConfirmClosing(ctx, sub, doc)
 	switch {
 	case errors.Is(err, store.ErrClosingContradicted):
 		m.log().Error("contract apply: closing_contradicted", "sub", sub, "version", doc.Version)
