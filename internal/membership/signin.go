@@ -80,6 +80,11 @@ type Members struct {
 	// Enforce makes RequireFresh's verdicts refusals. Release B never sets
 	// it (the plan's DB4): observe only logs them.
 	Enforce bool
+	// Readers tells the readers of the connections an apply ended (DS54);
+	// nil leaves it to their re-tell. Sockets wakes this process's
+	// sessions after an apply changed access; nil skips it.
+	Readers ApplyReaders
+	Sockets ApplySockets
 
 	mu    sync.Mutex
 	state store.ContractState

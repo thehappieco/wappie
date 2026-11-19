@@ -136,7 +136,7 @@ func (a *app) logContractStart(ctx context.Context) {
 // contractCommand is whatserverd contract, as the service user runs it
 // (systemd-run with the platform-contract group and runtime.env as its
 // environment, the release as its working directory). check reads no .env
-// and no database; status, diff, mode, settings and tokens read the
+// and no database; status, diff, mode, settings, tokens and apply read the
 // database and never migrate it (contract_status.go, contract_settings.go,
 // contract_tokens.go).
 func contractCommand(args []string, stdout io.Writer) error {
@@ -156,6 +156,8 @@ func contractCommand(args []string, stdout io.Writer) error {
 		return contractSettingsCommand(args[1:], stdout)
 	case "tokens":
 		return contractTokensCommand(args[1:], stdout)
+	case "apply":
+		return contractApplyCommand(args[1:], stdout)
 	}
 	return usageError{arg: "contract " + strings.Join(args, " ")}
 }
