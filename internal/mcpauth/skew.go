@@ -94,18 +94,23 @@ func skewLevel(seconds int64) (slog.Level, bool) {
 // note records a reading and reports the level to log it at. It reports
 // false inside skewWarn, and when the same reader's clock was logged at the
 // same level, with the same authentication, within skewLogEvery.
+//
+// Requests reach here out of order: a reading's time is taken when its
+// headers arrive, before the body is read and the signature checked, so a
+// slow request can come after a faster later one. An older reading never
+// replaces a newer one.
 func (c *readerClocks) note(reader string, r skewReading) (slog.Level, bool) {
 	if c == nil {
 		return 0, false
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	kind := clockUnauthenticated
+	kind, readings := clockUnauthenticated, c.unauthenticated
 	if r.authenticated {
-		c.authenticated[reader] = r
-		kind = clockAuthenticated
-	} else {
-		c.unauthenticated[reader] = r
+		kind, readings = clockAuthenticated, c.authenticated
+	}
+	if prev, ok := readings[reader]; !ok || !r.at.Before(prev.at) {
+		readings[reader] = r
 	}
 	level, ok := skewLevel(r.seconds)
 	if !ok {
@@ -125,8 +130,11 @@ func (c *readerClocks) due(key clockLogKey, now time.Time) bool {
 	return c.dueLocked(key, now)
 }
 
+// dueLocked counts a line as logged unless one was within skewLogEvery of
+// now, before or after it: a request that finishes after a later one is
+// inside the window too. The time kept only moves forward.
 func (c *readerClocks) dueLocked(key clockLogKey, now time.Time) bool {
-	if last, ok := c.logged[key]; ok && now.Sub(last) < skewLogEvery && !now.Before(last) {
+	if last, ok := c.logged[key]; ok && now.Sub(last) < skewLogEvery {
 		return false
 	}
 	c.logged[key] = now

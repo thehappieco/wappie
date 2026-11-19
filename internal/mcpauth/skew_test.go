@@ -153,6 +153,61 @@ func TestReaderClockRateLimit(t *testing.T) {
 	}
 }
 
+// A request that reaches the log after a later one (a slow body, say) is
+// inside the same ten minutes: it logs nothing, does not move the window
+// back, and does not replace the newer reading.
+func TestReaderClockOutOfOrder(t *testing.T) {
+	t0 := time.Unix(1_795_000_000, 0)
+	logs := &capture{}
+	h := &Handler{Log: slog.New(logs), clocks: newReaderClocks()}
+	enclave := &AttestedReader{ID: "enclave"}
+	ctx := context.Background()
+	signed := func(at time.Duration, skew int64) {
+		now := t0.Add(at)
+		h.noteReaderClock(ctx, enclave, now.Unix()+skew, now)
+	}
+	stale := func(at time.Duration, skew int64) {
+		now := t0.Add(at)
+		header := http.Header{}
+		header.Set(HeaderTimestamp, itoa(now.Unix()+skew))
+		h.noteStaleClock(ctx, enclave, header, now)
+	}
+
+	signed(time.Second, 15)
+	signed(0, 12)
+	if n := len(logs.lines(clockLine)); n != 1 {
+		t.Fatalf("an earlier request finishing later: %d lines, want 1", n)
+	}
+	// The window still runs from the first line, so ten minutes after it
+	// (not after the earlier request) is a new line.
+	signed(10*time.Minute, 12)
+	if n := len(logs.lines(clockLine)); n != 1 {
+		t.Fatalf("ten minutes after the earlier request only: %d lines, want 1", n)
+	}
+	signed(10*time.Minute+time.Second, 12)
+	if n := len(logs.lines(clockLine)); n != 2 {
+		t.Fatalf("ten minutes after the first line: %d lines, want 2", n)
+	}
+
+	stale(time.Minute, 66)
+	stale(30*time.Second, 65)
+	if n := len(logs.lines(clockLineFree)); n != 1 {
+		t.Fatalf("an earlier claimed gap finishing later: %d lines, want 1", n)
+	}
+
+	auth, okAuth, unauth, okUnauth := h.clocks.readings("enclave")
+	if !okAuth || auth.seconds != 12 || !auth.at.Equal(t0.Add(10*time.Minute+time.Second)) {
+		t.Fatalf("authenticated reading %+v, want the newest", auth)
+	}
+	if !okUnauth || unauth.seconds != 66 || !unauth.at.Equal(t0.Add(time.Minute)) {
+		t.Fatalf("unauthenticated reading %+v, want the newest", unauth)
+	}
+	signed(5*time.Minute, 20)
+	if auth, _, _, _ := h.clocks.readings("enclave"); auth.seconds != 12 {
+		t.Fatalf("an older signed reading replaced a newer one: %+v", auth)
+	}
+}
+
 // signedRequest sends one request to the guard with the reader's timestamp
 // at the given gap from now, signed with secret.
 func signedRequest(t *testing.T, mux *http.ServeMux, secret string, skew time.Duration, nonce string) int {
