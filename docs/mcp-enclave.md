@@ -191,7 +191,7 @@ up, times out after 10 s, and reads at most 64 KiB of a response.
 
 | Method and path | Request | Success | Other statuses |
 |---|---|---|---|
-| `GET /internal/healthz` | none | 200 health object (below) | 401; from 0.6.1, 503 `clock_unknown` |
+| `GET /internal/healthz` | none | 200 health object (below) | 401; from 0.6.1, 503 `clock_unknown` with the health object (below) |
 | `GET /internal/requests/{id}` | none | 200 descriptor (the fields `link.mjs` `descriptor()` returns today; `reader_public_key` is the request's own X25519 key, and `kid` is the first 16 hex of its SHA-256) | 404, 503 `starting` |
 | `POST /internal/requests/{id}/prepare` | `{"nonce": b64url}`: 16 to 64 bytes decoded, strict keys | 200 prepared descriptor (§6.3) | 400 `bad_request`, 404, 429 `too_many_prepares` (more than 10 per request), 503 `policy_unknown`, `tls_not_ready`, `attest_failed` or `starting` |
 | `POST /internal/requests/{id}/bundle` | today's `BundleRelay` (`connection_id`, `tenant_id`, `kid`, `sealed`, `expires_at`) | 204 | today's codes; `unknown_kid` if `kid` is not the request's |
@@ -203,8 +203,19 @@ from reader 0.6.1 `state` may also be `"clock_unknown"`, and the object adds
 `"clock_ok":true|false|null,"clock_unc_ms":<integer>|null,"nsm_skew_ms":<integer>|null,"go_skew_ms":<integer>|null`
 (the reader's clock, §10: whether it vouches for it, its uncertainty, its
 clock minus the NSM's, and its clock minus the timestamps on Go's verified
-requests, the median over a window at the timestamps' 1 s resolution).
-Go reads the clock fields apart (`internal/mcpauth/signed_relay.go`
+requests, the median over a window at the timestamps' 1 s resolution), then
+`"clock_code":<reason>,"clock_disagree_kms":<integer>,"kms_skew_lo_ms":<integer>|null,"kms_skew_hi_ms":<integer>|null,"clock_corr_hour_ms":<integer>|null,"clock_corr_day_ms":<integer>|null`:
+the reason the clock is or is not trusted (one of the fixed `clock_state`
+codes: `ok`, `helper_stale`, `nsm_stale`, `boot_refused`, `cap_exceeded`,
+`chronyd_gone`, `nsm_error`, `unc_high`, `kms_proof`, `nsm_node_proof`);
+how many times this Node process has logged `clock_sources_disagree` for a
+KMS proof (it starts at 0 when Node restarts); the KMS check's range for the
+reader's clock minus true time, in ms; and the helper's ledger of
+corrections over the last hour and day. Those last four, like the first
+four, are the health line's values (null where the line omits them).
+Reading the object resets nothing, so the line's `clock_refused` count is
+not in it. Go reads the first four
+clock fields apart (`internal/mcpauth/signed_relay.go`
 `ReaderHealth`): a field that is missing (an older reader), null, not a
 number (not a boolean for `clock_ok`) or more than a day either way is left
 out, and never fails the answer; a fraction is rounded to whole
@@ -225,7 +236,11 @@ not ready` for any state but `ready` (`clock_unknown` included), else
 vouches for its clock, so Go's host clock is the suspect) and INFO
 otherwise. A 0.6.1 reader that cannot vouch for its clock and finds Go's
 signature outside its window by that clock answers **503 `clock_unknown`**
-instead of a 401; Go reads the code of any answer other than 200 or 401
+instead of a 401, with `Retry-After: 60`. Its body is the health object with
+`"code":"clock_unknown"` added, so Go still sees `boot_id`, `pcr0` and the
+clock's reason when the reader's clock is more than 60 s off; any other route
+in that case answers the bare `{"code":"clock_unknown"}`. Only Go can get
+either: the signature is checked before the timestamp. Go reads the code of any answer other than 200 or 401
 (`HealthStatusError`, a code only when it matches
 `^[a-z][a-z0-9_]{0,39}$`) and the miss lines carry it as `code`. A **401** from `/internal/healthz` is the reader refusing Go's
 signature, and its body says nothing about why; Go logs, at most once per
