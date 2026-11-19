@@ -275,6 +275,47 @@ func TestClockAlertUnknownAcrossDownAndNewBoot(t *testing.T) {
 	}
 }
 
+// A refault the watchdog leaves on hold, within 23 h of an earlier
+// clock_unknown, has its own clock_unknown held back, and mailed as soon as
+// the earlier mail's window lapses: not 23 h after it was held back.
+func TestClockAlertUnknownHeldBackUntilTheEarlierClaimLapses(t *testing.T) {
+	r := newAlertRig(t, t.TempDir())
+	r.observe(at(0), answer("b1", pcrA, true, nil))
+	// Episode 1 outlives clockUnknownAfter: mailed at minute 26.
+	r.observe(at(1), answer("b1", pcrA, false, nil))
+	r.observe(at(26), answer("b1", pcrA, false, nil))
+	if w := r.words(); w != mailer.ReaderAlertClockUnknown {
+		t.Fatalf("episode 1: %q", w)
+	}
+	r.observe(at(40), answer("b1", pcrA, true, nil))
+	// Episode 2, three hours on, is held: it stays BAD.
+	r.observe(at(3*60), answer("b1", pcrA, false, nil))
+	r.observe(at(3*60+25), answer("b1", pcrA, false, nil))
+	r.observe(at(3*60+26), answer("b1", pcrA, false, nil))
+	r.observe(at(26+23*60-1), answer("b1", pcrA, false, nil))
+	if w := r.words(); w != "" {
+		t.Fatalf("within the earlier mail's window: %q", w)
+	}
+	r.observe(at(26+23*60), answer("b1", pcrA, false, nil))
+	got := r.take()
+	if len(got) != 1 || got[0].word != mailer.ReaderAlertClockUnknown || got[0].nums["minutes_unknown"] != 26+23*60-3*60 {
+		t.Fatalf("when the earlier mail's window lapsed: %+v", got)
+	}
+	want := "clock_unknown=sent clock_unknown=suppressed clock_unknown=sent"
+	if d := strings.Join(r.logs.decisions(), " "); d != want {
+		t.Fatalf("decisions %q, want %q", d, want)
+	}
+	// And then once per window again, counted from that mail.
+	r.observe(at(26+46*60-1), answer("b1", pcrA, false, nil))
+	if w := r.words(); w != "" {
+		t.Fatalf("again early: %q", w)
+	}
+	r.observe(at(26+46*60), answer("b1", pcrA, false, nil))
+	if w := r.words(); w != mailer.ReaderAlertClockUnknown {
+		t.Fatalf("a window on: %q", w)
+	}
+}
+
 // watchdog_restart is the same image's new boot after a recent BAD; not a
 // new image, not after an OK, not after an old BAD, not the first boot seen.
 func TestClockAlertWatchdogRestart(t *testing.T) {

@@ -166,8 +166,9 @@ type alertTrack struct {
 	// What has been decided, so that each fault is decided once:
 	// CapBoot is the boot cap_exceeded was decided for; Disagree the last
 	// clock_disagree_kms seen for BootID; UnknownFor the episode
-	// clock_unknown was last decided for, and UnknownAt when; Restart a
-	// watchdog_restart not yet decided.
+	// clock_unknown was last decided for, and UnknownAt the time of the claim
+	// it was decided under (its own send, or the earlier one that held it
+	// back); Restart a watchdog_restart not yet decided.
 	CapBoot    string          `json:"cap_boot,omitempty"`
 	Disagree   *int64          `json:"disagree_kms,omitempty"`
 	UnknownFor time.Time       `json:"unknown_for,omitzero"`
@@ -187,11 +188,13 @@ type pendingRestart struct {
 }
 
 // dueAlert is one word to decide: its numbers, and what deciding it marks
-// on the reader's track.
+// on the reader's track. mark is given when the word's standing claim was
+// made: now after a send, the earlier claim's time when it held the mail
+// back, so that what waits on the claim waits only until it lapses.
 type dueAlert struct {
 	word string
 	nums []mailer.ReaderAlertNum
-	mark func(*alertTrack)
+	mark func(tr *alertTrack, claimedAt time.Time)
 }
 
 // claimed is a word claimed for sending: when, and the claim it replaced.
@@ -230,7 +233,7 @@ func (c *ClockAlerts) Observe(ctx context.Context, readerID string, health Reade
 				continue
 			}
 			if last, ok := st.Sent[d.word]; ok && within(now, last, alertWindow) {
-				d.mark(tr)
+				d.mark(tr, last)
 				delete(tr.Failed, d.word)
 				suppressed = append(suppressed, d.word)
 				continue
@@ -271,7 +274,7 @@ func (c *ClockAlerts) Observe(ctx context.Context, readerID string, health Reade
 				tr.Failed[cl.word] = now
 				return nil
 			}
-			cl.mark(tr)
+			cl.mark(tr, cl.at)
 			delete(tr.Failed, cl.word)
 			return nil
 		})
@@ -331,7 +334,7 @@ func observe(tr *alertTrack, class answerClass, h *ReaderHealth, now time.Time) 
 		}
 		nums = appendNum(nums, "clock_unc_ms", r.UncMS)
 		boot := r.BootID
-		due = append(due, dueAlert{word: mailer.ReaderAlertWatchdogRestart, nums: nums, mark: func(tr *alertTrack) {
+		due = append(due, dueAlert{word: mailer.ReaderAlertWatchdogRestart, nums: nums, mark: func(tr *alertTrack, _ time.Time) {
 			if tr.Restart != nil && tr.Restart.BootID == boot {
 				tr.Restart = nil
 			}
@@ -345,7 +348,7 @@ func observe(tr *alertTrack, class answerClass, h *ReaderHealth, now time.Time) 
 		nums = appendNum(nums, "clock_unc_ms", h.ClockUncMS)
 		nums = appendNum(nums, "nsm_skew_ms", h.NSMSkewMS)
 		boot := tr.BootID
-		due = append(due, dueAlert{word: mailer.ReaderAlertCapExceeded, nums: nums, mark: func(tr *alertTrack) { tr.CapBoot = boot }})
+		due = append(due, dueAlert{word: mailer.ReaderAlertCapExceeded, nums: nums, mark: func(tr *alertTrack, _ time.Time) { tr.CapBoot = boot }})
 	}
 
 	if h != nil && h.ClockDisagreeKMS != nil {
@@ -359,12 +362,15 @@ func observe(tr *alertTrack, class answerClass, h *ReaderHealth, now time.Time) 
 			nums = appendNum(nums, "kms_skew_hi_ms", h.KMSSkewHiMS)
 			nums = appendNum(nums, "nsm_skew_ms", h.NSMSkewMS)
 			nums = appendNum(nums, "clock_unc_ms", h.ClockUncMS)
-			due = append(due, dueAlert{word: mailer.ReaderAlertNSMKMSDisagree, nums: nums, mark: func(tr *alertTrack) { tr.Disagree = &v }})
+			due = append(due, dueAlert{word: mailer.ReaderAlertNSMKMSDisagree, nums: nums, mark: func(tr *alertTrack, _ time.Time) { tr.Disagree = &v }})
 		}
 	}
 
+	// Once decided for this episode, clock_unknown is due again when the
+	// claim it was decided under lapses: UnknownAt is that claim's time, the
+	// earlier mail's when that one held it back, not when it was held back.
 	if start := tr.EpisodeStart; !start.IsZero() && now.Sub(start) >= clockUnknownAfter &&
-		(!tr.UnknownFor.Equal(start) || now.Sub(tr.UnknownAt) >= alertWindow) {
+		(!tr.UnknownFor.Equal(start) || !within(now, tr.UnknownAt, alertWindow)) {
 		answering := int64(0)
 		if class != classDown {
 			answering = 1
@@ -376,8 +382,8 @@ func observe(tr *alertTrack, class answerClass, h *ReaderHealth, now time.Time) 
 		nums = appendNum(nums, "clock_unc_ms", tr.UncMS)
 		nums = appendNum(nums, "nsm_skew_ms", tr.NSMSkewMS)
 		nums = append(nums, mailer.ReaderAlertNum{Key: "answering", Value: answering})
-		due = append(due, dueAlert{word: mailer.ReaderAlertClockUnknown, nums: nums, mark: func(tr *alertTrack) {
-			tr.UnknownFor, tr.UnknownAt = start, now
+		due = append(due, dueAlert{word: mailer.ReaderAlertClockUnknown, nums: nums, mark: func(tr *alertTrack, claimedAt time.Time) {
+			tr.UnknownFor, tr.UnknownAt = start, claimedAt
 		}})
 	}
 	return due
