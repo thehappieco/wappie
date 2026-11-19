@@ -94,8 +94,7 @@ type TokenGrant struct {
 //  7. the number's archive key at that epoch has the grant's fingerprint
 //     (archiveKeyIsTx: ErrArchiveKeyChanged, and also ErrNoArchiveKey
 //     with no key): after an archive reset, a new key takes epoch 1
-//     again. DS49 (wappie#75, not on main yet) gives grant.add the same
-//     check;
+//     again. PutGrant (grant.add) makes the same check (DS49);
 //  8. the sealer is an owner or admin of the workspace who reads the number
 //     now;
 //  9. the grant, to the identity, sealed by the sealer.

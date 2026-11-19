@@ -1021,8 +1021,8 @@ again for a minute.
   for a record Wappie could not apply (`apply_failed`) waits for the feed,
   which lifts it once a later version applies.
 
-**The archive key's fingerprint** (DS49, wappie#75, not on main yet;
-`grant.add` takes the same check when it merges). After
+**The archive key's fingerprint** (DS49; `grant.add` makes the same
+check). After
 `reset-archive -keep-devices` and `device-key`, a number's new archive key
 takes epoch 1 again. So a grant also names the archive key it was sealed
 for, by its fingerprint: the lowercase hex of the SHA-256 of the key's 32
@@ -1037,7 +1037,7 @@ raw X25519 public bytes (`store.ArchiveKeyFingerprint`).
 - The grant write compares the fingerprint with the stored key under the
   workspace's row, in its own transaction. A grant for another key, or
   for a number with no key, is refused `conflict` and writes nothing, as
-  `grant.add` will be under DS49. The reset deleted every grant, so the
+  `grant.add` is under DS49. The reset deleted every grant, so the
   token reads nothing (`no_grant`) until someone seals the new key.
 
 `token.grant` is also refused `not_found` (no such token in this

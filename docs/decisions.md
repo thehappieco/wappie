@@ -3403,8 +3403,7 @@ installation ships with them off.
 
 The token grant write reads the number's archive key under the
 workspace's row (step 3), and compares the key the grant names with it
-(`archiveKeyIsTx`). DS49 (wappie#75, not on main yet) gives `grant.add`
-the same check; step 7's PR 11 waits for main to carry it. No lock is
+(`archiveKeyIsTx`), the check DS49 gives `grant.add` (`PutGrant`). No lock is
 added: every write to `device_archive_keys` takes that row as well, so
 the key cannot change before the grant commits. What makes it the same
 row: 0036's `archive_owner_lock` locks the `tenants` row named by the
