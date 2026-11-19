@@ -27,8 +27,9 @@ func (r *tokenREST) grantsOf(t *testing.T, text string) restapi.Grants {
 
 // TestTokenGrantsOnREST (the plan's 5.4): GET /v1/grants for a token is its
 // identity's grants at each number's current epoch, on the numbers it
-// reads now, with user_id its identity; a rotated number and the text
-// switch off leave its grants out; a token with no reading key holds none.
+// reads now, with user_id its identity and each grant naming its number's
+// archive key (DS49); a rotated number and the text switch off leave its
+// grants out; a token with no reading key holds none.
 func TestTokenGrantsOnREST(t *testing.T) {
 	r := newTokenREST(t)
 	w := r.w
@@ -43,7 +44,8 @@ func TestTokenGrantsOnREST(t *testing.T) {
 		t.Fatalf("the grants: %+v", got)
 	}
 	for _, g := range got.Grants.Grants {
-		if g.Epoch != 1 || string(g.SealedDSK) != "sealed to the token" || g.ArchiveTenantID == "" || g.Label == "" {
+		if g.Epoch != 1 || string(g.SealedDSK) != "sealed to the token" || g.ArchiveTenantID == "" || g.Label == "" ||
+			g.Fingerprint != w.ArchiveKey(uuid.MustParse(g.DeviceID), 1) {
 			t.Fatalf("a grant: %+v", g)
 		}
 	}

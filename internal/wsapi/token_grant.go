@@ -333,7 +333,7 @@ func (s *session) tokenGrants(ctx context.Context, f Frame) {
 		}
 		readUnder(ctx, g.DeviceID)
 		out.Grants = append(out.Grants, GrantEntry{ArchiveTenantID: g.ArchiveTenantID.String(), DeviceID: g.DeviceID.String(),
-			Label: labels[g.DeviceID], Epoch: int(g.Epoch), SealedDSK: g.SealedDSK})
+			Label: labels[g.DeviceID], Epoch: int(g.Epoch), SealedDSK: g.SealedDSK, Fingerprint: g.Fingerprint})
 	}
 	s.replyRead(ctx, TypeGrants, f.ReqID, out)
 }

@@ -450,7 +450,7 @@ func (h *Handler) tokenGrants(q *request) {
 			return
 		}
 		out = append(out, wsapi.GrantEntry{ArchiveTenantID: row.ArchiveTenantID.String(), DeviceID: row.DeviceID.String(), Label: device.Label,
-			Epoch: int(row.Epoch), SealedDSK: row.SealedDSK})
+			Epoch: int(row.Epoch), SealedDSK: row.SealedDSK, Fingerprint: row.Fingerprint})
 	}
 	q.finish(Grants{q.actor.Tenant.String(), wsapi.Grants{UserID: identity.String(), Grants: out}})
 }
