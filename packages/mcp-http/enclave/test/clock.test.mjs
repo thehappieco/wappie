@@ -206,7 +206,7 @@ function world(fields = {}, options = {}) {
   const helper = fakeHelper(time, fields)
   const kms = createKmsCheck({ wall: time.wall, mono: time.perf, log })
   const nsm = createNsmCheck({ wall: time.wall, mono: time.perf })
-  const clock = createClock({ readState: helper.read, kms, nsm, log, monoNs: time.monoNs, perf: time.perf, wait: async ms => time.advance(ms), ...options })
+  const clock = createClock({ readState: helper.read, kms, nsm, log, monoNs: time.monoNs, perf: time.perf, wall: time.wall, wait: async ms => time.advance(ms), ...options })
   return { time, log, helper, kms, nsm, clock }
 }
 
@@ -305,6 +305,63 @@ test('a KMS or NSM proof closes the gate, logs clock_sources_disagree, and the g
   await clock.refresh()
   assert.equal(clock.code(), 'cap_exceeded')
   assert.equal(log.named('clock_sources_disagree').length, 2)
+})
+
+test('a boot 90 s off: KMS proves it, the helper agrees, so no clock_sources_disagree; ready() resolves after the step', async () => {
+  // The clock starts 90 s slow. KMS probes every 5 s from the start; chronyd
+  // steps at 37 s, between two reads; the helper's sample lags its cycle, so
+  // the read after the step still carries the old -90 s.
+  const { time, helper, kms, log } = world({ state: 'starting', synced: false, nsm_skew_ms: null, last_good_mono_ns: null, rtt_us: null })
+  time.step(-90_000)
+  const stepAt = 37_000
+  let reads = 0
+  const clock = createClock({
+    readState: helper.read, kms, log, monoNs: time.monoNs, perf: time.perf, wall: time.wall,
+    probe: async () => { const theta = time.stepped; kms.add(rangeNow(time, theta - 900, theta + 300)) },
+    wait: async ms => {
+      const before = time.perf()
+      time.advance(ms)
+      if (before < stepAt && time.perf() >= stepAt) time.step(90_000)
+      reads++
+      if (reads < 3) return
+      const sinceStep = time.perf() - stepAt, sample = { state: 'ok', rtt_us: 400, last_good_mono_ns: time.monoNs() - 1000e6 }
+      if (sinceStep < 0) helper.set({ ...sample, synced: false, nsm_skew_ms: -90_000 })
+      else if (sinceStep < 5000) helper.set({ ...sample, synced: false, nsm_skew_ms: -90_000, last_good_mono_ns: time.monoNs() - (sinceStep + 500) * 1e6 })
+      else helper.set({ ...sample, synced: sinceStep >= 10_000, nsm_skew_ms: 3 })
+    },
+  })
+  await clock.ready({ timeoutMs: 120_000 })
+  assert.equal(clock.ok(), true)
+  const codes = log.named('clock_state').map(e => e.code)
+  assert.ok(codes.includes('kms_proof'), codes.join(','))
+  assert.deepEqual(log.named('clock_sources_disagree'), [])
+})
+
+test('clock_sources_disagree: only from a helper sample taken after the last step Node saw, and once per proof', async () => {
+  const { time, clock, kms, log, helper } = world({ nsm_skew_ms: 0 })
+  await clock.refresh()
+  assert.equal(clock.ok(), true)
+  // The clock steps 90 s ahead; KMS proves it before the helper's next sample.
+  time.advance(1000)
+  time.step(90_000)
+  kms.add(rangeNow(time, 89_500, 90_700)); kms.add(rangeNow(time, 89_500, 90_700))
+  assert.equal(clock.code(), 'kms_proof')
+  assert.deepEqual(log.named('clock_sources_disagree'), [], 'the helper sample is from before the step')
+  // The helper sees it too: they agree.
+  time.advance(4000)
+  helper.set({ nsm_skew_ms: 90_000 })
+  await clock.refresh()
+  assert.equal(clock.code(), 'kms_proof')
+  assert.deepEqual(log.named('clock_sources_disagree'), [])
+  // The helper says the clock is right while KMS still proves it 90 s fast.
+  time.advance(4000)
+  kms.add(rangeNow(time, 89_500, 90_700))
+  helper.set({ nsm_skew_ms: 0 })
+  await clock.refresh()
+  assert.deepEqual(log.named('clock_sources_disagree'), [{ event: 'clock_sources_disagree', code: 'kms_proof' }])
+  await clock.refresh()
+  clock.ok()
+  assert.equal(log.named('clock_sources_disagree').length, 1, 'once per proof')
 })
 
 test('ready(): waits for synced, |nsm_skew| <= 500 ms and two KMS ranges taken after synced', async () => {

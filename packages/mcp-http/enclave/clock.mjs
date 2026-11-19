@@ -23,6 +23,16 @@
 // A step of the system clock moves the anchor by the step, so an old range is
 // moved by the change in anchor (it then describes the clock as it is now)
 // and widened by DRIFT_PPM of its age, which covers slewing and drift since.
+//
+// clock_sources_disagree is the alert that a proof contradicts the helper,
+// not merely that a proof exists. At boot the clock can be far off with
+// every source agreeing on it: KMS proves "slow", and the helper says ok with
+// nsm_skew_ms near the same value, until chronyd's boot step. So the event
+// is logged only when the proving check's range, as it stands now, does not
+// overlap the helper's own range (nsm_skew_ms widened by its round trip and
+// age), and only from a helper sample taken after the last step of the
+// clock Node has seen: a sample from before a step describes the old clock,
+// while the checks' ranges have been moved to the new one.
 
 import { readFile } from 'node:fs/promises'
 
@@ -190,15 +200,19 @@ export function createGoSkew({ windowMs = WINDOW_MS, max = GO_SKEW_MAX, mono = (
  * above; `go` is createGoSkew (Go's signed timestamps, go_skew_ms);
  * `probe()` takes one KMS Date sample (it feeds `kms` itself);
  * `monoNs()` is CLOCK_MONOTONIC in ns (the helper's mono_ns), `perf()`
- * performance.now() (the checks' timebase). `ok()` is the runtime rule,
+ * performance.now() (the checks' timebase), `wall()` Date.now(). `ok()` is the runtime rule,
  * `ready()` the boot rule, `fields()` the health line's clock fields.
  */
 export function createClock({
   readState = () => readFile(STATE_FILE, 'utf8'), kms = createKmsCheck(), nsm = null, probe = async () => {}, log,
-  monoNs = () => Number(process.hrtime.bigint()), perf = () => performance.now(), go = createGoSkew({ mono: perf }),
+  monoNs = () => Number(process.hrtime.bigint()), perf = () => performance.now(), wall = Date.now, go = createGoSkew({ mono: perf }),
   wait = ms => new Promise(resolve => setTimeout(resolve, ms)), everyMs = READ_EVERY_MS,
 } = {}) {
   let snapshot = null, open = false, code = null, syncedSince = null, refused = 0, timer = null
+  // The code clock_sources_disagree was last logged for (null outside a
+  // proof), and Node's view of steps: the last anchor Date.now() −
+  // performance.now() and when it last moved by over STEP_TOLERANCE_MS.
+  let reported = null, anchorSeen = null, steppedAt = -Infinity
   let latest = { code: 'helper_stale', unc: null }
 
   async function refresh() {
@@ -233,14 +247,42 @@ export function createClock({
     return { code: 'ok', unc }
   }
 
+  /** Notes a step of the wall clock (a move of the anchor), as late as Node can see it. */
+  function noteAnchor() {
+    const at = perf(), anchor = wall() - at
+    if (anchorSeen !== null && Math.abs(anchor - anchorSeen) > STEP_TOLERANCE_MS) steppedAt = at
+    anchorSeen = anchor
+  }
+
+  /**
+   * Whether `check`'s range, as it stands now, excludes the helper's own
+   * range for θ: nsm_skew_ms ± (ceil(rtt/2) + 1 + DRIFT_PPM of its age). A
+   * helper sample from before the last step Node saw is not compared.
+   */
+  function contradicts(check) {
+    const s = snapshot, nowNs = monoNs(), unc = s && uncertainty(s, nowNs)
+    if (unc === null || !Number.isFinite(unc)) return false
+    if (perf() - (nowNs - s.last_good_mono_ns) / 1e6 <= steppedAt) return false
+    const interval = check?.interval()
+    if (!interval) return false
+    const error = unc - Math.abs(s.nsm_skew_ms)
+    return s.nsm_skew_ms + error < interval.lo || s.nsm_skew_ms - error > interval.hi
+  }
+
   function ok() {
+    noteAnchor()
     latest = assess()
     open = latest.code === 'ok'
     if (latest.code !== code) {
       code = latest.code
       log?.event('clock_state', { code, ...(latest.unc === null ? {} : { clock_unc_ms: Math.ceil(latest.unc) }) })
-      // A proof while the helper says ok: the sources disagree (an alert).
-      if (code === 'kms_proof' || code === 'nsm_node_proof') log?.event('clock_sources_disagree', { code })
+    }
+    // A proof that contradicts what the helper reports: the sources disagree
+    // (an alert), logged once per proof.
+    if (code !== 'kms_proof' && code !== 'nsm_node_proof') reported = null
+    else if (reported !== code && contradicts(code === 'kms_proof' ? kms : nsm)) {
+      reported = code
+      log?.event('clock_sources_disagree', { code })
     }
     return open
   }

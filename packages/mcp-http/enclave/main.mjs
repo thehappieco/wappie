@@ -133,7 +133,7 @@ export async function startEnclave(options = {}) {
   // Date and every attestation document's NSM timestamp, and probes the KMS
   // endpoint's Date itself while it waits at boot.
   const kmsDate = () => clockSkew({ url: overrides.clockUrl, fetch: options.fetch, now, onRange: range => clock.onKms(range) })
-  const clock = options.clock ?? createClock({ kms: createKmsCheck({ wall: now, log }), nsm: createNsmCheck({ wall: now }), probe: kmsDate, log })
+  const clock = options.clock ?? createClock({ kms: createKmsCheck({ wall: now, log }), nsm: createNsmCheck({ wall: now }), probe: kmsDate, log, wall: now })
   const facts = { pcr0: null, state: null, secrets: null, certificates: null, policy: null, acmeUri: null, content: null, reader: null, budgets: null, ready: false }
 
   // Every document the NSM signs carries PCR0; the first one tells the reader its own.
