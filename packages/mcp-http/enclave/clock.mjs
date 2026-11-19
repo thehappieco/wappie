@@ -155,16 +155,47 @@ export function parseState(text) {
 
 const round = value => (Number.isFinite(value) ? Math.round(value) : undefined)
 
+/** At most this many of Go's timestamps are kept for go_skew_ms; the oldest go first. */
+export const GO_SKEW_MAX = 256
+
+/**
+ * Go's clock as its signatures show it: `note(seconds, at)` takes the signed
+ * timestamp of a request whose signature checked out (hmac.mjs onVerified)
+ * and our Date.now() when it arrived; `median()` is the median of
+ * at − seconds·1000 (ms) over the last WINDOW_MS on performance.now(), or
+ * null with none. The timestamp is whole seconds, so this has 1 s
+ * resolution. It is reported (go_skew_ms) and never decides anything: Go's
+ * host clock is not a source of time for the reader.
+ */
+export function createGoSkew({ windowMs = WINDOW_MS, max = GO_SKEW_MAX, mono = () => performance.now() } = {}) {
+  let samples = []
+  const current = () => { const at = mono(); samples = samples.filter(s => at - s.mono <= windowMs); return samples }
+  return {
+    note(seconds, at) {
+      if (!Number.isFinite(seconds) || !Number.isFinite(at)) return
+      samples.push({ skew: at - seconds * 1000, mono: mono() })
+      if (samples.length > max) samples.splice(0, samples.length - max)
+    },
+    median() {
+      const values = current().map(s => s.skew).sort((a, b) => a - b)
+      if (!values.length) return null
+      const middle = values.length >> 1
+      return Math.round(values.length % 2 ? values[middle] : (values[middle - 1] + values[middle]) / 2)
+    },
+  }
+}
+
 /**
  * `readState()` returns state.json's text; `kms` and `nsm` are the checks
- * above; `probe()` takes one KMS Date sample (it feeds `kms` itself);
+ * above; `go` is createGoSkew (Go's signed timestamps, go_skew_ms);
+ * `probe()` takes one KMS Date sample (it feeds `kms` itself);
  * `monoNs()` is CLOCK_MONOTONIC in ns (the helper's mono_ns), `perf()`
  * performance.now() (the checks' timebase). `ok()` is the runtime rule,
  * `ready()` the boot rule, `fields()` the health line's clock fields.
  */
 export function createClock({
   readState = () => readFile(STATE_FILE, 'utf8'), kms = createKmsCheck(), nsm = null, probe = async () => {}, log,
-  monoNs = () => Number(process.hrtime.bigint()), perf = () => performance.now(),
+  monoNs = () => Number(process.hrtime.bigint()), perf = () => performance.now(), go = createGoSkew({ mono: perf }),
   wait = ms => new Promise(resolve => setTimeout(resolve, ms)), everyMs = READ_EVERY_MS,
 } = {}) {
   let snapshot = null, open = false, code = null, syncedSince = null, refused = 0, timer = null
@@ -237,6 +268,10 @@ export function createClock({
     uncertainty: () => { ok(); return latest.unc },
     /** A send refused because of the clock, reported as clock_refused on the next line. */
     noteRefused() { refused++ },
+    /** Go's signed timestamp (seconds) of a verified request, and Date.now() when it came (hmac.mjs onVerified). */
+    noteGo(seconds, at) { go?.note(seconds, at) },
+    /** go_skew_ms now, or null with no verified request in the window. */
+    goSkew: () => go?.median() ?? null,
     fields() {
       const clockOk = ok(), s = snapshot, interval = kms?.interval() ?? null
       const taken = refused
@@ -245,6 +280,7 @@ export function createClock({
         clock_ok: clockOk,
         clock_unc_ms: latest.unc === null ? undefined : Math.ceil(latest.unc),
         nsm_skew_ms: round(s?.nsm_skew_ms),
+        go_skew_ms: go?.median() ?? undefined,
         kms_skew_lo_ms: interval ? Math.floor(interval.lo) : undefined,
         kms_skew_hi_ms: interval ? Math.ceil(interval.hi) : undefined,
         clock_corr_hour_ms: round(s?.corr_hour_ms),

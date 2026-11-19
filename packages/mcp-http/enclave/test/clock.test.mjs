@@ -4,7 +4,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  BOOT_SKEW_MS, createClock, createKmsCheck, createNsmCheck, kmsRange, nsmRange, parseState, READY_TIMEOUT_MS, STATE_FRESH_MS,
+  BOOT_SKEW_MS, createClock, createGoSkew, createKmsCheck, createNsmCheck, GO_SKEW_MAX, kmsRange, nsmRange, parseState, READY_TIMEOUT_MS, STATE_FRESH_MS, WINDOW_MS,
 } from '../clock.mjs'
 
 const EPOCH = Date.UTC(2026, 10, 19, 12, 0, 0)
@@ -359,9 +359,11 @@ test('fields(): the health line clock fields, numbers and booleans only, omitted
   await clock.refresh()
   kms.add(rangeNow(time, -800.2, 450.7))
   clock.noteRefused(); clock.noteRefused()
+  // Go signed 4 s before the request arrived here.
+  clock.noteGo(1_790_000_000, 1_790_000_004_000)
   const fields = clock.fields()
   assert.deepEqual(fields, {
-    clock_ok: true, clock_unc_ms: 15, nsm_skew_ms: -12, kms_skew_lo_ms: -801, kms_skew_hi_ms: 451,
+    clock_ok: true, clock_unc_ms: 15, nsm_skew_ms: -12, go_skew_ms: 4000, kms_skew_lo_ms: -801, kms_skew_hi_ms: 451,
     clock_corr_hour_ms: 12, clock_corr_day_ms: 340, clock_freq_ppm: -17.13, clock_steps: 1, clock_refused: 2,
   })
   for (const [key, value] of Object.entries(fields)) assert.ok(/^[a-z][a-z0-9_]{0,31}$/.test(key) && (typeof value === 'boolean' || Number.isFinite(value)), key)
@@ -379,4 +381,30 @@ test('start(): reads state.json on a timer, stop() ends it', async () => {
   assert.ok(seen >= 2, String(seen))
   await new Promise(resolve => setTimeout(resolve, 20))
   assert.equal(reads, seen)
+})
+
+test('go_skew_ms: the median of verified Go timestamps against our clock, over the window, at most GO_SKEW_MAX kept', () => {
+  const time = fakeTime()
+  const go = createGoSkew({ mono: time.perf })
+  assert.equal(go.median(), null)
+  const sec = 1_790_000_000
+  go.note(sec, sec * 1000 + 2000)
+  assert.equal(go.median(), 2000)
+  go.note(sec, sec * 1000 + 61_000)
+  go.note(sec, sec * 1000 + 3000)
+  assert.equal(go.median(), 3000, 'one far sample does not move the median')
+  go.note(sec, sec * 1000 + 4000)
+  assert.equal(go.median(), 3500, 'an even count takes the middle two')
+  go.note(Number.NaN, 1)
+  go.note(sec, Number.POSITIVE_INFINITY)
+  assert.equal(go.median(), 3500, 'non-numbers are ignored')
+  time.advance(WINDOW_MS + 1)
+  assert.equal(go.median(), null, 'samples leave the window on the monotonic clock')
+  for (let i = 0; i < GO_SKEW_MAX + 10; i++) go.note(sec, sec * 1000 + (i < 10 ? 999_000 : -1000))
+  assert.equal(go.median(), -1000, 'the oldest samples are dropped past the cap')
+  // A clock without one reports none.
+  const { clock } = world({}, { go: null })
+  assert.equal(clock.goSkew(), null)
+  clock.noteGo(sec, sec * 1000)
+  assert.equal(clock.fields().go_skew_ms, undefined)
 })

@@ -66,14 +66,20 @@ const refusal = (status, code, logCode) => Response.json({ code }, { status, hea
  * one retires the previous. The request body is already bounded by the
  * router's limit; `info.target` is the raw request-target (Node's req.url).
  * Refusals carry `x-wappie-code` for the log line (internal.mjs strips it).
+ *
+ * From reader 0.6.1 the signature is checked before the timestamp's age, so
+ * that `onVerified(seconds, at)` hears Go's own time (the signed timestamp,
+ * and our `now()` when it arrived) from every request Go really signed, even
+ * one too old or too new to accept (clock.mjs records it as go_skew_ms). A
+ * request with a bad signature records nothing and is `hmac_bad` whatever its
+ * timestamp says. A stale one is refused before the replay cache sees it.
  */
-export function createHmacGuard({ readerId, secrets, now = Date.now, replay = createReplayCache({ now }) }) {
+export function createHmacGuard({ readerId, secrets, now = Date.now, replay = createReplayCache({ now }), onVerified }) {
   return async function internalAuth(request, info) {
     const header = name => request.headers.get(name)
     const timestamp = header('x-wappie-timestamp') ?? '', nonce = header('x-wappie-nonce') ?? '', given = header('x-wappie-signature') ?? ''
     if (header('x-wappie-reader') !== readerId || !timestampShape.test(timestamp) || !nonceShape.test(nonce) || !signatureShape.test(given)) return refusal(401, 'unauthorized', 'hmac_missing')
     const seconds = Number(timestamp)
-    if (Math.abs(now() / 1000 - seconds) > MAX_SKEW_S) return refusal(401, 'unauthorized', 'hmac_stale')
     if (typeof info?.target !== 'string' || !info.target.startsWith('/')) return refusal(401, 'unauthorized', 'hmac_missing')
     const body = Buffer.from(await request.clone().arrayBuffer())
     const fields = { direction: 'to-reader', readerId, method: request.method, target: info.target, timestamp, nonce, bodySha256: createHash('sha256').update(body).digest('hex') }
@@ -85,6 +91,9 @@ export function createHmacGuard({ readerId, secrets, now = Date.now, replay = cr
       if (timingSafeEqual(expected, presented) && matched === null) matched = candidate
     }
     if (matched === null) return refusal(401, 'unauthorized', 'hmac_bad')
+    const at = now()
+    if (onVerified) { try { onVerified(seconds, at) } catch { /* recording Go's time never decides a request */ } }
+    if (Math.abs(at / 1000 - seconds) > MAX_SKEW_S) return refusal(401, 'unauthorized', 'hmac_stale')
     const admitted = replay.admit(`to-reader\n${readerId}\n${nonce}`, seconds)
     if (admitted === 'full') return refusal(503, 'replay_cache_full', 'replay_cache_full')
     if (admitted === 'replay') return refusal(401, 'unauthorized', 'hmac_replay')
