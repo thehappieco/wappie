@@ -66,7 +66,8 @@ impl State {
 
 /// What one cycle saw.
 pub struct CycleInput {
-    /// The clocks at the start of the cycle (the ledger's reading).
+    /// The clocks at the start of the cycle (the ledger's reading when the
+    /// cycle has no sample).
     pub start: Reading,
     /// BEST_OF attempts, in order.
     pub attempts: Vec<Attempt>,
@@ -234,8 +235,15 @@ impl Machine {
         };
 
         // The ledger first, so a breach in this cycle already stops the feed.
-        let corr_ns = input.start.real_ns - input.start.raw_ns;
-        self.ledger.observe(input.start.raw_ns, corr_ns, sample.as_ref().map(|c| c.offset_ns));
+        // corr comes from the same clock reading as the offset it is paired
+        // with: the chosen attempt's midpoint when there is a sample, the
+        // cycle's start otherwise. If corr came from the start while the
+        // offset came from a later attempt, a boot step landing between the
+        // two would start the ledger on the old side of the step and count
+        // the whole boot step against the hour cap on the next cycle.
+        let at = sample.as_ref().map_or(input.start, |c| c.mid);
+        let corr_ns = at.real_ns - at.raw_ns;
+        self.ledger.observe(at.raw_ns, corr_ns, sample.as_ref().map(|c| c.offset_ns));
         self.ledger.store(&self.dir)?;
 
         let mut fed = false;

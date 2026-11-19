@@ -257,6 +257,30 @@ fn the_boot_step_does_not_count_against_the_caps() {
 }
 
 #[test]
+fn a_boot_step_between_the_cycle_start_and_the_chosen_attempt_is_left_out() {
+    let dir = TempDir::new("boot-step-race");
+    let mut m = Machine::open(&dir.0, 0).unwrap();
+    // 90 s behind at boot.
+    let mut sim = Sim { sys_err_ns: -90 * NS_PER_S, ..Sim::default() };
+    assert!(sim.run(&mut m).fed);
+    assert!(sim.run(&mut m).fed);
+    // chronyd steps after the cycle's start is read but before its attempts:
+    // the start is on the old side of the step, every attempt on the new.
+    sim.sys_err_ns = 0;
+    let mut input = sim.input();
+    input.start.real_ns -= 90 * NS_PER_S;
+    let s = m.cycle(input, &mut |_| Ok(())).unwrap();
+    assert_eq!((s.state, s.fed, s.steps), (State::Ok, true, 1));
+    assert_eq!(s.corr_hour_ns, Some(0));
+    for _ in 0..5 {
+        let s = sim.run(&mut m);
+        assert_eq!((s.state, s.fed), (State::Ok, true));
+        assert_eq!(s.steps, 1);
+        assert_eq!(s.corr_hour_ns, Some(0));
+    }
+}
+
+#[test]
 fn synced_after_two_polls_within_500_ms() {
     let dir = TempDir::new("synced");
     let mut m = Machine::open(&dir.0, 0).unwrap();
