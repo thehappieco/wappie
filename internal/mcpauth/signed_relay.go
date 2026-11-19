@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -201,6 +202,30 @@ type ReaderHealth struct {
 	ClockUncMS *int64 `json:"clock_unc_ms"`
 	NSMSkewMS  *int64 `json:"nsm_skew_ms"`
 	GoSkewMS   *int64 `json:"go_skew_ms"`
+	// What the clock alerts read (clock_alerts.go), from a 0.6.1 reader
+	// that sends them; nil the same way as the four above.
+	//
+	// ClockCode is the reason the reader gives for its clock, one of
+	// ReaderClockCodes and nil for any other word: a word Go does not know
+	// is never kept. ClockDisagreeKMS is how many times since its Node
+	// process started the reader found KMS's Date range contradicting its
+	// clock helper. KMSSkewLoMS and KMSSkewHiMS are the range KMS allows
+	// for the reader's clock minus true time, and ClockCorrHourMS and
+	// ClockCorrDayMS how far the helper corrected the clock in the last hour
+	// and day.
+	ClockCode        *string `json:"clock_code"`
+	ClockDisagreeKMS *int64  `json:"clock_disagree_kms"`
+	KMSSkewLoMS      *int64  `json:"kms_skew_lo_ms"`
+	KMSSkewHiMS      *int64  `json:"kms_skew_hi_ms"`
+	ClockCorrHourMS  *int64  `json:"clock_corr_hour_ms"`
+	ClockCorrDayMS   *int64  `json:"clock_corr_day_ms"`
+}
+
+// ReaderClockCodes are the reasons a 0.6.1 reader gives for its clock
+// (enclave/clock.mjs), "ok" when it vouches for it.
+var ReaderClockCodes = []string{
+	"ok", "helper_stale", "nsm_stale", "boot_refused", "cap_exceeded",
+	"chronyd_gone", "nsm_error", "unc_high", "kms_proof", "nsm_node_proof",
 }
 
 // readerHealthWire is the health object as it arrives: the clock fields are
@@ -208,10 +233,16 @@ type ReaderHealth struct {
 // failing the whole answer. The outer fields shadow the embedded ones.
 type readerHealthWire struct {
 	ReaderHealth
-	ClockOK    json.RawMessage `json:"clock_ok"`
-	ClockUncMS json.RawMessage `json:"clock_unc_ms"`
-	NSMSkewMS  json.RawMessage `json:"nsm_skew_ms"`
-	GoSkewMS   json.RawMessage `json:"go_skew_ms"`
+	ClockOK          json.RawMessage `json:"clock_ok"`
+	ClockUncMS       json.RawMessage `json:"clock_unc_ms"`
+	NSMSkewMS        json.RawMessage `json:"nsm_skew_ms"`
+	GoSkewMS         json.RawMessage `json:"go_skew_ms"`
+	ClockCode        json.RawMessage `json:"clock_code"`
+	ClockDisagreeKMS json.RawMessage `json:"clock_disagree_kms"`
+	KMSSkewLoMS      json.RawMessage `json:"kms_skew_lo_ms"`
+	KMSSkewHiMS      json.RawMessage `json:"kms_skew_hi_ms"`
+	ClockCorrHourMS  json.RawMessage `json:"clock_corr_hour_ms"`
+	ClockCorrDayMS   json.RawMessage `json:"clock_corr_day_ms"`
 }
 
 // maxClockMS bounds a clock field: a day either way is past anything a
@@ -244,6 +275,27 @@ func healthMS(raw json.RawMessage) *int64 {
 	return &ms
 }
 
+// healthClockCode is a JSON string that is one of ReaderClockCodes, or nil
+// for anything else.
+func healthClockCode(raw json.RawMessage) *string {
+	var v string
+	if absent(raw) || json.Unmarshal(raw, &v) != nil || !codePattern.MatchString(v) || !slices.Contains(ReaderClockCodes, v) {
+		return nil
+	}
+	return &v
+}
+
+// healthCount is a JSON whole number from 0 to maxClockMS, or nil for
+// anything else.
+func healthCount(raw json.RawMessage) *int64 {
+	var v float64
+	if absent(raw) || json.Unmarshal(raw, &v) != nil || v < 0 || v > maxClockMS || v != math.Trunc(v) {
+		return nil
+	}
+	n := int64(v)
+	return &n
+}
+
 // ReaderCodeClockUnknown is a 0.6.1 reader that cannot vouch for its clock
 // and, by that clock, found Go's signature outside its window: it answers
 // 503 with this code instead of a 401. A reader that cannot vouch for its
@@ -258,6 +310,11 @@ type HealthStatusError struct {
 	// Code is the {"code":...} of the body when it has the shape of one
 	// (ReaderCodeClockUnknown, say), else empty.
 	Code string
+	// Health is the health object a reader sends with its 503
+	// clock_unknown, from 0.6.1 with its clock in it; nil with any other
+	// answer, with a bare code, and with a body that is not this reader's
+	// health object.
+	Health *ReaderHealth
 }
 
 func (e *HealthStatusError) Error() string {
@@ -298,8 +355,21 @@ func (c *SignedRelay) Health(ctx context.Context) (ReaderHealth, error) {
 		return ReaderHealth{}, fmt.Errorf("%w: %w", ErrReaderUnavailable, errHealthzUnauthorized)
 	}
 	if status != http.StatusOK {
-		return ReaderHealth{}, &HealthStatusError{Status: status, Code: healthCode(body)}
+		e := &HealthStatusError{Status: status, Code: healthCode(body)}
+		if status == http.StatusServiceUnavailable && e.Code == ReaderCodeClockUnknown {
+			// From 0.6.1 the stale 503 carries the health object, so the
+			// clock's reason survives a clock too far from Go's.
+			if health, err := parseHealth(body, c.ReaderID); err == nil {
+				e.Health = &health
+			}
+		}
+		return ReaderHealth{}, e
 	}
+	return parseHealth(body, c.ReaderID)
+}
+
+// parseHealth reads a health object, which must be ok and readerID's.
+func parseHealth(body []byte, readerID string) (ReaderHealth, error) {
 	var wire readerHealthWire
 	if err := json.Unmarshal(body, &wire); err != nil {
 		return ReaderHealth{}, fmt.Errorf("%w: healthz is not the health object", ErrReaderUnavailable)
@@ -309,10 +379,16 @@ func (c *SignedRelay) Health(ctx context.Context) (ReaderHealth, error) {
 	health.ClockUncMS = healthMS(wire.ClockUncMS)
 	health.NSMSkewMS = healthMS(wire.NSMSkewMS)
 	health.GoSkewMS = healthMS(wire.GoSkewMS)
-	if !health.OK || health.ReaderID != c.ReaderID {
+	health.ClockCode = healthClockCode(wire.ClockCode)
+	health.ClockDisagreeKMS = healthCount(wire.ClockDisagreeKMS)
+	health.KMSSkewLoMS = healthMS(wire.KMSSkewLoMS)
+	health.KMSSkewHiMS = healthMS(wire.KMSSkewHiMS)
+	health.ClockCorrHourMS = healthMS(wire.ClockCorrHourMS)
+	health.ClockCorrDayMS = healthMS(wire.ClockCorrDayMS)
+	if !health.OK || health.ReaderID != readerID {
 		// A reader answering under another id is a routing mistake, and
 		// the one thing worse than no answer is the wrong reader's.
-		return ReaderHealth{}, fmt.Errorf("%w: healthz is not ok for reader %s", ErrReaderUnavailable, c.ReaderID)
+		return ReaderHealth{}, fmt.Errorf("%w: healthz is not ok for reader %s", ErrReaderUnavailable, readerID)
 	}
 	return health, nil
 }

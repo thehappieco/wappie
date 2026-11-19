@@ -84,6 +84,10 @@ func (h *Handler) checkReader(parent context.Context, a *AttestedReader, failure
 		var status *HealthStatusError
 		if errors.As(err, &status) && status.Code != "" {
 			attrs = append(attrs, "code", status.Code)
+			// From 0.6.1 the 503 carries the reader's clock.
+			if status.Health != nil {
+				attrs = append(attrs, readerClockAttrs(*status.Health)...)
+			}
 		}
 		if failures >= healthFailures {
 			h.log().Warn("an attested reader is not answering its health check", attrs...)
@@ -139,6 +143,9 @@ func readerClockAttrs(health ReaderHealth) []any {
 	if health.ClockOK != nil {
 		attrs = append(attrs, "clock_ok", *health.ClockOK)
 	}
+	if health.ClockCode != nil {
+		attrs = append(attrs, "clock_code", *health.ClockCode)
+	}
 	for _, f := range []struct {
 		key string
 		ms  *int64
@@ -146,6 +153,11 @@ func readerClockAttrs(health ReaderHealth) []any {
 		{"clock_unc_ms", health.ClockUncMS},
 		{"nsm_skew_ms", health.NSMSkewMS},
 		{"go_skew_ms", health.GoSkewMS},
+		{"clock_disagree_kms", health.ClockDisagreeKMS},
+		{"kms_skew_lo_ms", health.KMSSkewLoMS},
+		{"kms_skew_hi_ms", health.KMSSkewHiMS},
+		{"clock_corr_hour_ms", health.ClockCorrHourMS},
+		{"clock_corr_day_ms", health.ClockCorrDayMS},
 	} {
 		if f.ms != nil {
 			attrs = append(attrs, f.key, *f.ms)
