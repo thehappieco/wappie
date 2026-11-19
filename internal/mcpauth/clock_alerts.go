@@ -58,7 +58,7 @@ const (
 	clockUnknownAfter = 25 * time.Minute
 	// alertWindow is how long one word's claim stands: each word is mailed
 	// at most once in it.
-	alertWindow = 23 * time.Hour
+	alertWindow = ReaderAlertWindow
 	// alertRetry is how often a word whose mail failed is tried again.
 	alertRetry = 10 * time.Minute
 	// watchdogBadWithin is how recent the last BAD answer of the boot before
@@ -70,6 +70,10 @@ const (
 	// kept.
 	alertStateWarnEvery = 10 * time.Minute
 )
+
+// ReaderAlertWindow is how long one alert word's claim stands, the test
+// alert's included: each is mailed at most once in it.
+const ReaderAlertWindow = 23 * time.Hour
 
 // The state files, in the API unit's state directory (the deletion
 // ledger's): the alerts', and the test alert's (whatserverd
