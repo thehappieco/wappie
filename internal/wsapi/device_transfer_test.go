@@ -23,7 +23,7 @@ func TestPersonalTransferDeliversReceiptAndRejectsOtherActors(t *testing.T) {
 		t.Fatal(err)
 	}
 	keys := store.NewKeys(c.pool)
-	if err = keys.PutGrant(ctx, store.Grant{TenantID: c.tenant, DeviceID: uuid.MustParse(device), UserID: owner.ID, Epoch: 1, SealedDSK: []byte("opaque")}, nil); err != nil {
+	if err = keys.PutGrant(ctx, store.Grant{TenantID: c.tenant, DeviceID: uuid.MustParse(device), UserID: owner.ID, Epoch: 1, SealedDSK: []byte("opaque"), Fingerprint: grantFingerprint(t, keys, c.tenant, uuid.MustParse(device), 1)}, nil); err != nil {
 		t.Fatal(err)
 	}
 	wantError(t, ask(t, c, wsapi.Hello{Session: member}, wsapi.TypeDeviceTransferPreview, wsapi.DeviceRef{DeviceID: device}), wsapi.ErrCodeNotAuthorized)

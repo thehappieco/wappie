@@ -374,7 +374,7 @@ func TestMemberProfilesAndCurrentDeviceAccess(t *testing.T) {
 	if err = h.keys.CreateArchiveKey(ctx, h.tenant, id, 1, pub); err != nil {
 		t.Fatal(err)
 	}
-	if err = h.keys.PutGrant(ctx, store.Grant{TenantID: h.tenant, DeviceID: id, UserID: member.ID, Epoch: 1, SealedDSK: []byte("sealed")}, &owner.ID); err != nil {
+	if err = h.keys.PutGrant(ctx, store.Grant{TenantID: h.tenant, DeviceID: id, UserID: member.ID, Epoch: 1, SealedDSK: []byte("sealed"), Fingerprint: grantFingerprint(t, h.keys, h.tenant, id, 1)}, &owner.ID); err != nil {
 		t.Fatal(err)
 	}
 	var result struct {

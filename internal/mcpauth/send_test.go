@@ -112,7 +112,7 @@ func newSendHarness(t *testing.T) *sendHarness {
 	if err := h.users.SetDevicePermission(ctx, h.tenant, h.owner.ID, store.DevicePermission{DeviceID: h.device, UserID: h.owner.ID, Read: true, Send: true}); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.NewKeys(h.pool).PutGrant(ctx, store.Grant{TenantID: h.tenant, DeviceID: h.device, UserID: h.owner.ID, Epoch: 1, SealedDSK: []byte("the owner's")}, &h.owner.ID); err != nil {
+	if err := store.NewKeys(h.pool).PutGrant(ctx, store.Grant{TenantID: h.tenant, DeviceID: h.device, UserID: h.owner.ID, Epoch: 1, SealedDSK: []byte("the owner's"), Fingerprint: grantFingerprint(t, store.NewKeys(h.pool), h.tenant, h.device, 1)}, &h.owner.ID); err != nil {
 		t.Fatal(err)
 	}
 	h.message(t, friend, false, false)

@@ -380,6 +380,7 @@ func TestGrantsAreListedPerAccount(t *testing.T) {
 		}
 		if err := h.keys.PutGrant(ctx, store.Grant{
 			TenantID: h.tenant, DeviceID: device, UserID: user, Epoch: 1, SealedDSK: sealed,
+			Fingerprint: grantFingerprint(t, h.keys, h.tenant, device, 1),
 		}, nil); err != nil {
 			t.Fatalf("grant %d: %v", i, err)
 		}
@@ -387,8 +388,9 @@ func TestGrantsAreListedPerAccount(t *testing.T) {
 
 	var mineReply struct {
 		Grants []struct {
-			DeviceID  string `json:"device_id"`
-			SealedDSK string `json:"sealed_dsk"`
+			DeviceID    string `json:"device_id"`
+			SealedDSK   string `json:"sealed_dsk"`
+			Fingerprint string `json:"fingerprint"`
 		} `json:"grants"`
 	}
 	if got := h.get(t, "/v1/auth/me", &mineReply, me.Token); got != http.StatusOK {
@@ -399,6 +401,12 @@ func TestGrantsAreListedPerAccount(t *testing.T) {
 	}
 	if mineReply.Grants[0].SealedDSK == "" {
 		t.Error("the grant came back without the sealed key, so nothing could open")
+	}
+	// It names the number's key, which a client compares with the key it
+	// opened before a grant.add (DS49).
+	device := uuid.MustParse(mineReply.Grants[0].DeviceID)
+	if want := grantFingerprint(t, h.keys, h.tenant, device, 1); mineReply.Grants[0].Fingerprint != want {
+		t.Errorf("the grant names the key %q, want %q", mineReply.Grants[0].Fingerprint, want)
 	}
 }
 

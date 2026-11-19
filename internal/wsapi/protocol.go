@@ -673,6 +673,12 @@ type GrantEntry struct {
 	Label           string `json:"label,omitempty"`
 	Epoch           int    `json:"epoch"`
 	SealedDSK       []byte `json:"sealed_dsk"`
+	// Fingerprint names the number's archive key at Epoch now
+	// (store.ArchiveKeyFingerprint: lowercase hex SHA-256 of its public
+	// key), which is SealedDSK's unless a reset replaced it. A client
+	// compares it with the fingerprint of the key it opened, and a
+	// grant.add sends the latter, never this one (DS49).
+	Fingerprint string `json:"fingerprint"`
 }
 
 // Grants answers grants.list.
@@ -705,11 +711,20 @@ type APIKeyRef struct {
 // admin controls what gets *recorded here*. It cannot stop somebody who already
 // holds a key from passing it on by other means — no arrangement can, once a
 // key is in a person's browser.
+//
+// Fingerprint names the archive key SealedDSK seals: the fingerprint of
+// the key the caller opened, computed from its public half, not echoed
+// from grants.list, /v1/auth/me or GET /v1/grants, which list the
+// number's key now. Required. The server compares it with the number's key at Epoch in the
+// write's own transaction and answers conflict for another key: after a
+// reset the number has a new key at epoch 1 again, and a grant of the old
+// one would be recorded as access and open nothing (DS49).
 type GrantRequest struct {
-	DeviceID  string `json:"device_id"`
-	UserID    string `json:"user_id"`
-	Epoch     int    `json:"epoch"`
-	SealedDSK []byte `json:"sealed_dsk"`
+	DeviceID    string `json:"device_id"`
+	UserID      string `json:"user_id"`
+	Epoch       int    `json:"epoch"`
+	SealedDSK   []byte `json:"sealed_dsk"`
+	Fingerprint string `json:"fingerprint"`
 }
 
 // GrantRevoke takes it back, for whatever that is worth.
@@ -1549,10 +1564,20 @@ type ContactSummary struct {
 	ContactPN  string `json:"contact_pn,omitempty"`
 	IsGroup    bool   `json:"is_group,omitempty"`
 
+	// ContentKeyID is the content key of the names written last. The
+	// names are written one at a time and a content key is replaced after
+	// 1000 seals or 15 minutes, so two names of one contact can be under
+	// different keys. A name under another key than this one has it in its
+	// *_key_id field below, and a reader opens the name with it. A name
+	// without one is under ContentKeyID: it is the row's key, or the
+	// server predates these fields (DS50).
 	ContentKeyID       uint32 `json:"content_key_id,omitempty"`
 	PushNameSealed     []byte `json:"push_name_sealed,omitempty"`
 	FullNameSealed     []byte `json:"full_name_sealed,omitempty"`
 	BusinessNameSealed []byte `json:"business_name_sealed,omitempty"`
+	PushNameKeyID      uint32 `json:"push_name_key_id,omitempty"`
+	FullNameKeyID      uint32 `json:"full_name_key_id,omitempty"`
+	BusinessNameKeyID  uint32 `json:"business_name_key_id,omitempty"`
 
 	// HasAvatar says a picture is stored without sending it. A thousand
 	// contacts with a picture each is tens of megabytes, and a chat list needs

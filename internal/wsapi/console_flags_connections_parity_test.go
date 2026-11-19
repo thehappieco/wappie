@@ -114,7 +114,7 @@ func (c *connParity) connect(t *testing.T, actor uuid.UUID, content bool, device
 				t.Fatal(err)
 			}
 			if err := store.NewKeys(c.pool).PutGrant(ctx, store.Grant{TenantID: c.tenant, DeviceID: d, UserID: service, Epoch: 1,
-				SealedDSK: []byte("sealed to the attested key")}, &actor); err != nil {
+				SealedDSK: []byte("sealed to the attested key"), Fingerprint: grantFingerprint(t, store.NewKeys(c.pool), c.tenant, d, 1)}, &actor); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -384,7 +384,7 @@ func TestGrantFramesConnectionAccount(t *testing.T) {
 	owner := wsapi.Hello{Session: c.token}
 
 	f := ask(t, c.console, owner, wsapi.TypeGrantAdd, wsapi.GrantRequest{DeviceID: shared.String(), UserID: account.String(), Epoch: 1,
-		SealedDSK: []byte("sealed")})
+		SealedDSK: []byte("sealed"), Fingerprint: grantFingerprint(t, store.NewKeys(c.pool), c.tenant, shared, 1)})
 	if got := frameOutcome(t, f, wsapi.TypeReaders); got != kc.CodeNotAuthorized {
 		t.Fatalf("a grant.add of a number its key does not name: %s", got)
 	}

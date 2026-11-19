@@ -114,7 +114,7 @@ func (p *flagsParity) same(t *testing.T, what string, frame, console, user uuid.
 func (p *flagsParity) grant(t *testing.T, device, user uuid.UUID) {
 	t.Helper()
 	if err := store.NewKeys(p.pool).PutGrant(context.Background(), store.Grant{TenantID: p.tenant, DeviceID: device, UserID: user, Epoch: 1,
-		SealedDSK: []byte("grant")}, &p.owner); err != nil {
+		SealedDSK: []byte("grant"), Fingerprint: grantFingerprint(t, store.NewKeys(p.pool), p.tenant, device, 1)}, &p.owner); err != nil {
 		t.Fatal(err)
 	}
 }

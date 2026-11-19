@@ -128,7 +128,7 @@ func (f *fixture) grant(t *testing.T, user, device uuid.UUID) {
 			t.Fatal(err)
 		}
 	}
-	if err := f.keys.PutGrant(context.Background(), store.Grant{TenantID: f.tenant, DeviceID: device, UserID: user, Epoch: 1, SealedDSK: []byte("sealed grant")}, nil); err != nil {
+	if err := f.keys.PutGrant(context.Background(), store.Grant{TenantID: f.tenant, DeviceID: device, UserID: user, Epoch: 1, SealedDSK: []byte("sealed grant"), Fingerprint: grantFingerprint(t, f.keys, f.tenant, device, 1)}, nil); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -258,6 +258,11 @@ func TestRestrictedServiceKeyGrantsAndRevocation(t *testing.T) {
 	f.get(t, "/v1/grants", token, 200, &grants)
 	if grants.UserID != service.ID.String() || len(grants.Grants) != 1 || grants.Grants[0].DeviceID != f.device.String() {
 		t.Fatalf("grants bypassed whitelist: %+v", grants)
+	}
+	// Each grant names the number's key, which a client compares with the
+	// key it opened before a grant.add (DS49).
+	if want := grantFingerprint(t, f.keys, f.tenant, f.device, 1); grants.Grants[0].Fingerprint != want {
+		t.Fatalf("the grant names the key %q, want %q", grants.Grants[0].Fingerprint, want)
 	}
 	f.get(t, "/v1/devices/"+other.String()+"/chats", token, 403, nil)
 	f.get(t, "/v1/grants", f.token(t, nil), 403, nil)

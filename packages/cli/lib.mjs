@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto'
+import { createHash, createPrivateKey, createPublicKey, randomUUID } from 'node:crypto'
 import { mkdir, readFile, writeFile, rename, stat, unlink } from 'node:fs/promises'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
@@ -14,6 +14,27 @@ export function sessionPath(dir, origin) {
   return join(dir, createHash('sha256').update(origin).digest('hex') + '.json')
 }
 export const defaultStateDir = () => join(homedir(), '.config', 'whatserver2')
+// The archive key a grant seals is named by its fingerprint, as the server
+// names it (wappie DS49, store.ArchiveKeyFingerprint): the lowercase hex
+// SHA-256 of its public half's 32 raw X25519 bytes. wsctl computes it from the
+// key it opened, with Node's own crypto: the client that reader 0.6.1 measures
+// passes it, the one the reader runs now does not. Both are checked against
+// internal/store/testdata/archive-key-fingerprints.json.
+const x25519PKCS8 = Buffer.from('302e020100300506032b656e04220420', 'hex')
+const x25519SPKI = Buffer.from('302a300506032b656e032100', 'hex')
+export function publicKeyFingerprint(publicKey) {
+  if (!(publicKey instanceof Uint8Array) || publicKey.length !== 32) throw new Error('An archive public key is 32 bytes')
+  return createHash('sha256').update(publicKey).digest('hex')
+}
+export function archiveKeyFingerprint(privateKey) {
+  if (!(privateKey instanceof Uint8Array) || privateKey.length !== 32) throw new Error('An archive key is 32 bytes')
+  const der = Buffer.concat([x25519PKCS8, privateKey])
+  try {
+    const spki = createPublicKey(createPrivateKey({ key: der, format: 'der', type: 'pkcs8' })).export({ format: 'der', type: 'spki' })
+    if (spki.length !== x25519SPKI.length + 32 || !spki.subarray(0, x25519SPKI.length).equals(x25519SPKI)) throw new Error('Unexpected X25519 public key encoding')
+    return publicKeyFingerprint(spki.subarray(x25519SPKI.length))
+  } finally { der.fill(0) }
+}
 export async function saveSession(dir, origin, signed) {
   await mkdir(dir, { recursive: true, mode: 0o700 })
   const target = sessionPath(dir, origin)
@@ -121,10 +142,11 @@ export async function execute(argv, io, sdk = { auth, Connection, bytes, seal })
       if (!recipient) throw new Error('Recipient is not a member of this workspace')
       if (o['public-key'] && o['public-key'] !== recipient.public_key) throw new Error('Recipient public key does not match')
       const reply = await sdk.auth.withDeviceKey({ serverURL: origin, token: session.token, email: session.email, password: await password(), deviceID: o.device }, async (deviceKey, epoch, archiveTenantID) => {
+        const fingerprint = archiveKeyFingerprint(deviceKey)
         const tenant = sdk.bytes.parseUUID(archiveTenantID || session.tenantID)
         const row = await sdk.seal.grantRow(tenant, sdk.bytes.parseUUID(o.device), sdk.bytes.parseUUID(o.user), epoch)
         const encrypted = await sdk.seal.sealDirect(sdk.bytes.fromBase64(recipient.public_key), sdk.seal.Kind.DeviceGrant, tenant, row, epoch, deviceKey)
-        return connection.request('grant.add', { device_id: o.device, user_id: o.user, epoch, sealed_dsk: sdk.bytes.toBase64(encrypted) }, 'device.readers')
+        return connection.request('grant.add', { device_id: o.device, user_id: o.user, epoch, sealed_dsk: sdk.bytes.toBase64(encrypted), fingerprint }, 'device.readers')
       }); io.print(reply)
     } finally { connection.close() }
     return

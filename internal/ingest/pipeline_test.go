@@ -57,7 +57,14 @@ type fixture struct {
 
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
-	pool := pgtest.Fresh(t, migrate.Run)
+	return newFixtureWith(t, nil)
+}
+
+// newFixtureWith is newFixture with the pool's configuration adjusted by
+// configure (pgtest.FreshWith).
+func newFixtureWith(t *testing.T, configure func(*pgxpool.Config)) *fixture {
+	t.Helper()
+	pool := pgtest.FreshWith(t, migrate.Run, configure)
 	ctx := context.Background()
 
 	var tenantID string

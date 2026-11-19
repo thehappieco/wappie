@@ -9,9 +9,14 @@
 #
 #   scripts/check-client-dist.sh [baseline]
 #
-# The baseline defaults to c9ec561, release A's merge (decision 0038), whose
-# client the pilot's reader runs; release B changes no byte of it (the plan's
-# DB18). The commit must be in the repository (CI fetches it).
+# The baseline defaults to c9ec561, release A's merge (decision 0038); release
+# B changes no byte of its client (the plan's DB18). It is the CI gate's fixed
+# point, not the image the pilot runs: reader 0.6.0's published measurements
+# name 2b540ba, whose client differs from c9ec561's (README.md and
+# dist/api/auth.js, client.js and protocol.js). So passing means equal to
+# c9ec561's, and the next reader release measures release A's client.
+# scripts/check-reader-inputs.sh checks the rest of the image's inputs. The
+# commit must be in the repository (CI fetches it).
 set -euo pipefail
 
 base=${1:-c9ec561ca2cc669cdec12d5d90523269c3c2396a}

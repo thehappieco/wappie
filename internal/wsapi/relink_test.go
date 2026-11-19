@@ -126,7 +126,7 @@ func (c *relinkConsole) loggedOut(t *testing.T, owner uuid.UUID) string {
 	if err := keys.CreateArchiveKey(ctx, c.tenant, uuid.MustParse(dev.ID), 1, pub); err != nil {
 		t.Fatal(err)
 	}
-	if err := keys.PutGrant(ctx, store.Grant{TenantID: c.tenant, DeviceID: uuid.MustParse(dev.ID), UserID: owner, Epoch: 1, SealedDSK: []byte("grant")}, &owner); err != nil {
+	if err := keys.PutGrant(ctx, store.Grant{TenantID: c.tenant, DeviceID: uuid.MustParse(dev.ID), UserID: owner, Epoch: 1, SealedDSK: []byte("grant"), Fingerprint: grantFingerprint(t, keys, c.tenant, uuid.MustParse(dev.ID), 1)}, &owner); err != nil {
 		t.Fatal(err)
 	}
 	return dev.ID

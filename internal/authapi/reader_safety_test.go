@@ -37,7 +37,7 @@ func protectedNumber(t *testing.T, h *harness, readers ...store.User) uuid.UUID 
 		t.Fatal(err)
 	}
 	for _, reader := range readers {
-		if err := h.keys.PutGrant(ctx, store.Grant{TenantID: h.tenant, DeviceID: device, UserID: reader.ID, Epoch: 1, SealedDSK: []byte("envelope")}, nil); err != nil {
+		if err := h.keys.PutGrant(ctx, store.Grant{TenantID: h.tenant, DeviceID: device, UserID: reader.ID, Epoch: 1, SealedDSK: []byte("envelope"), Fingerprint: grantFingerprint(t, h.keys, h.tenant, device, 1)}, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -104,7 +104,7 @@ func TestRevocationPreservesEveryUnretiredArchiveGeneration(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, who := range []store.User{a, b} {
-		if err := h.keys.PutGrant(ctx, store.Grant{TenantID: h.tenant, DeviceID: device, UserID: who.ID, Epoch: 2, SealedDSK: []byte("new envelope")}, nil); err != nil {
+		if err := h.keys.PutGrant(ctx, store.Grant{TenantID: h.tenant, DeviceID: device, UserID: who.ID, Epoch: 2, SealedDSK: []byte("new envelope"), Fingerprint: grantFingerprint(t, h.keys, h.tenant, device, 2)}, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -116,7 +116,7 @@ func TestRevocationPreservesEveryUnretiredArchiveGeneration(t *testing.T) {
 	if err := h.users.RemoveMember(ctx, h.tenant, owner.ID, a.ID); !errors.Is(err, store.ErrLastDeviceReader) {
 		t.Fatalf("member removal stranded old generation: %v", err)
 	}
-	if err := h.keys.PutGrant(ctx, store.Grant{TenantID: h.tenant, DeviceID: device, UserID: b.ID, Epoch: 1, SealedDSK: []byte("old backup")}, nil); err != nil {
+	if err := h.keys.PutGrant(ctx, store.Grant{TenantID: h.tenant, DeviceID: device, UserID: b.ID, Epoch: 1, SealedDSK: []byte("old backup"), Fingerprint: grantFingerprint(t, h.keys, h.tenant, device, 1)}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := h.keys.RevokeGrant(ctx, h.tenant, owner.ID, device, a.ID); err != nil {
@@ -209,7 +209,7 @@ func TestRemovingProvisionalServiceNeverNeedsAnotherReader(t *testing.T) {
 		if err := h.users.SetDevicePermission(ctx, h.tenant, owner.ID, store.DevicePermission{DeviceID: device, UserID: svc.ID, Read: true}); err != nil {
 			t.Fatal(err)
 		}
-		if err := h.keys.PutGrant(ctx, store.Grant{TenantID: h.tenant, DeviceID: device, UserID: svc.ID, Epoch: 1, SealedDSK: []byte("sealed to the attested key")}, &owner.ID); err != nil {
+		if err := h.keys.PutGrant(ctx, store.Grant{TenantID: h.tenant, DeviceID: device, UserID: svc.ID, Epoch: 1, SealedDSK: []byte("sealed to the attested key"), Fingerprint: grantFingerprint(t, h.keys, h.tenant, device, 1)}, &owner.ID); err != nil {
 			t.Fatal(err)
 		}
 		if lapsed {

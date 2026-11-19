@@ -579,6 +579,15 @@ export interface GrantRequest {
   epoch: number
   /** base64 */
   sealed_dsk: string
+  /**
+   * The fingerprint of the archive key sealed: the lowercase hex SHA-256 of
+   * its public half's 32 bytes (the server's store.ArchiveKeyFingerprint),
+   * computed from the key the client opened, never echoed from a listing.
+   * Required. The server refuses a grant of a key the number no longer has
+   * with conflict: after a reset a number has a new key at epoch 1 again, so
+   * the epoch alone does not name it (wappie DS49).
+   */
+  fingerprint: string
 }
 
 export interface GrantRevoke {
@@ -952,10 +961,21 @@ export interface ContactSummary {
   contact_lid?: string
   contact_pn?: string
   is_group?: boolean
+  /**
+   * The content key of the names written last. The names are written one at
+   * a time, so they need not share it. A name under another key has it in
+   * its `*_name_key_id`; a name without one is under this key, or the server
+   * predates those fields. Each envelope also names its own key in the
+   * clear, after its 8-byte header (u32 big-endian), and only that key opens
+   * it: a reader reads it there first (wappie DS50).
+   */
   content_key_id?: number
   push_name_sealed?: string
   full_name_sealed?: string
   business_name_sealed?: string
+  push_name_key_id?: number
+  full_name_key_id?: number
+  business_name_key_id?: number
   has_avatar?: boolean
   avatar_id?: string
   avatar_key_id?: number

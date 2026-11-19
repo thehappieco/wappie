@@ -31,10 +31,13 @@ import { sealBrowserAccountKey, type BrowserKeyEnvelope } from '../crypto/browse
  * console that branches on them. invitations_paused: a person invitation
  * into a team The Happie Co names, refused at issue and at redemption, its
  * code left unspent (decision 0040); a service invitation is never paused.
+ * managed_elsewhere: in the hosted build, a platform account's new workspace
+ * or person invitation (issue or regenerate), which The Happie Co's console
+ * makes instead (DS53); a service invitation is never refused.
  * A type only, so the built JavaScript, which the attested reader measures,
  * does not change.
  */
-export type InvitationErrorCode = 'invite_invalid' | 'invite_email_mismatch' | 'invitations_paused'
+export type InvitationErrorCode = 'invite_invalid' | 'invite_email_mismatch' | 'invitations_paused' | 'managed_elsewhere'
 
 export class AuthError extends Error {
   constructor(

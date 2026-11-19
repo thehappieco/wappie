@@ -694,6 +694,10 @@ func serve() error {
 	if a.checker != nil {
 		go a.checker.Use.Run(ctx)
 	}
+	// A reset and a new archive key in any process tell this one at its
+	// commit, so ingest seals to the number's key as it is now, with no
+	// restart (DS49).
+	go a.listenArchiveKeys(ctx)
 
 	// The attachment queue lives in the database, so this starts whether or
 	// not anything is waiting and picks up whatever a previous process left.

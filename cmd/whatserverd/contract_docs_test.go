@@ -228,6 +228,7 @@ func TestContractDocsMatchTheCode(t *testing.T) {
 			},
 			"accounts-workspaces.md": {
 				"people join this team through The Happie Co; person invitations are paused here until Wappie applies the platform's members",
+				"The Happie Co's console manages this account's workspaces and members; create workspaces and invite people there",
 			},
 			"deployment.md": {
 				"token stop record writable",
@@ -537,6 +538,7 @@ func TestContractDocsMatchTheCode(t *testing.T) {
 			{"StatusConflict", 409, "workspace_conflict", []string{"platform-sign-in.md"}},
 			{"StatusForbidden", 403, "account_disabled", []string{"platform-sign-in.md"}},
 			{"StatusConflict", 409, "invitations_paused", []string{"contract.md", "workspaces.md", "accounts-workspaces.md"}},
+			{"StatusConflict", 409, "managed_elsewhere", []string{"workspaces.md", "accounts-workspaces.md", "contract.md"}},
 			{"StatusForbidden", 403, "owner_only", []string{"workspaces.md"}},
 			{"StatusServiceUnavailable", 503, "workspace_busy", []string{"workspaces.md"}},
 			{"StatusBadRequest", 400, "bad_request", []string{"workspaces.md"}},

@@ -154,7 +154,7 @@ func (r *Router) Reproject(ctx context.Context, tenant, device uuid.UUID,
 		}
 	}
 
-	sealed, keyID, err := pipe.sealer.SealAll(ctx, uid, values)
+	sealed, keyID, err := pipe.sealAll(ctx, uid, values)
 	if err != nil {
 		return ReprojectResult{}, err
 	}
@@ -164,7 +164,7 @@ func (r *Router) Reproject(ctx context.Context, tenant, device uuid.UUID,
 		media = mediaRow(env.Type, env.Content.Media, sealed)
 	}
 
-	if err := r.cfg.Messages.Reproject(ctx, tenant, device, uid, env.Type, keyID,
+	if err := r.cfg.Messages.Reproject(ctx, tenant, device, uid, env.Type, keyID, pipe.archiveKey,
 		sealed[seal.KindBody], sealed[seal.KindPayload], sealed[seal.KindRawProto],
 		media); err != nil {
 		return ReprojectResult{}, err

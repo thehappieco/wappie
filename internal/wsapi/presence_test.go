@@ -58,7 +58,7 @@ func TestPresenceSubscribeRequiresReadAndCurrentGrant(t *testing.T) {
 	}
 	wantError(t, ask(t, c, wsapi.Hello{Session: token}, wsapi.TypePresenceWatch, req), wsapi.ErrCodeNotAuthorized)
 	keys := store.NewKeys(c.pool)
-	if err := keys.PutGrant(ctx, store.Grant{TenantID: c.tenant, DeviceID: device, UserID: member.ID, Epoch: 1, SealedDSK: []byte("sealed")}, nil); err != nil {
+	if err := keys.PutGrant(ctx, store.Grant{TenantID: c.tenant, DeviceID: device, UserID: member.ID, Epoch: 1, SealedDSK: []byte("sealed"), Fingerprint: grantFingerprint(t, keys, c.tenant, device, 1)}, nil); err != nil {
 		t.Fatal(err)
 	}
 	// Reading is enough: observing a contact must not need send/manage access.
@@ -68,7 +68,7 @@ func TestPresenceSubscribeRequiresReadAndCurrentGrant(t *testing.T) {
 	wantPresenceUnavailable(t, ask(t, c, wsapi.Hello{Session: token}, wsapi.TypePresenceWatch, req), device.String(), streamChat)
 	wantError(t, ask(t, c, wsapi.Hello{Session: token}, wsapi.TypePresenceWatch,
 		wsapi.PresenceSubscribeRequest{DeviceID: other, Chat: streamChat}), wsapi.ErrCodeNotAuthorized)
-	if err := keys.PutGrant(ctx, store.Grant{TenantID: c.tenant, DeviceID: device, UserID: owner.ID, Epoch: 1, SealedDSK: []byte("backup")}, nil); err != nil {
+	if err := keys.PutGrant(ctx, store.Grant{TenantID: c.tenant, DeviceID: device, UserID: owner.ID, Epoch: 1, SealedDSK: []byte("backup"), Fingerprint: grantFingerprint(t, keys, c.tenant, device, 1)}, nil); err != nil {
 		t.Fatal(err)
 	}
 	permission.Read, permission.Send, permission.Manage = false, true, true
@@ -125,7 +125,7 @@ func TestPresenceServiceTokenUsesItsGrants(t *testing.T) {
 	}
 	req := wsapi.PresenceSubscribeRequest{DeviceID: device.String(), Chat: streamChat}
 	wantError(t, ask(t, c, wsapi.Hello{APIKey: key}, wsapi.TypePresenceWatch, req), wsapi.ErrCodeNotAuthorized)
-	if err := store.NewKeys(c.pool).PutGrant(ctx, store.Grant{TenantID: c.tenant, DeviceID: device, UserID: service.ID, Epoch: 1, SealedDSK: []byte("sealed")}, nil); err != nil {
+	if err := store.NewKeys(c.pool).PutGrant(ctx, store.Grant{TenantID: c.tenant, DeviceID: device, UserID: service.ID, Epoch: 1, SealedDSK: []byte("sealed"), Fingerprint: grantFingerprint(t, store.NewKeys(c.pool), c.tenant, device, 1)}, nil); err != nil {
 		t.Fatal(err)
 	}
 	wantPresenceUnavailable(t, ask(t, c, wsapi.Hello{APIKey: key}, wsapi.TypePresenceWatch, req), device.String(), streamChat)
@@ -151,7 +151,7 @@ func TestPresenceStreamIsFilteredByTenantAndGrantedDevice(t *testing.T) {
 		t.Fatal(err)
 	}
 	keys := store.NewKeys(c.pool)
-	if err := keys.PutGrant(ctx, store.Grant{TenantID: c.tenant, DeviceID: device, UserID: member.ID, Epoch: 1, SealedDSK: []byte("sealed")}, nil); err != nil {
+	if err := keys.PutGrant(ctx, store.Grant{TenantID: c.tenant, DeviceID: device, UserID: member.ID, Epoch: 1, SealedDSK: []byte("sealed"), Fingerprint: grantFingerprint(t, keys, c.tenant, device, 1)}, nil); err != nil {
 		t.Fatal(err)
 	}
 	conn := dial(t, c.srv)

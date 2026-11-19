@@ -1583,8 +1583,9 @@ makes binding. 0051 records no owner count.
 2026-10-14). The key is the record, never a setting, so a container, a
 restored `runtime.env` or a return to `off` never reopens them; only the
 0051 down-step does. `409 invitations_paused`, not `managed_elsewhere`:
-at observe the platform's invitations do not reach Wappie. Service
-invitations stay open.
+at observe the platform's invitations do not reach Wappie (DS53 uses
+`managed_elsewhere` for an account's own acts). Service invitations stay
+open.
 
 **DB7. One leader for all background contract work**, by the advisory lock
 `contract` held on its own connection (`pg.Locker.Hold`), whose loss ends
@@ -2385,7 +2386,8 @@ and nothing tells it the key changed: after `reset-archive
 restarts. So with `-keep-devices` the runbook is: stop `wappie-api`,
 reset, `device-key -device <id> -grant <email>` for each number, start
 `wappie-api` (docs/devices.md). The reset prints these steps, and
-`device-key` ends with the restart.
+`device-key` ends with the restart. DS49 removes the need for the
+restart: a running server now hears the reset and `device-key`.
 
 The tests found two more things, fixed with it. With `-keep-devices` the
 reset left the journal (`events`) and the receipts, which the
@@ -2549,6 +2551,809 @@ socket server tells serve's readers; `TestResetAndDeviceKeyTexts` pins
 the reset's and `device-key`'s steps, the order in `device-key` of its
 checks and its key, and the runbook in docs/devices.md
 (cmd/whatserverd).
+
+**DS49. Ingest and grants follow the number's archive key** (the
+platform's decision W46, `7929b4a`, binding, from Wappie's own finding;
+its part (b)).
+
+The finding. Ingest builds each number's pipeline once (`pipelineFor`)
+and keeps it: the number's archive public key and epoch, read once, and
+a content key in memory that is due after 15 minutes or 1000 seals.
+Nothing dropped it when the key changed: `Forget` ran only on a
+release, a deletion and a move. After `reset-archive -keep-devices` and
+`device-key`, a running server:
+
+1. until its content key was due, stored messages under a content key
+   the reset had deleted (`messages.content_key_id` has no foreign key):
+   lost;
+2. after that and before `device-key`, had each new content key refused
+   by its foreign key: messages refused;
+3. after `device-key`, which makes the new key at epoch 1 again, sealed
+   its next content key to the old public key and filed it at epoch 1:
+   every later message unreadable, silently, until a restart.
+
+The same reuse of epoch 1 let a grant sealed with the old key be
+recorded at epoch 1: `grant.add` compared only the epoch. Under 0061
+such a grant counts as Read, so it admitted consents and metadata for a
+person who cannot open the number.
+
+**(i) The notice.** `ResetArchive` and `CreateArchiveKey` send
+`store.ArchiveKeyChannel` (`wappie_archive_key`) in their transaction,
+so it reaches every process at the commit. The payload is the workspace
+id for a reset and `workspace:number` for a new key. These are the only
+paths that make or delete the key of a number that may be ingesting:
+
+- `CreateArchiveKey`: pairing (a number's first key, which no pipeline
+  holds yet), `device-key` and the demo seed.
+- `ResetArchive`: every key of the workspace.
+- A deletion's purge deletes the key 30 days after the deletion's own
+  notice (`DeviceExcludedChannel`) let go of the number, and a pairing
+  that fails deletes a number that never linked. Neither leaves a
+  pipeline to drop.
+- A move to Personal keeps the key and its epoch. It pauses the number,
+  whose release drops the pipeline, and the process that served the
+  move drops it too.
+- Nothing rotates or retires a key (DS48).
+
+`serve` listens on a connection of its own, as for deletions
+(`listenNotices`, `keepListening`), and drops the pipelines named:
+`Router.ForgetWorkspace` for a reset, `Router.Forget` for a number. The
+next message builds the pipeline again from the key as it is now. After
+the reset it is refused, since the number has no key, and after
+`device-key` it seals to the new key. Each time listening starts, and
+again after a failure, the listener drops every pipeline
+(`Router.ForgetAll`), since a notice sent while it was not listening is
+lost. Each notice is an Info line. `pipelineFor` holds the router's
+mutex while it reads the key, so a notice that lands during a build
+waits and drops the pipeline built.
+
+Why a notice: it costs nothing in the steady state, and it ends the
+first case within the notice's delay, which no check at the next
+content key can. The checks below need no notice, and the notice spares
+each number one refused write after a reset.
+
+A dropped pipeline seals nothing more (`Pipeline.drop`,
+`errPipelineDropped`). The history worker held one pipeline for a whole
+chunk, so after a notice it went on sealing under the deleted content
+key, and once that key was due every later message of the chunk was
+refused. Now each message of a chunk, each chat name and each contact
+name fetches the number's pipeline (`Router.ingest`, `Router.SealFor`).
+
+**(ii) The check before each content key.** Every sealer of the router,
+and `reproject`'s, makes its content keys through
+`Keys.CreateContentKeyFor` (`ingest.PinnedKeys`). In the content key's
+own transaction it takes the workspace's tenants row `FOR UPDATE`
+(`lockWorkspaceAccess`), then reads the number's current key and epoch,
+and refuses another key or none with `store.ErrArchiveKeyChanged`. The
+insert's own trigger (0036's `archive_owner_lock`) takes that lock
+anyway, so this only takes it earlier. A weaker lock deadlocked: two
+numbers of one workspace each held it and waited for the other at the
+trigger (`TestCreateContentKeyForTwoNumbers`). A reset takes that row
+`FOR UPDATE` before its deletes, so the read sees the key wholly before
+the reset or wholly after it. Read first, a reset and `device-key` could commit
+between the read and the insert, and the foreign key would find the new
+key's row at epoch 1; the race test shows that. A failed seal, this
+refusal or any other, drops the pipeline (`Pipeline.sealAll`,
+`Router.drop`), so the next message builds it again. This catches the
+third case with no notice heard, at the next content key, and the
+second with a clear error. It costs one indexed read per content key,
+at most one per 1000 seals or 15 minutes of a number.
+
+**The check at each write.** A value sealed before the reset's commit
+and written after it named a content key the reset had deleted. The
+write waited for the reset's lock on the workspace, then went in: a row
+in the new archive that nobody can open, holding its message's slot
+against a backfill. So every write of what ingest sealed names the
+archive key its content key was sealed to: `InsertMessage.ArchiveKey`
+(a message, and a placeholder it fills), `Messages.Reproject`,
+`ChatMeta.NameArchiveKey`, `ContactName.ArchiveKey` and
+`Contacts.SetAvatar`. The pipeline sets it, and `SealFor` returns it to
+the avatar worker. After the workspace's lock (`nextSeq`, or the
+write's own `storage_lock` trigger), the write reads whether that
+content key is still stored at an epoch whose key is that archive key
+(`contentKeyIsTx`), and refuses it with `ErrArchiveKeyChanged`
+otherwise. Naming the key and not only the id matters: after
+`device-key`, a new content key takes id 1 again, and a stale write
+naming id 1 would pass an id check. This also ends the first case with
+no notice heard, at the next write rather than the next content key. A
+write that names no key (a tool, a test, the demo seed) is not checked.
+It costs one primary key read per write.
+
+A message refused for a changed key, here or by the check before a
+content key, is tried once more with the pipeline built again
+(`Router.ingest`, and `SealFor` for a seal). After `device-key` it is
+stored under the new key. Between the reset and `device-key` the number
+has no key, and it is refused with `ErrNoArchiveKey`: not stored, and a
+later backfill can still bring it.
+
+**(iv) Every grant names its key.** `store.ArchiveKeyFingerprint`
+(`internal/store/archive_fingerprint.go`) is the one definition: the
+lowercase hex SHA-256 of the stored public key bytes
+(`device_archive_keys.public_key`, the 32 raw X25519 bytes), 64
+characters, no prefix. `store.Grant.Fingerprint` is required.
+`PutGrant`, the one statement that writes a grant, compares it with the
+number's key at the grant's epoch, not retired, after the workspace's
+lock and in the same transaction (`archiveKeyIsTx`, in the same file,
+which step 7's token grant shares). Another key is
+`ErrArchiveKeyChanged`. No key is both `ErrArchiveKeyChanged` and
+`ErrNoArchiveKey`, so `grant.add` and `token.grant`, which test them in
+different orders, both answer `conflict`. A number moved to Personal or
+deleted meanwhile is `ErrNumberGone`, as the insert's ownership trigger
+answered before.
+A missing or malformed fingerprint is `ErrGrantFingerprint`. A reset
+takes the same lock first, so a grant whose context was read before
+the reset is refused after it. Why the fingerprint and not the epoch:
+the epoch number is reused after a reset, and (c), never reusing it,
+needs a migration.
+
+The writers:
+
+- `grant.add` names the fingerprint of the key the client opened and
+  seals. It carries the permissions screen's grants and every grant to a
+  connection's or an AI integration's account: the console's consent
+  and renewal seal the key in the browser and send `grant.add`. The
+  handler also compares early, with the key it reads for the epoch.
+- A pairing's grants: the request carries the public key itself, so the
+  server names that key's fingerprint.
+- `device-key` and the demo seed: the key the command just made.
+- The screen's `PUT /devices/{id}/permissions` and the console's acts
+  write no grant; they delete one. A move to Personal moves rows and
+  makes none.
+
+The grant context: every grant listed by `GET /v1/auth/me`,
+`grants.list` and `GET /v1/grants` carries `fingerprint`, computed from
+the key row at the grant's epoch: the number's key now, not the key
+sealed in that grant. So a client does not echo it. It computes the
+fingerprint of the key it opened (the SHA-256 of its X25519 public
+half), refuses a grant whose key differs from the listed one, and sends
+its own. An echo would let an old grant at a reused epoch, sealed with a
+key a reset deleted, be granted again: it is listed with the new key's
+fingerprint.
+
+**The wire.** Core and cloud ship together, since the cloud pins the
+core.
+
+- `grant.add` (`GrantRequest`) takes a required `fingerprint`. A
+  client without it is refused with `bad_request`. Another key's
+  fingerprint, or a number with no key, is `conflict`, as a wrong
+  epoch is. Both codes are in the existing set.
+- `grants.list` (`GrantEntry`), `/v1/auth/me` (`grants[]`) and
+  `GET /v1/grants` gain `fingerprint`. A client that ignores it reads
+  them as before.
+- `pair` does not change.
+- A web page loaded before the deploy gets `bad_request` on its next
+  grant or consent with message text, and a reload fixes it. If the
+  core went out before the web, every `grant.add` would get it, so the
+  web goes out with the core or first; the R3 core ignores the field.
+
+The clients that send `grant.add`, changed with it: wappie-cloud's web
+(the permissions screen's `grantAccess`, the consent's `mcpSetup`, and
+the session's lender `createDeviceGrantLender`) and `packages/cli`
+(`wsctl grant`). Each computes the fingerprint of the key it opened.
+Only the session's lender also refuses a grant whose key is not the
+listed one. The Go `wsctl` only pairs, and the enclave reader only
+reads grants.
+
+**The reader's measured client stays release A's** (the platform's
+W46, option A). The attested reader's image measures `packages/client`'s
+build, and `packages/mcp` and `packages/mcp-http` whole, with the
+attachment workers, nsm-attest and media-jail
+(deploy/enclave/Dockerfile). This change moves none of them. Two CI
+checks hold this:
+
+- `scripts/check-client-dist.sh` (CI's "The reader's measured client is
+  release A's") finds the client's measured files equal to c9ec561's,
+  release A's merge.
+- `scripts/check-reader-inputs.sh`, added here, finds the rest equal to
+  f7babbe's, main when it began. Before it nothing checked them:
+  711465a moved a measured file unnoticed.
+
+Neither baseline is the image the pilot runs. Reader 0.6.0's
+measurements name 2b540ba, whose client differs from c9ec561's
+(README.md, and dist/api/auth.js, client.js and protocol.js). Main has
+since moved packages/mcp-http/enclave/main.mjs (711465a) and
+deploy/enclave/build.sh (91fab1d) too. So "the measured client does not
+move" means equal to c9ec561's, the CI gate. The next reader release
+moves PCR0 for those older changes in any case.
+
+In `packages/client` only declarations change: `GrantRequest.fingerprint`
+and the grants' `fingerprint` in `ArchiveGrants`. So each client that
+sends `grant.add` computes the fingerprint with its own small code: the
+web (`web/src/crypto/archiveKeyFingerprint.ts`: the key's X25519 public
+half, then WebCrypto's SHA-256), and `wsctl` with Node's crypto
+(`archiveKeyFingerprint` in packages/cli/lib.mjs). Both are checked
+against the server's vectors,
+`internal/store/testdata/archive-key-fingerprints.json`, which
+`TestArchiveKeyFingerprint` reads too: wsctl's tests read it in the
+repository, and the web's tests read it from the core checkout the
+cloud's CI pins. So the paths cannot drift.
+
+What is missing until reader 0.6.1:
+
+- The web's password path (`grantAccess` with a password, `mcpSetup`'s
+  default lend) and `wsctl grant` compute the fingerprint but do not
+  compare it with the listed one. A grant from a key a reset replaced
+  reaches the server, which refuses it (`conflict`). Only the session's
+  lender refuses it first, with `no_grant`.
+- The local MCP reader with a password session
+  (`packages/mcp/reader.mjs`, through release A's `withDeviceKey`) opens
+  an old grant's key without comparing it. It sends no grant, so nothing
+  is recorded, but its reads fail as locked, not as a stale grant.
+- Release A's public client declares `GrantRequest.fingerprint` but
+  offers no helper to compute it. A third-party client could echo the
+  listed fingerprint. The server then takes a grant sealed with an old
+  key at a reused epoch, since it is listed with the new key's
+  fingerprint. The clients named above are the only ones known to send
+  `grant.add`.
+
+Reader 0.6.1 is the branch `codex/reader-061`. It is on the build
+machine only, not pushed. It holds two commits: c2fc4b9, this change's
+client part (`withDeviceKey` and `withDeviceKeys` compute the
+fingerprint, pass it to `use` and refuse a stale grant with `no_grant`;
+`seal.archiveKeyFingerprint`; `wsctl` back to it), and 09b1754, DS50's.
+They are stacked on `codex/contact-names-keys`, since their tests need
+its vectors files and fields. That branch is merged into it again when
+it changes. The release moves both checks' baselines, `READER_VERSION`
+and the docs.
+
+On its own, this change leaves one gap in the import. `ImportContacts`
+seals a contact's names one call each, so a pipeline built again between
+two names, after `device-key`, leaves the first under an archive key the
+write does not name, and the check at the write misses it. Contact
+names (DS50, `codex/contact-names-keys`) closes it by sealing a
+contact's names in one call. So the two ship together. If DS50 slips
+from the release, the release notes say this gap stays.
+
+Step 7's `token.grant` uses this file once step 7 merges main: its own
+`internal/store/archive_fingerprint.go` goes, and its `archiveKeyIsTx`
+calls, `ErrArchiveKeyChanged` and `ArchiveKeyFingerprintLen` resolve
+to these.
+
+**The runbook** (docs/devices.md). A running `wappie-api` needs no
+restart after a reset or `device-key`. With `-keep-devices`: reset,
+then `device-key` for each number; a message in between is not stored.
+The reset still holds the workspace's lock to its end, so the
+workspace's ingest waits while it runs; on a large archive the operator
+stops `wappie-api` first and starts it after. The reset's steps and
+`device-key`'s last lines say this. DS48's restart step is gone.
+
+Not here: (c), never reusing an epoch number, needs a migration.
+Nothing finds or removes a grant recorded before this change with an
+old key at a reused epoch. One needs a `grant.add` sent between a reset
+with `-keep-devices`, `device-key` and the client's next read of its
+grants. The web's session lender refuses to grant from one, and the
+server refuses any client's (`conflict`) unless the client echoes the
+listed fingerprint (above), but it still counts as Read. The listening
+connection can hang half open until TCP notices; the checks above hold
+meanwhile, as for deletions.
+
+Tests: `TestArchiveKeyFingerprint` (the format, the vectors file: two
+public keys and RFC 7748's two private keys, whose public half it
+derives),
+`TestCreateContentKeyForChecksTheKey`,
+`TestCreateContentKeyForRacingReset`, `TestArchiveKeyNotices`,
+`TestParseArchiveKeyNotice`, `TestPutGrantNamesItsKey` (a missing or
+malformed fingerprint, the old key after the reset and at the reused
+epoch refused, the new one taken, the context's fingerprint) and
+`TestPutGrantRacingReset`, `TestCreateContentKeyForTwoNumbers` (no
+deadlock) and `TestSealedWritesNameTheirKey` (each write, with its own
+key, another key, a content key not stored, and no key named) (store).
+`TestStaleSealerAfterNewKey`, `TestStaleSealerAfterReset`,
+`TestStaleSealerBeforeItsKeyIsDue`, `TestStaleSealerAfterAnotherContentKey`
+(id 1 taken again by another process), `TestMessageSealedDuringReset`,
+`TestHistoryChunkAcrossReset` (notice heard and not),
+`TestRouterForget` and `TestADroppedPipelineSealsNothing` (ingest).
+`TestGrantAddNamesTheKey` (a client without the field, the old key from
+a context read before the reset, the new key) and
+`TestPairingGrantsNameTheirKey` (wsapi). `TestGrantsAreListedPerAccount`
+(authapi, `/v1/auth/me`) and `TestRestrictedServiceKeyGrantsAndRevocation`
+(restapi, `GET /v1/grants`) check the context's fingerprint.
+`TestResetThenDeviceKeyWhileServing` (listening; not listening, with a
+message between the reset and `device-key`, the stale content key not
+due, and due; and started after both), `TestServeListensForArchiveKeys`,
+`TestDeviceKeyGrantsNameTheKey` and `TestResetAndDeviceKeyTexts`
+(cmd/whatserverd). The web's `grantStepUp`, `deviceGrants`, `mcpSetup`
+and `mcpContent` tests check each `grant.add` names the key's
+fingerprint, and `deviceGrants` that a stale grant is refused; the
+lender's fingerprint is checked against the vectors file.
+`packages/cli`'s check its own fingerprint against the same file and
+that `wsctl grant` sends it. `packages/client`'s own tests for it are on
+`codex/reader-061`.
+
+**DS50. A contact's names each name their own content key** (from the
+review of DS49; the platform: names that become unreadable are a defect,
+to fix in (b)'s release if it is ready).
+
+The finding. A contact has three sealed names (push, full, business) and
+one `content_key_id`. Each name arrives on its own (`recordName`: a push
+name, an address book name, a business name, a bootstrap's PUSH_NAME
+chunk) and is sealed under the content key current then. The upsert set
+`content_key_id` to the key of the name it wrote and kept the other
+names as they were. A content key is replaced after 1000 seals or 15
+minutes (kit `seal/sealer.go`), so a name written earlier under the key
+before no longer opened with the row's id: every reader got "envelope
+requires content key N, this key is M". `ImportContacts` sealed each name
+of a contact in its own call, so a key replaced between two of them did
+the same within one write.
+
+Why not reseal the other names in the same write. The server cannot read
+them: it never holds the archive private key, and it drops each content
+key from memory when it takes the next. whatsmeow's own cache holds the
+names in plain text, but not every name the archive holds (a relink
+starts it empty), so a reseal from it would still leave some rows mixed,
+or drop names. Why no migration: none is needed, and 0053 and 0054 are
+taken. Every sealed value already names its content key in the clear,
+after its header (`header ‖ u32be id ‖ nonce ‖ ciphertext`;
+`seal.ContentKeyID`). Only that key opens it: `ContentKey.Open` checks
+the id before it decrypts.
+
+What changes:
+
+- The store reads each name's key from its envelope
+  (`store.nameKeyID`): `ContactRow.PushNameKeyID`, `FullNameKeyID` and
+  `BusinessNameKeyID`. A name whose envelope gives none (not a batch
+  envelope, or an id out of range) gets the row's id, as before.
+  `content_key_id` stays the key of the names written last. The write
+  does not change.
+- An upsert refuses a name whose envelope names another key than the
+  write's (`store.ErrNameKeyMismatch`). Names sealed one at a time can
+  straddle a new key, and the check at the write (DS49) then covers only
+  the last one. A name whose envelope names no key is not checked.
+- `contacts.list`, `contacts.resolve` and `GET /v1/devices/{id}/contacts`
+  gain `push_name_key_id`, `full_name_key_id` and `business_name_key_id`.
+  This only adds fields. A name carries one only when its key is not the
+  row's. Most names are under the row's key, and a list can hold
+  thousands of contacts. A name without one is under `content_key_id`.
+- A reader opens each name with the key its envelope names, read in
+  the clear after the 8-byte header (a u32 big-endian, only for a batch
+  envelope). Only that key opens it. A name whose envelope names none,
+  or an id outside 1 to 2147483647, takes the server's id for that name,
+  then the row's. An id above what the server stores is not used: a keys
+  request naming one is refused whole. Reading the envelope first opens
+  mixed rows against a server that predates the new fields too.
+- The cloud web does this in its own small code (its opener), and
+  prefetches every key a page's names need, so each page's keys are one
+  request. `packages/client` is the attested reader's measured client,
+  which stays release A's (W46, option A; DS49 has the rule), so the
+  client's version (`Opener.contactNames` reading the envelope,
+  `contactKeyIDs`, `seal.contentKeyID`) and the MCP reader's
+  `resolve_contact` prefetch of it wait for reader 0.6.1 on
+  `codex/reader-061` (commit 09b1754; DS49 says where that branch is). Until then the attested reader and the local MCP
+  reader open every name with `content_key_id`, as before.
+- The web and `packages/client` read the same vectors as the server:
+  `internal/store/testdata/contact-name-key-ids.json` (sealed names and
+  the key each needs, or none), which `TestContactNameKeyIDVectors`
+  checks against `seal.ContentKeyID` and `nameKeyID`. The web's tests
+  read it from the core checkout the cloud's CI pins, so the two paths
+  cannot drift before 0.6.1 replaces the web's.
+- `wsctl` opens each name with the server's id for it, or the row's.
+- `ImportContacts` seals all of a contact's names in one call
+  (`Router.sealValues`), so they share the row's content key. This also
+  closes a gap in DS49: a pipeline built again between two names, after
+  `device-key`, left the first under an archive key the write did not
+  name, and the check at the write missed it.
+
+**The import's cost at each start** (the platform asked). `ImportContacts`
+runs at every start of `wappie-api`, for every linked number, before the
+API listens (cmd/whatserverd: `importContacts`, then the groups, then
+`srv.Serve`). It reads every contact whatsmeow caches for the number
+(`dev.Contacts`), and, as before this change, seals every name it has
+and upserts each contact with a name, one transaction each. Nothing
+skips an unchanged name, before or now: the server cannot compare a
+sealed name with a new one. One call per contact changes only the
+grouping. The same names are sealed, one AES-GCM each, under the same
+number of content keys (one per 1000 seals: the sealer counts values,
+not calls), and the same rows are written. Only the seal calls drop,
+from one per name to one per contact, at about 11 µs each. What the
+import gained is DS49's check at the write: one indexed read per
+contact, in its transaction, and one check per content key. With the
+pilot's counts (number A: 8106 names on at most 7038 contacts, 1068 of
+them with two; number B: 634 names on 633), a start makes 9 and 1
+content keys and 7038 and 633 writes, as before, 1068 and 1 fewer seal
+calls, and 7038 and 633 more reads. The import runs one number after
+another, so a restart waits for A and B together. On the test database
+(Postgres 18 in Docker, 2 CPUs, on a Mac), seven interleaved runs of
+each tree, each a first import and then the timed one as at a restart,
+gave these medians for A plus B: main 16.8 s (A 15.2 s, B 1.5 s), (b)
+alone 19.3 s, and (b) with this change 20.3 s (A 18.4 s, B 1.6 s). The
+difference from main, paired by round, has a median of +2.6 s and ranged
+from -1.9 s to +8.0 s. The earlier figure of +6 s came from three noisy
+runs. The per-write timing agrees: a contact write took 2.40 ms without
+the check and 2.87 ms with it, and 7671 writes at +0.47 ms is +3.6 s. So
+expect about +3 s on the test database, up to +8 s on a loaded machine.
+`syncGroups`, which also runs before the API listens, pays the same check
+once per group. The pilot's own interval from start to listening, before
+and after the release, is the number that counts. The grouping saves
+about 12 ms. An import used to leave about one contact a start with its
+two names under two keys; now none. Not done: the read could share the insert's round trip (a pipelined batch,
+after the trigger's lock), or the import could write many contacts per
+transaction with one check per content key. Both change DS49's check
+and its lock order, so they wait for their own review.
+
+Every other place was checked. One key id covers several sealed values
+only where they are written together:
+
+- `messages.content_key_id` covers the body, the payload and the raw
+  protobuf. An insert, a filled placeholder (`fillStub`) and a
+  reprojection each write all three and the id in one statement.
+- `media.content_key_id` covers the media key, the thumbnail and the file
+  name, all sealed in the message's call and written in the message's
+  transaction under its key. Readers open them with the message's id.
+  A reprojection inserts media `ON CONFLICT DO NOTHING`, which would keep
+  an older row under an older key, but an unsupported message never has
+  one: normalize sets media only on a classified type.
+- `chats.name_key_id` and `contacts.avatar_key_id` each cover one value,
+  written with it.
+- `ai_derived` and `mcp_outbound` are sealed straight to the archive key,
+  one value a row.
+
+The readers. Before this, every reader took one id per contact: the web
+and the MCP readers through `Opener.contactNames`, `wsctl` itself. A
+reader that predates this change still does, and shows the older names
+as locked (not tampered). The web gets the fix with its own opener, in
+the cloud release that pins this core. The attested reader and the local
+MCP reader get it at reader 0.6.1, which this change does not make:
+nothing here moves the reader's measured inputs.
+`scripts/check-client-dist.sh` finds the client equal to c9ec561's, the
+CI gate, and `scripts/check-reader-inputs.sh` finds `packages/mcp`,
+`packages/mcp-http` and the enclave's inputs equal to f7babbe's. DS49
+says why neither is the image the pilot runs. In
+`packages/client` only the declarations of the three new fields change.
+
+Rows already damaged. The names are intact; only the row's id was wrong.
+Since 0009, nothing deletes a content key short of a reset or a number's
+purge, and both delete the contacts with it. So every older name's key is still
+stored, sealed to the number's archive key, and a reader with that key
+opens it with the id its envelope names. No repair write is needed, and
+none is made. A reader that predates this change still cannot open
+them. For those, each start of `wappie-api` runs `ImportContacts`, which
+reseals every name whatsmeow holds for a contact under one key; a name
+only the archive holds stays mixed until reader 0.6.1. A name sealed
+before DS49 by a stale pipeline, under a content key a reset deleted,
+cannot be opened by anyone. That is DS49's case, not this one. After `device-key`, content
+key ids start at 1 again. Once the new archive has a key with that
+name's id, a reader opens the name with it and gets "tampered" (the id
+matches and the decryption fails), where an older reader, on a mixed
+row, used the row's newer id and got "locked". DS49's messages under a
+deleted key do the same.
+
+For later: a contact name's key is named only in its envelope and in the
+ids read from it, not in a column. Anything that ever prunes content keys
+must read the names' envelopes, not only the key id columns.
+
+Tests: `TestContactNamesUnderTwoContentKeys` (store: three names under
+three keys, read through `List`, `Some` and `Page`, each opens with its
+own id), `TestContactWriteRefusesNamesUnderAnotherKey` (store: a write
+with a name under another key is refused, whole),
+`TestContactNamesAcrossContentKeys` (ingest: an address book
+event, a business name event and a PUSH_NAME chunk through the history
+worker, the content key replaced between them) and
+`TestImportedNamesShareOneContentKey` (ingest: a clock that makes every
+seal take a new key; the imported names share the row's id).
+`TestRESTContactsPageIsSealedAndComplete` (restapi) writes a row with
+names under two keys and checks only the name off the row's key carries
+an id. `TestContactNameKeyIDVectors` (store) checks the vectors file:
+four envelopes under keys 1, 7, 65536 and 2147483647, and eleven that
+name none. Each was checked to fail with its change removed. The web's
+opener and prefetch tests are in the cloud's PR. On `codex/reader-061`:
+`packages/client`'s `frames.spec.ts` opens each name with its
+envelope's key while the row's names a key nobody has, and whatever ids
+the server sends; it checks `contactKeyIDs` against the vectors file,
+and that one prefetch is the only keys request. `rest.spec.ts` checks
+the new ids' shape, and that the opener reads the contact fields the
+server's OpenAPI document names. `packages/mcp`'s `content.test.mjs`
+checks `resolve_contact` makes one keys request for names off the row's
+key. The Go frames fixture (`internal/wsapi/testdata/frames.json`) is
+the kit's copy (`TestFixturesMatchTheKit`), so it is not regenerated for
+this.
+
+**DS51. A message that fills a placeholder is sealed to the
+placeholder's uid** (from the contact-names review, X1).
+
+The finding. Ingest picks a fresh uid for each message and seals its
+values to it. The kit binds each value to its row: the AAD is label,
+kind, tenant, row and header (`seal.AAD`), and the row is that uid. A
+reader opens each value with the row's uid (`packages/client`'s opener
+passes `message.uid`, for the body, raw, payload, media key, thumbnail
+and file name alike). A message can fill an empty placeholder instead
+of making a row (`fillStub`: an unsupported row with no body, no payload
+and no attachment, under the same number, chat key and id). The row
+then keeps the placeholder's uid. So its body, raw protobuf and payload
+failed authentication, and readers showed them as tampered. The fill
+also wrote no media row: an attachment's key, thumbnail and file name
+were dropped, and nothing queued its download.
+
+The fix, in the server only.
+
+- `fillStub` fills only a message sealed to the placeholder's uid. A
+  message sealed to another uid gets `store.PlaceholderError`, which
+  names the placeholder's uid, and nothing is written. The check and the
+  update share one WHERE clause (`fillable`).
+- `Pipeline.Ingest` then seals the message again to that uid and inserts
+  it again. Live messages, history and outbound all go through it.
+- That second insert sets `InsertMessage.FillsPlaceholder`. If a purge
+  or an erasure deleted the placeholder in between, the store writes
+  nothing and returns `store.ErrPlaceholderGone`. The pipeline then seals
+  a third time, to a fresh uid, and the message is a new row. So a uid
+  never names a second row. Three seals at most (`maxInsertTries`).
+- The fill writes the attachment's row under the placeholder's uid, as
+  `Insert` does, and the pipeline nudges its download. It also sets the
+  chat's `last_type` when the placeholder was the chat's newest message
+  by timestamp, which is how `upsertChat` picks the newest. (`Reproject`
+  keys on `last_seq` instead.)
+- `InsertResult.Filled` and `Result.Filled` report a fill. A fill is a
+  duplicate too: no new sequence and no event. A reader sees the message
+  when it next reads the chat.
+
+Only its sender fills a placeholder (from the review). Before this
+change a fill read as tampered, so another sender's content in the row
+showed as broken. Now it opens cleanly. The store finds a duplicate by
+number, chat key and id only, and any WhatsApp client can choose a
+message id. So `fillable` also requires the same `is_from_me`. For
+anyone but me it requires the sender to match on a half both rows know:
+key, LID or phone number. A null half matches nothing. My own messages
+match on `is_from_me` alone: only my devices send them, and older rows
+of mine have no sender. Anything else is a plain duplicate, sealed once.
+The cost: a placeholder that knows its sender only by LID stays a
+placeholder when a copy names the sender only by phone number.
+`resolvePhones` adds the phone number to a LID sender when it can, so
+this is rare.
+
+A protocol row is a placeholder too (from the review). The browser's
+reproject retypes a placeholder as `protocol` when its raw protobuf is
+protocol traffic (`MarkProtocol`). A sender key's placeholder is exactly
+that, and it is the row `fillStub` exists for. Before this change such a
+row could never be filled. `MarkProtocol` is the only writer of
+`protocol`, and it leaves the row empty, so `fillable` takes
+`unsupported` or `protocol`. `MarkProtocol` does not touch
+`chats.last_type`, so the chat's guard stays `unsupported`.
+
+Why the store decides. It decides in the insert's transaction, so a
+placeholder written between a lookup and the insert is never missed. A
+lookup before every seal would add a query on the hot path, since
+history redelivers in bulk, and would still need the check. The cost is
+a second seal, and only for a message that fills a placeholder. The
+race path (the insert meets the placeholder by its unique key) does the
+same: the transaction rolls back, its sequence with it, and the pipeline
+seals again.
+
+Why not give the row the sealed uid. The uid is the primary key, and
+other rows name it: `media.message_uid` (a foreign key with no ON
+UPDATE), `ai_derived.message_uid`, `events.message_uid`, the
+`target_uid` of reactions, edits and deletions, and `mcp_outbound`'s
+`message_uid` and `reply_to_uid`. Clients also hold it from the
+placeholder's own event. Keeping the placeholder's uid changes none of
+them.
+
+Lock order. A review asked the fill to lock the workspace before its
+UPDATE, because the message's row trigger takes it after the row. That
+is already so: the `storage_lock` statement trigger (0034) takes the
+workspace's row before the UPDATE locks any message. So a fill waiting
+for a reset holds nothing the reset needs.
+`TestAFillTakesTheWorkspaceFirst` holds the workspace as a reset does
+and locks the message with NOWAIT while the fill waits.
+
+The other paths that write sealed message values:
+
+- `Insert` of a new row seals to the row's own uid. Correct.
+- `Messages.Reproject` (`reproject.apply` and `whatserverd reproject`)
+  seals to the row's own uid. Correct.
+- `MarkProtocol` writes no sealed value. Its rows can now be filled.
+- An edit, a deletion or a reaction is a row of its own; `fillStub` fills
+  only kind `message`.
+- A copy under the conversation's other key (LID or phone number) is a
+  duplicate and fills nothing, as before.
+- A `placeholder` row (the phone masked the message) is not
+  `unsupported`, so nothing fills it.
+- `Router.ingest`'s second try after `ErrArchiveKeyChanged` goes through
+  the same loop.
+
+Rows filled before this change. Their values are sealed to a uid that
+was never stored or logged, and their attachment rows are missing.
+
+- Finding them. The server cannot open them, but it can list them
+  without a key. Nobody has run this on the pilot.
+  - A row whose type carries an attachment (image, video, round video,
+    audio, voice note, document, sticker) and that has no media row.
+    `Insert` and the browser's reproject write the media row in the
+    row's transaction (outbound media too), the command-line reproject
+    skips such rows, and nothing deletes a media row alone. No other
+    path is known to leave this.
+  - Other rows, in part. A new row is sealed under a content key made
+    before its transaction began. A fill under a later key shows as
+    `content_keys.created_at > messages.created_at` (same device, the
+    row's key id). Reprojected rows show up too. A fill under the
+    placeholder's own key does not, and that is the common case for a
+    sender key, whose real message came moments later.
+  - A holder of the archive key decides. A value that does not open
+    under its row's uid, under a content key that opens, is one of them.
+- Repair with the key. Not built. It would run with the archive private
+  key, like `whatserverd reproject`.
+  - The text needs no uid. GCM decrypts in counter mode, and the AAD
+    only feeds the tag. The uid is needed only to authenticate.
+  - The uid can be solved from each value's tag, given the content key:
+    GHASH is linear in the AAD, and the uid is 16 bytes of it. A
+    prototype found it in 80 of 80 tries, with 1 to 4 candidates.
+  - That solve proves little. For one value it always returns some uid,
+    and many rows have one value: a photo, voice note, sticker or
+    document without a caption kept only its raw protobuf. For several
+    values, the same change at the same offset of each ciphertext moves
+    every solved uid by the same amount, so the values still agree (a
+    review demo: 27 and 34 of 40 tries). A whole set copied from another
+    row under the same content key solves to that row's uid.
+  - So the tool must check all of this. The candidate is a UUIDv7. Its
+    time falls in the content key's life (`created_at` to `closed_at`,
+    or `MaxKeyAge`, 15 minutes), with some slack for the two clocks, and
+    after the placeholder's `created_at`. That leaves about 2^-34 for a
+    random candidate. It is no uid the archive names (`messages.uid`,
+    `events.message_uid`). Every value agrees on it. And the body,
+    payload and attachment that `normalize.FromRaw` derives from the
+    decrypted raw protobuf equal the decrypted values: body text sits at
+    other offsets in the raw protobuf, so a same-offset change breaks
+    that.
+  - Even then a repaired row is not authenticated. A set copied from a
+    deleted row under the same key passes every check. The tool logs
+    each row it repairs, and says so.
+  - The repair seals every value again to the row's uid and rebuilds the
+    media row from the raw protobuf through `normalize.FromRaw`, as the
+    browser's reproject does. The command-line reproject attaches no
+    media.
+- Fetch again from WhatsApp. Not done, and not verified.
+  - A redelivery finds a filled row, not a placeholder, so it is a
+    duplicate. The row would first have to become a placeholder again:
+    type `unsupported`, body and payload empty, no media row, raw kept.
+    That changes production data and needs the owner's yes. With the
+    sender check, only the same sender can then fill it.
+  - Then: whatsmeow's single-message resend
+    (`BuildUnavailableMessageRequest`) is on the `wa.Client` interface,
+    but nothing calls it, and whether the phone answers for an old
+    message it already delivered is not known.
+    `BuildHistorySyncRequest` takes any anchor, though `history.backfill`
+    anchors on the chat's oldest stored message. A full history sync
+    after a relink brings what the phone still has.
+  - The repair with the key is the better route: no phone, and no data
+    change before it.
+
+Not here: no migration, and no client change. A fill publishes no
+event, as before. `metrics.Sealed` counts both seals of a fill; it
+counts seals, and both happen.
+
+Tests: `TestARealMessageFillsItsPlaceholder` (ingest: a placeholder,
+then the real message through the pipeline; each value opens under the
+row's uid, the media row exists and its download is queued, the chat's
+type follows, no event, a redelivery changes nothing),
+`TestTwoCopiesFillAPlaceholderOnce` (two copies at once: one fills, one
+is a duplicate, neither fails), `TestAFillThatLostTheRaceTakesThePlaceholder`
+(the placeholder commits while the message waits for a sequence; the
+fill is under its uid and the lost try's sequence is rolled back),
+`TestAPlaceholderDeletedBetweenSealsGivesAFreshUID` (three seals, a new
+row under a fresh uid) and
+`TestAnotherSendersMessageDoesNotFillThroughThePipeline` (ingest).
+`TestAFillSealedToAnotherUIDWritesNothing`, `TestAFillKeepsItsAttachment`,
+`TestARealMessageReplacesTheStubThatStoleItsPlace`,
+`TestOnlyItsSenderFillsAPlaceholder` (another member, no sender, a
+contact reusing my message's id, the same sender marked as mine),
+`TestItsSenderFillsAPlaceholderUnderEitherName` (LID or phone number,
+and mine with no sender stored), `TestAProtocolPlaceholderIsFilled`,
+`TestAFillLeavesANewerPreviewAlone`,
+`TestASealForAGonePlaceholderWritesNothing` and
+`TestAFillTakesTheWorkspaceFirst` (store).
+`TestSealedWritesNameTheirKey`'s placeholder case fills under the
+placeholder's uid.
+
+## id. owns a platform account's display name (2026-11-18)
+
+**DS52. A platform account's name is id.'s** (the platform's console-trim
+decisions of 2026-11-18, Q2: id. alone owns the display name; hosted
+Wappie reads it at each sign-in and drops its own name edit; self-hosted
+keeps its own).
+
+Before this, Wappie copied id.'s name only when it created the account,
+and preferred the page's `display_name` over it. After that the name was
+Wappie's own, edited in the console, and drifted from id.'s.
+
+The change, in core:
+
+- `/platform/session` copies userinfo's `name` into `users.name`
+  (`store.SyncPlatformName`) after the address and before the session is
+  issued, so its `user.name` carries it. The server reads userinfo itself
+  with the one-use token, so the name is id.'s, never a claim of the
+  browser's (the shell's `display_name` is not used).
+- An empty name, or one `validProfileName` refuses (a control character,
+  over 80 runes), keeps the stored one: a missing claim never blanks an
+  account. A failure is a warning; a sign-in never fails for it, as for
+  the address.
+- Only `auth_source = 'platform'` people are touched. Local accounts,
+  services and every self-hosted account keep their own name.
+- A new account takes the ticket's name (id.'s); `display_name` is the
+  fallback when id. gave none, so old pages keep working.
+- A linked legacy account adopts the ticket's name at the link, or keeps
+  its own when id. gave none. The rewrap ticket carries no name; the next
+  sign-in copies it.
+- `PUT /v1/auth/profile` ignores `name` for a platform account and saves
+  the avatar only, answering with the stored name. Ignoring rather than
+  refusing keeps photo saves from open tabs and old bundles working, and
+  cannot race the sign-in's copy. It also lets a platform account with an
+  empty name save a photo, which `invalid_profile` refused before.
+- The copy happens at a sign-in at id., the decision's "at each sign-in":
+  a session the page restores from its vault (a reload, a new tab) does
+  not pass `/platform/session`, so a long-lived session keeps showing the
+  name it had until the next full sign-in at id.
+
+Not here: the hosted console's read-only name (cloud, console-trim, which
+moves its core pin to this change), and the workspace name, which the
+contract does not carry.
+
+Tests: `TestPlatformNameFollowsTheProvider` (each sign-in, the session's
+user, `/profile` and `/me`; empty, blank, control-character and 81-rune
+names keep the stored one, 80 runes is taken; a local account is not
+touched; a linked account takes the name at the link and follows it),
+`TestPlatformLinkWithNoNameKeepsTheAccounts`,
+`TestPlatformNewAccountNameIsTheProviders` (`display_name` loses to id.'s
+name and is the fallback without one) and
+`TestPlatformProfileNameIsTheProviders` (a platform account's `PUT` keeps
+the name and saves the photo, an empty name too, a bad photo is still
+refused; a local account's `PUT` is unchanged).
+
+## A platform account adds no workspace or person here (2026-11-18)
+
+**DS53. In the hosted build, a platform account creates no workspace and
+invites no person** (the platform's answers on enforce of 2026-11-18, item
+9: stop growth now, before enforce). The Happie Co's console manages the
+workspaces and members of an account that signs in through it.
+
+Why now: decision 0040 ties membership to the platform, and until enforce
+applies its documents every team created here, and every person invited
+into one, is something the platform does not know. A team made here is an
+`unnamed_tenant` that `contract diff` lists and that has to be retired by
+hand before enforce. Stopping growth now keeps that list from growing.
+
+The rule, in core:
+
+- The gate is `auth_source = 'platform'` (the account DS52's name rule
+  reads), and only while the identity provider is configured
+  (`WS_PLATFORM_ISSUER`), which only the hosted build is, as the step-up's
+  `stepsUpAtProvider` requires. `authapi.platformManaged` holds it. No new setting: with
+  the provider unset (self-hosted, or a rollback of the provider), no
+  account is the platform's and nothing changes. It does not depend on the
+  contract's mode.
+- `POST /v1/auth/workspaces` answers `409 managed_elsewhere` ("The Happie
+  Co's console manages this account's workspaces and members; create
+  workspaces and invite people there") before anything is read or written.
+- `POST /v1/auth/workspaces/invites` for a person (owner, admin or member)
+  answers the same, and so does `POST .../invites/{id}/regenerate` of a
+  person's invitation, which would issue a new code; the old code is not
+  revoked (`store.ErrManagedElsewhere`, refused before the revoke).
+- Service invitations are not this decision's: a standing one and a content
+  consent's provisional one are issued and regenerated as before (step 7
+  decides them).
+- Nothing stored changes. Existing workspaces, members and pending
+  invitations stay: a pending code is still listed, revealed, revoked and
+  redeemed, by a platform account too. A local account, even in a team
+  where a platform account is owner, invites people as before.
+- A new platform account's own personal workspace is not this rule's: it
+  is its home (DB2).
+- The operator's `whatserverd invite` and `bootstrap` are not an account's
+  acts and stay.
+
+What enforce adds (E3): `managed_elsewhere` widens to member role, status
+and removal, accept-invite, reveal, the name edit and the last-owner
+checks in platform teams, in place of `invitations_paused`; and
+`GET /v1/auth/workspaces` gains a per-workspace flag for the UI. Until the
+cloud console hides its create and invite controls, they answer this 409.
+
+Unlike DB6, `managed_elsewhere` is used before enforce, by the platform's
+choice (item 9). Until E1 applies documents, a workspace or person added in
+the console does not appear here.
+
+Tests: `TestPlatformAccountsCreateNoWorkspace` (a platform account's
+create is refused and writes no tenant or membership; a local account's,
+and the same platform account's with the provider unset, create a team)
+and `TestPlatformAccountsInviteNoPerson` (every person role refused, and a
+person's regeneration, with the old code kept; the pending code is listed,
+revealed and redeemed; a service invitation is issued and regenerated; a
+local owner of the same team, and the platform account with the provider
+unset, invite a person).
 
 ## Platform tokens in Wappie (step 7)
 

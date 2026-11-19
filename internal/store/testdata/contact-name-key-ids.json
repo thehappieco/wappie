@@ -1,0 +1,93 @@
+{
+  "about": [
+    "Which content key a sealed contact name needs (wappie DS50). A batch",
+    "envelope is a header of 8 bytes (\"WS\", version 1, suite 1, mode 2 for",
+    "batch, a u16 big-endian epoch, one reserved byte), then the content key's",
+    "id as a u32 big-endian, the nonce and the ciphertext. Only that key opens",
+    "it. key_id is the id a reader opens the name with; null means the envelope",
+    "names no usable key (not a batch envelope, too short, or an id outside 1",
+    "to 2147483647, which a keys request would refuse), and a reader takes the",
+    "server's per-name id, then the row's content_key_id.",
+    "Sealed by internal/crypto/seal under a throwaway archive key; the",
+    "invalid ones are a valid one with bytes changed. Read by internal/store's",
+    "TestContactNameKeyIDVectors and by wappie-cloud's web tests from the core",
+    "checkout its CI pins."
+  ],
+  "vectors": [
+    {
+      "name": "push name under content key 1",
+      "sealed": "V1MBAQIAAQAAAAABTU84MXWejkn19xHKvMoUFWloeakB3QJdcgzuvj1GVQ==",
+      "key_id": 1
+    },
+    {
+      "name": "full name under content key 7",
+      "sealed": "V1MBAQIAAQAAAAAHtdwwAtoR7Ylg9BCewVkJRoZMRYyqNw9bcjPnyjtP2ZkJ9qdSohH2",
+      "key_id": 7
+    },
+    {
+      "name": "business name under content key 2147483647, the largest id",
+      "sealed": "V1MBAQIAAQB/////45uHvuLwJbEUNlGhveUFkPIKJ/BsEdxr3HqU+IpEFfRYmUX9eGtAtFsU",
+      "key_id": 2147483647
+    },
+    {
+      "name": "full name under content key 65536 (the id's bytes 00 01 00 00)",
+      "sealed": "V1MBAQIAAQAAAQAAVqX4UOjr4WDqloGikI6s7oDdH1kyeUB2w/EIJqiOrQ==",
+      "key_id": 65536
+    },
+    {
+      "name": "batch envelope naming content key 0",
+      "sealed": "V1MBAQIAAQAAAAAAtdwwAtoR7Ylg9BCewVkJRoZMRYyqNw9bcjPnyjtP2ZkJ9qdSohH2",
+      "key_id": null
+    },
+    {
+      "name": "batch envelope naming content key 2147483648, above any stored id",
+      "sealed": "V1MBAQIAAQCAAAAAtdwwAtoR7Ylg9BCewVkJRoZMRYyqNw9bcjPnyjtP2ZkJ9qdSohH2",
+      "key_id": null
+    },
+    {
+      "name": "batch envelope naming content key 4294967295",
+      "sealed": "V1MBAQIAAQD/////tdwwAtoR7Ylg9BCewVkJRoZMRYyqNw9bcjPnyjtP2ZkJ9qdSohH2",
+      "key_id": null
+    },
+    {
+      "name": "another product's magic",
+      "sealed": "WFMBAQIAAQAAAAAHtdwwAtoR7Ylg9BCewVkJRoZMRYyqNw9bcjPnyjtP2ZkJ9qdSohH2",
+      "key_id": null
+    },
+    {
+      "name": "an unknown version",
+      "sealed": "V1MCAQIAAQAAAAAHtdwwAtoR7Ylg9BCewVkJRoZMRYyqNw9bcjPnyjtP2ZkJ9qdSohH2",
+      "key_id": null
+    },
+    {
+      "name": "an unknown suite",
+      "sealed": "V1MBAgIAAQAAAAAHtdwwAtoR7Ylg9BCewVkJRoZMRYyqNw9bcjPnyjtP2ZkJ9qdSohH2",
+      "key_id": null
+    },
+    {
+      "name": "an unknown mode",
+      "sealed": "V1MBAQMAAQAAAAAHtdwwAtoR7Ylg9BCewVkJRoZMRYyqNw9bcjPnyjtP2ZkJ9qdSohH2",
+      "key_id": null
+    },
+    {
+      "name": "the header and three bytes of the id",
+      "sealed": "V1MBAQIAAQAAAAA=",
+      "key_id": null
+    },
+    {
+      "name": "the header alone",
+      "sealed": "V1MBAQIAAQA=",
+      "key_id": null
+    },
+    {
+      "name": "five bytes",
+      "sealed": "V1MBAQI=",
+      "key_id": null
+    },
+    {
+      "name": "a direct envelope, sealed straight to the archive key",
+      "sealed": "V1MBAQEAAQBVMZbwZm3q3Qsl0zTMNojOCBJSFyhi2/soo2Ad23/lc5ELm+34cxXzRpXgLpCPdBICArULTwIJV10xxA==",
+      "key_id": null
+    }
+  ]
+}

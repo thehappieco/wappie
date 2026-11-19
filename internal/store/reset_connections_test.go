@@ -131,7 +131,7 @@ func TestResetArchiveEndsConnections(t *testing.T) {
 		if err := w.keys.CreateArchiveKey(ctx, w.tenant, s.number, 1, pub); err != nil {
 			t.Fatal(err)
 		}
-		if err := w.keys.PutGrant(ctx, store.Grant{TenantID: w.tenant, DeviceID: s.number, UserID: other, Epoch: 1, SealedDSK: []byte("new key")}, nil); err != nil {
+		if err := w.keys.PutGrant(ctx, store.Grant{TenantID: w.tenant, DeviceID: s.number, UserID: other, Epoch: 1, SealedDSK: []byte("new key"), Fingerprint: grantFingerprint(t, w.keys, w.tenant, s.number, 1)}, nil); err != nil {
 			t.Fatal(err)
 		}
 		if w.allows(t, s.metaKey, s.number) {

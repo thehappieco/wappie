@@ -107,7 +107,7 @@ func newDraftWorld(t *testing.T) *draftWorld {
 	if err := w.users.SetDevicePermission(ctx, w.tenant, w.owner.ID, store.DevicePermission{DeviceID: w.device, UserID: svc.ID, Read: true}); err != nil {
 		t.Fatal(err)
 	}
-	if err := keys.PutGrant(ctx, store.Grant{TenantID: w.tenant, DeviceID: w.device, UserID: svc.ID, Epoch: 1, SealedDSK: []byte("sealed")}, &w.owner.ID); err != nil {
+	if err := keys.PutGrant(ctx, store.Grant{TenantID: w.tenant, DeviceID: w.device, UserID: svc.ID, Epoch: 1, SealedDSK: []byte("sealed"), Fingerprint: grantFingerprint(t, keys, w.tenant, w.device, 1)}, &w.owner.ID); err != nil {
 		t.Fatal(err)
 	}
 	in := time.Now().Add(20 * time.Minute)
@@ -169,7 +169,7 @@ func (w *draftWorld) person(t *testing.T, role string) store.User {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.NewKeys(w.pool).PutGrant(ctx, store.Grant{TenantID: w.tenant, DeviceID: w.device, UserID: u.ID, Epoch: 1, SealedDSK: []byte("sealed")}, nil); err != nil {
+	if err := store.NewKeys(w.pool).PutGrant(ctx, store.Grant{TenantID: w.tenant, DeviceID: w.device, UserID: u.ID, Epoch: 1, SealedDSK: []byte("sealed"), Fingerprint: grantFingerprint(t, store.NewKeys(w.pool), w.tenant, w.device, 1)}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := w.users.SetDevicePermission(ctx, w.tenant, u.ID, store.DevicePermission{DeviceID: w.device, UserID: u.ID, Read: true, Send: true}); err != nil {

@@ -787,12 +787,12 @@ func TestMediaDownloadRequiresDeviceReadPermission(t *testing.T) {
 	if err = users.SetDevicePermission(ctx, f.tenant, owner.ID, p); err != nil {
 		t.Fatal(err)
 	}
-	if err = store.NewKeys(f.pool).PutGrant(ctx, store.Grant{TenantID: f.tenant, DeviceID: f.device, UserID: member.ID, Epoch: 1, SealedDSK: []byte("sealed")}, &owner.ID); err != nil {
+	if err = store.NewKeys(f.pool).PutGrant(ctx, store.Grant{TenantID: f.tenant, DeviceID: f.device, UserID: member.ID, Epoch: 1, SealedDSK: []byte("sealed"), Fingerprint: grantFingerprint(t, store.NewKeys(f.pool), f.tenant, f.device, 1)}, &owner.ID); err != nil {
 		t.Fatal(err)
 	}
 	check(200)
 	// Revoking this reader must retain another recoverable envelope.
-	if err = store.NewKeys(f.pool).PutGrant(ctx, store.Grant{TenantID: f.tenant, DeviceID: f.device, UserID: owner.ID, Epoch: 1, SealedDSK: []byte("backup")}, &owner.ID); err != nil {
+	if err = store.NewKeys(f.pool).PutGrant(ctx, store.Grant{TenantID: f.tenant, DeviceID: f.device, UserID: owner.ID, Epoch: 1, SealedDSK: []byte("backup"), Fingerprint: grantFingerprint(t, store.NewKeys(f.pool), f.tenant, f.device, 1)}, &owner.ID); err != nil {
 		t.Fatal(err)
 	}
 	p.Read = false

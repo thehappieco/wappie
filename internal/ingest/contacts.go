@@ -32,17 +32,40 @@ import (
 // Exposed so workers outside this package — the avatar fetcher, which fetches
 // over plain HTTP and has nothing else to do with ingest — can seal without
 // each of them holding a sealer of its own.
+//
+// It also returns the archive key the value's content key was sealed to,
+// which the row's write names (store.ContactName.ArchiveKey and the like),
+// so the store refuses it when a reset deleted that content key (DS49). A
+// pipeline dropped meanwhile, or sealing to a key the number no longer
+// has, is built again once, as Router.ingest does.
 func (r *Router) SealFor(ctx context.Context, tenant, device, uid uuid.UUID,
-	kind seal.Kind, value []byte) ([]byte, uint32, error) {
-	pipe, err := r.pipelineFor(ctx, tenant, device)
+	kind seal.Kind, value []byte) (sealed []byte, keyID uint32, archiveKey []byte, err error) {
+	out, keyID, archiveKey, err := r.sealValues(ctx, tenant, device, uid, map[seal.Kind][]byte{kind: value})
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, nil, err
 	}
-	sealed, keyID, err := pipe.sealer.SealAll(ctx, uid, map[seal.Kind][]byte{kind: value})
-	if err != nil {
-		return nil, 0, err
+	return out[kind], keyID, archiveKey, nil
+}
+
+// sealValues seals several values of one row in one call, as SealFor
+// seals one. They are all under one content key, sealed to one archive
+// key, which the row's write names.
+func (r *Router) sealValues(ctx context.Context, tenant, device, uid uuid.UUID,
+	values map[seal.Kind][]byte) (map[seal.Kind][]byte, uint32, []byte, error) {
+	for try := 0; ; try++ {
+		pipe, err := r.pipelineFor(ctx, tenant, device)
+		if err != nil {
+			return nil, 0, nil, err
+		}
+		out, keyID, err := pipe.sealAll(ctx, uid, values)
+		if err == nil {
+			return out, keyID, pipe.archiveKey, nil
+		}
+		if try > 0 || !staleKey(err) {
+			return nil, 0, nil, err
+		}
+		r.drop(device, pipe)
 	}
-	return sealed[kind], keyID, nil
 }
 
 // recordName stores one contact name, sealed.
@@ -69,7 +92,7 @@ func (r *Router) recordName(ctx context.Context, deviceID string, jid, alt types
 	}
 	contactKey := key.ToNonAD().String()
 
-	sealed, keyID, err := r.SealFor(ctx, info.TenantID, device,
+	sealed, keyID, archiveKey, err := r.SealFor(ctx, info.TenantID, device,
 		store.ContactUID(device, contactKey), which, []byte(name))
 	if err != nil {
 		r.log.Error("could not seal a contact name", "contact", contactKey, "error", err)
@@ -83,6 +106,7 @@ func (r *Router) recordName(ctx context.Context, deviceID string, jid, alt types
 		ContactPN:    jidString(addr.PN),
 		IsGroup:      key.Server == types.GroupServer,
 		ContentKeyID: keyID,
+		ArchiveKey:   archiveKey,
 	}
 	switch which {
 	case seal.KindPushName:
@@ -237,33 +261,36 @@ func (r *Router) ImportContacts(ctx context.Context, deviceID string,
 		if fullName == "" {
 			fullName = contact.FirstName
 		}
-		var any bool
-		for _, candidate := range []struct {
-			kind seal.Kind
-			text string
-			into *[]byte
-		}{
-			{seal.KindPushName, contact.PushName, &in.PushNameSealed},
-			{seal.KindFullName, fullName, &in.FullNameSealed},
-			{seal.KindBusinessName, contact.BusinessName, &in.BusinessNameSealed},
+		values := map[seal.Kind][]byte{}
+		for kind, text := range map[seal.Kind]string{
+			seal.KindPushName:     contact.PushName,
+			seal.KindFullName:     fullName,
+			seal.KindBusinessName: contact.BusinessName,
 		} {
-			if candidate.text == "" {
-				continue
+			if text != "" {
+				values[kind] = []byte(text)
 			}
-			sealed, keyID, err := r.SealFor(ctx, info.TenantID, device, uid, candidate.kind,
-				[]byte(candidate.text))
-			if err != nil {
-				return imported, err
-			}
-			*candidate.into = sealed
-			in.ContentKeyID = keyID
-			any = true
 		}
-		if !any {
+		if len(values) == 0 {
 			// A row whatsmeow knows nothing about. Storing it would fill the
 			// table with identifiers and no information.
 			continue
 		}
+		// One seal for all of the contact's names, so they share the
+		// content key the row names (DS50). Sealed one at a time, a
+		// content key due between two names left the first under a key
+		// the row no longer named. And a pipeline built again between two
+		// names, after device-key, left the first under an archive key
+		// the write did not name, so the check at the write missed it
+		// (DS49).
+		sealed, keyID, archiveKey, err := r.sealValues(ctx, info.TenantID, device, uid, values)
+		if err != nil {
+			return imported, err
+		}
+		in.PushNameSealed = sealed[seal.KindPushName]
+		in.FullNameSealed = sealed[seal.KindFullName]
+		in.BusinessNameSealed = sealed[seal.KindBusinessName]
+		in.ContentKeyID, in.ArchiveKey = keyID, archiveKey
 		if err := r.cfg.Contacts.Upsert(ctx, in); err != nil {
 			return imported, err
 		}

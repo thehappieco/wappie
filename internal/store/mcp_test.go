@@ -59,7 +59,7 @@ func (f *mcpFixture) archiveKey(ctx context.Context, t *testing.T, device uuid.U
 // ownerReads gives a person the device's grant and read permission.
 func (f *mcpFixture) ownerReads(ctx context.Context, t *testing.T, person, device uuid.UUID) {
 	t.Helper()
-	if err := f.grants.PutGrant(ctx, store.Grant{TenantID: f.tenant, DeviceID: device, UserID: person, Epoch: 1, SealedDSK: []byte("a person's grant")}, &f.owner); err != nil {
+	if err := f.grants.PutGrant(ctx, store.Grant{TenantID: f.tenant, DeviceID: device, UserID: person, Epoch: 1, SealedDSK: []byte("a person's grant"), Fingerprint: grantFingerprint(t, f.grants, f.tenant, device, 1)}, &f.owner); err != nil { //nolint:contextcheck // the fingerprint is read on the test's own context
 		t.Fatal(err)
 	}
 	if err := f.users.SetDevicePermission(ctx, f.tenant, f.owner, store.DevicePermission{DeviceID: device, UserID: person, Read: true, Send: true}); err != nil {

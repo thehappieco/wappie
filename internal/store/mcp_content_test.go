@@ -93,7 +93,7 @@ func (f *contentFixture) prepareContent(ctx context.Context, t *testing.T, actor
 		if err := f.users.SetDevicePermission(ctx, f.tenant, actor, store.DevicePermission{DeviceID: device, UserID: c.service, Read: true}); err != nil {
 			t.Fatal(err)
 		}
-		if err := f.grants.PutGrant(ctx, store.Grant{TenantID: f.tenant, DeviceID: device, UserID: c.service, Epoch: c.grantEpoch, SealedDSK: []byte("sealed to the attested key")}, &actor); err != nil {
+		if err := f.grants.PutGrant(ctx, store.Grant{TenantID: f.tenant, DeviceID: device, UserID: c.service, Epoch: c.grantEpoch, SealedDSK: []byte("sealed to the attested key"), Fingerprint: grantFingerprint(t, f.grants, f.tenant, device, c.grantEpoch)}, &actor); err != nil { //nolint:contextcheck // the fingerprint is read on the test's own context
 			t.Fatal(err)
 		}
 	}

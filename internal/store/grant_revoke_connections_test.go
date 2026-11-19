@@ -316,7 +316,7 @@ func TestGrantAddConnectionAccount(t *testing.T) {
 	person, _ := w.actor(t, "admin", "admin")
 	s := w.own(t, person, "Granted")
 	grant := func(device, user uuid.UUID) error {
-		return w.keys.PutGrant(ctx, store.Grant{TenantID: w.tenant, DeviceID: device, UserID: user, Epoch: 1, SealedDSK: []byte("again")}, &w.owner)
+		return w.keys.PutGrant(ctx, store.Grant{TenantID: w.tenant, DeviceID: device, UserID: user, Epoch: 1, SealedDSK: []byte("again"), Fingerprint: grantFingerprint(t, w.keys, w.tenant, device, 1)}, &w.owner) //nolint:contextcheck // the fingerprint is read on the test's own context
 	}
 	account := s.services[s.only]
 	// The shared number: the person reads it, the key does not name it.

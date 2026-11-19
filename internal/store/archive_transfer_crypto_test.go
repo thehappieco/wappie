@@ -39,10 +39,10 @@ func TestPersonalTransferKeepsOldAndNewArchiveReadable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := keys.PutGrant(ctx, store.Grant{TenantID: a.tenant, DeviceID: a.device, UserID: owner, Epoch: 1, SealedDSK: oldGrant}, &owner); err != nil {
+	if err := keys.PutGrant(ctx, store.Grant{TenantID: a.tenant, DeviceID: a.device, UserID: owner, Epoch: 1, SealedDSK: oldGrant, Fingerprint: grantFingerprint(t, keys, a.tenant, a.device, 1)}, &owner); err != nil {
 		t.Fatal(err)
 	}
-	if err := keys.PutGrant(ctx, store.Grant{TenantID: a.tenant, DeviceID: a.device, UserID: other, Epoch: 1, SealedDSK: []byte("old reader grant")}, &owner); err != nil {
+	if err := keys.PutGrant(ctx, store.Grant{TenantID: a.tenant, DeviceID: a.device, UserID: other, Epoch: 1, SealedDSK: []byte("old reader grant"), Fingerprint: grantFingerprint(t, keys, a.tenant, a.device, 1)}, &owner); err != nil {
 		t.Fatal(err)
 	}
 	before, err := seal.NewSealer(a.tenant, a.device, pub, 1, keys)
@@ -143,7 +143,7 @@ func TestPersonalTransferKeepsOldAndNewArchiveReadable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := keys.PutGrant(ctx, store.Grant{TenantID: personal, DeviceID: a.device, UserID: owner, Epoch: 1, SealedDSK: newGrant}, &owner); err != nil {
+	if err := keys.PutGrant(ctx, store.Grant{TenantID: personal, DeviceID: a.device, UserID: owner, Epoch: 1, SealedDSK: newGrant, Fingerprint: grantFingerprint(t, keys, personal, a.device, 1)}, &owner); err != nil {
 		t.Fatal(err)
 	}
 	grants, err = keys.GrantsFor(ctx, personal, owner)

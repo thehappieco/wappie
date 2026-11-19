@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -98,6 +99,10 @@ func toColumnID(id uint32) (int32, error) {
 //
 // Only the public half is accepted, by construction: there is no parameter for
 // a private key, so no code path exists that could store one by mistake.
+//
+// It tells every process at its commit (ArchiveKeyChannel): after a reset
+// the new key may take the old one's epoch, and a running server would
+// otherwise keep sealing to the old key (DS49).
 func (k *Keys) CreateArchiveKey(ctx context.Context, tenant, device uuid.UUID,
 	epoch uint16, pub seal.PublicKey) error {
 	if !pub.Valid() {
@@ -118,7 +123,7 @@ func (k *Keys) CreateArchiveKey(ctx context.Context, tenant, device uuid.UUID,
 			device, int32(epoch), tenant); err != nil {
 			return fmt.Errorf("store: set current epoch: %w", err)
 		}
-		return nil
+		return notifyArchiveKeyTx(ctx, tx, tenant, &device)
 	})
 }
 
@@ -142,12 +147,48 @@ func (k *Keys) HasArchiveKey(ctx context.Context, tenant, device uuid.UUID) (boo
 // leak system-wide volume to clients. Allocating it means reading the current
 // maximum, which two concurrent rotations would otherwise both read — hence the
 // advisory lock, held for the transaction and released on commit.
+//
+// It checks nothing of the key sealFn seals to. Ingest uses
+// CreateContentKeyFor.
 func (k *Keys) CreateContentKey(ctx context.Context, tenant, device uuid.UUID, epoch uint16,
 	sealFn func(id uint32) ([]byte, error)) (uint32, error) {
+	return k.createContentKey(ctx, tenant, device, epoch, nil, sealFn)
+}
+
+// CreateContentKeyFor is CreateContentKey for a sealer that seals to pub. It
+// makes the content key only while pub is still the number's current
+// archive key at epoch, read in the same transaction, else
+// ErrArchiveKeyChanged.
+//
+// The transaction takes the workspace's tenants row FOR UPDATE before it
+// reads the key. The insert's own trigger (0036's archive_owner_lock)
+// takes that lock anyway, so this only takes it earlier. A reset holds the
+// row from before its deletes to its commit, so the read sees the key
+// either before the reset or after it. Without it a reset and a
+// device-key could commit between the read and the insert, and the
+// insert's foreign key would find the new key's row. A weaker lock here
+// would deadlock: two numbers of one workspace would each hold it and
+// wait at the trigger to upgrade it.
+func (k *Keys) CreateContentKeyFor(ctx context.Context, tenant, device uuid.UUID, epoch uint16,
+	pub seal.PublicKey, sealFn func(id uint32) ([]byte, error)) (uint32, error) {
+	if !pub.Valid() {
+		return 0, errors.New("store: a content key needs the archive key it is sealed to")
+	}
+	return k.createContentKey(ctx, tenant, device, epoch, pub.Bytes(), sealFn)
+}
+
+// createContentKey is CreateContentKey, with pub's check when pub is set.
+func (k *Keys) createContentKey(ctx context.Context, tenant, device uuid.UUID, epoch uint16,
+	pub []byte, sealFn func(id uint32) ([]byte, error)) (uint32, error) {
 	var id uint32
 	err := pg.InTenantTx(ctx, k.pool, tenant.String(), func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, contentKeyLock(device)); err != nil {
 			return fmt.Errorf("store: lock content key counter: %w", err)
+		}
+		if pub != nil {
+			if err := currentArchiveKeyIsTx(ctx, tx, tenant, device, epoch, pub); err != nil {
+				return err
+			}
 		}
 
 		var next int32
@@ -177,6 +218,68 @@ func (k *Keys) CreateContentKey(ctx context.Context, tenant, device uuid.UUID, e
 		return 0, err
 	}
 	return id, nil
+}
+
+// currentArchiveKeyIsTx returns ErrArchiveKeyChanged unless pub at epoch
+// is device's current archive key, not retired. It takes the tenants row
+// first (lockWorkspaceAccess, FOR UPDATE, as the insert's trigger does),
+// so a reset is wholly before it or wholly after.
+func currentArchiveKeyIsTx(ctx context.Context, tx pgx.Tx, tenant, device uuid.UUID, epoch uint16, pub []byte) error {
+	if err := lockWorkspaceAccess(ctx, tx, tenant); err != nil {
+		return fmt.Errorf("store: lock the workspace for a content key: %w", err)
+	}
+	var stored []byte
+	err := tx.QueryRow(ctx, `
+		SELECT k.public_key
+		  FROM device_archive_keys k
+		  JOIN devices d ON d.id = k.device_id AND d.current_epoch = k.epoch
+		 WHERE k.device_id = $1 AND k.epoch = $2 AND k.retired_at IS NULL`, device, int32(epoch)).Scan(&stored)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("%w: device %s has no current key at epoch %d", ErrArchiveKeyChanged, device, epoch)
+	}
+	if err != nil {
+		return fmt.Errorf("store: read the archive key: %w", err)
+	}
+	if !bytes.Equal(stored, pub) {
+		return fmt.Errorf("%w: device %s has another key at epoch %d", ErrArchiveKeyChanged, device, epoch)
+	}
+	return nil
+}
+
+// contentKeyIsTx returns ErrArchiveKeyChanged unless device's content key
+// id is stored, at an epoch whose archive key is archiveKey: the key it
+// was sealed to. Ingest's writes name both (InsertMessage.ArchiveKey and
+// the like), so a value sealed before a reset and written after it, under
+// a content key the reset deleted, is refused rather than stored
+// unreadable. So is one from a pipeline that missed the reset's notice,
+// even once device-key and a new content key took the same id again
+// (DS49). It checks nothing when archiveKey is nil (a tool or a test
+// that names no key) or id is 0 (nothing sealed).
+//
+// The caller holds the workspace's tenants row: nextSeq's update or the
+// write's own trigger (storage_lock) took it, and the read is a statement
+// after that. A reset holds the row from before its deletes to its
+// commit, so it is wholly before this read or wholly after the write.
+func contentKeyIsTx(ctx context.Context, tx pgx.Tx, device uuid.UUID, id uint32, archiveKey []byte) error {
+	if archiveKey == nil || id == 0 {
+		return nil
+	}
+	col, err := toColumnID(id)
+	if err != nil {
+		return err
+	}
+	var stored bool
+	if err := tx.QueryRow(ctx, `
+		SELECT EXISTS (SELECT 1 FROM content_keys c
+		  JOIN device_archive_keys k ON k.device_id = c.device_id AND k.epoch = c.epoch
+		 WHERE c.device_id = $1 AND c.id = $2 AND k.public_key = $3)`,
+		device, col, archiveKey).Scan(&stored); err != nil {
+		return fmt.Errorf("store: read the content key: %w", err)
+	}
+	if !stored {
+		return fmt.Errorf("%w: device %s has no content key %d under that archive key", ErrArchiveKeyChanged, device, id)
+	}
+	return nil
 }
 
 // SealedContentKey returns a stored content key, for a client to unwrap.
@@ -248,21 +351,44 @@ type Grant struct {
 	UserID          uuid.UUID
 	Epoch           uint16
 	SealedDSK       []byte
+	// Fingerprint names the archive key SealedDSK is (ArchiveKeyFingerprint).
+	// PutGrant requires it, and GrantsFor gives the stored key's (DS49).
+	Fingerprint string
 }
+
+// ErrGrantFingerprint is a grant that names no archive key fingerprint, or
+// one not in ArchiveKeyFingerprint's form.
+var ErrGrantFingerprint = errors.New("store: a grant must name its archive key's fingerprint")
 
 // PutGrant records a sealed device key for one user. A live connection's
 // own account takes only a number its key names and its person reads
 // (ErrConnectionAccountGrant, DS48): grant.add, a pairing's grants and the
 // command line's device-key alike.
+//
+// The grant names the archive key it was sealed for (g.Fingerprint), and
+// PutGrant compares it with the number's key at g.Epoch in the same
+// transaction: ErrArchiveKeyChanged for another key or none (DS49). The
+// epoch alone cannot say: after reset-archive -keep-devices, device-key
+// gives the number a new key at epoch 1 again, and a grant sealed with
+// the old key would be recorded as Read and open nothing. The transaction
+// holds the workspace's tenants row from before the comparison to its
+// commit, and a reset takes that row before its deletes, so a reset is
+// wholly before the comparison or wholly after the grant.
 func (k *Keys) PutGrant(ctx context.Context, g Grant, grantedBy *uuid.UUID) error {
 	if len(g.SealedDSK) == 0 {
 		return errors.New("store: a grant with no sealed key is not a grant")
+	}
+	if !ValidArchiveKeyFingerprint(g.Fingerprint) {
+		return ErrGrantFingerprint
 	}
 	return pg.InTenantTx(ctx, k.pool, g.TenantID.String(), func(tx pgx.Tx) error {
 		if err := lockWorkspaceAccess(ctx, tx, g.TenantID); err != nil {
 			return err
 		}
 		if err := grantableTx(ctx, tx, g.TenantID, g.DeviceID, g.UserID); err != nil {
+			return err
+		}
+		if err := archiveKeyIsTx(ctx, tx, g.DeviceID, g.Epoch, g.Fingerprint); err != nil {
 			return err
 		}
 		_, err := tx.Exec(ctx, `
@@ -286,6 +412,24 @@ func (k *Keys) CheckGrant(ctx context.Context, tenant, device, user uuid.UUID) e
 	return pg.InTenantTx(ctx, k.pool, tenant.String(), func(tx pgx.Tx) error {
 		return grantableTx(ctx, tx, tenant, device, user)
 	})
+}
+
+// ArchiveKeyFingerprintAt returns the fingerprint of device's archive key
+// at epoch, not retired, or ErrNoArchiveKey: what a grant sealed for that
+// key names. For a tool or a test that grants a key it did not make.
+func (k *Keys) ArchiveKeyFingerprintAt(ctx context.Context, tenant, device uuid.UUID, epoch uint16) (string, error) {
+	var stored []byte
+	err := pg.InTenantTx(ctx, k.pool, tenant.String(), func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `SELECT public_key FROM device_archive_keys
+			WHERE device_id = $1 AND epoch = $2 AND retired_at IS NULL`, device, int32(epoch)).Scan(&stored)
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", fmt.Errorf("%w: %s at epoch %d", ErrNoArchiveKey, device, epoch)
+	}
+	if err != nil {
+		return "", fmt.Errorf("store: read the archive key: %w", err)
+	}
+	return ArchiveKeyFingerprint(stored), nil
 }
 
 // grantableTx is PutGrant's checks of user on device.
@@ -318,14 +462,19 @@ func numberGone(err error) error {
 // GrantsFor returns every device key one user may open.
 //
 // The reply is what a browser turns into a set of readable accounts: no grant,
-// no key, and the archive stays closed however the server behaves.
+// no key, and the archive stays closed however the server behaves. Each
+// grant carries the fingerprint of the number's key at its epoch. A client
+// that seals the key to someone else (grant.add, DS49) sends the
+// fingerprint of the key it opened, and refuses a grant whose key differs
+// from this one.
 func (k *Keys) GrantsFor(ctx context.Context, tenant, user uuid.UUID) ([]Grant, error) {
 	var out []Grant
 	err := pg.InTenantTx(ctx, k.pool, tenant.String(), func(tx pgx.Tx) error {
 		rows, err := tx.Query(ctx, `
-			SELECT g.device_id, g.epoch, g.sealed_dsk, d.archive_tenant_id
+			SELECT g.device_id, g.epoch, g.sealed_dsk, d.archive_tenant_id, k.public_key
 			  FROM device_key_grants g
 			  JOIN devices d ON d.id = g.device_id AND d.current_epoch = g.epoch AND d.deleted_at IS NULL
+			  JOIN device_archive_keys k ON k.device_id = g.device_id AND k.epoch = g.epoch
 			 WHERE g.user_id = $1
 			 ORDER BY d.created_at`, user)
 		if err != nil {
@@ -335,9 +484,11 @@ func (k *Keys) GrantsFor(ctx context.Context, tenant, user uuid.UUID) ([]Grant, 
 		for rows.Next() {
 			g := Grant{TenantID: tenant, UserID: user}
 			var epoch int32
-			if err := rows.Scan(&g.DeviceID, &epoch, &g.SealedDSK, &g.ArchiveTenantID); err != nil {
+			var pub []byte
+			if err := rows.Scan(&g.DeviceID, &epoch, &g.SealedDSK, &g.ArchiveTenantID, &pub); err != nil {
 				return err
 			}
+			g.Fingerprint = ArchiveKeyFingerprint(pub)
 			if epoch < 1 || epoch > maxEpoch {
 				return fmt.Errorf("store: grant epoch %d is out of range", epoch)
 			}

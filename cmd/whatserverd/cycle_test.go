@@ -98,7 +98,7 @@ func TestDeletionCycle(t *testing.T) {
 		return device, jid
 	}
 	number, _ := linked()
-	if err := keys.PutGrant(ctx, store.Grant{TenantID: team, DeviceID: number, UserID: reader, Epoch: 1, SealedDSK: []byte("grant")}, &owner); err != nil {
+	if err := keys.PutGrant(ctx, store.Grant{TenantID: team, DeviceID: number, UserID: reader, Epoch: 1, SealedDSK: []byte("grant"), Fingerprint: grantFingerprint(t, keys, team, number, 1)}, &owner); err != nil {
 		t.Fatal(err)
 	}
 	if err := w.users.SetDevicePermission(ctx, team, owner, store.DevicePermission{DeviceID: number, UserID: reader, Read: true}); err != nil {

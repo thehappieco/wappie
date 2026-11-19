@@ -186,7 +186,8 @@ func TestDisableMemberIsWorkspaceScopedAndStripsAccess(t *testing.T) {
 	if err := h.keys.CreateArchiveKey(ctx, h.tenant, deviceID, 1, pub); err != nil {
 		t.Fatal(err)
 	}
-	grant := store.Grant{TenantID: h.tenant, DeviceID: deviceID, UserID: member.ID, Epoch: 1, SealedDSK: []byte("sealed")}
+	grant := store.Grant{TenantID: h.tenant, DeviceID: deviceID, UserID: member.ID, Epoch: 1, SealedDSK: []byte("sealed"),
+		Fingerprint: store.ArchiveKeyFingerprint(pub.Bytes())}
 	if err := h.keys.PutGrant(ctx, grant, &owner.ID); err != nil {
 		t.Fatal(err)
 	}

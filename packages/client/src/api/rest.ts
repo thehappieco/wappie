@@ -32,7 +32,12 @@ export interface ArchiveScanOptions {
 }
 export interface ArchiveGrants extends WorkspaceReply {
   user_id: string
-  grants: { device_id: string; archive_tenant_id?: string; label?: string; epoch: number; sealed_dsk: string }[]
+  /**
+   * fingerprint is the number's archive key now (wappie DS49). Optional here,
+   * though the server always sends it: nothing on this path reads it, and a
+   * reader keeps working against a server before DS49.
+   */
+  grants: { device_id: string; archive_tenant_id?: string; label?: string; epoch: number; sealed_dsk: string; fingerprint?: string }[]
 }
 export interface ArchiveCursor { ts: string; seq: number }
 export interface ArchiveClientOptions {

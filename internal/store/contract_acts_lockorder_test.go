@@ -331,7 +331,7 @@ func TestFlagsActsLockOrder(t *testing.T) {
 		if err := w.users.UpdateMember(ctx, w.tenant, w.owner, target, "member", "active"); err != nil {
 			t.Fatal(err)
 		}
-		if err := w.keys.PutGrant(ctx, store.Grant{TenantID: w.tenant, DeviceID: device, UserID: target, Epoch: 1, SealedDSK: []byte("grant")}, &w.owner); err != nil {
+		if err := w.keys.PutGrant(ctx, store.Grant{TenantID: w.tenant, DeviceID: device, UserID: target, Epoch: 1, SealedDSK: []byte("grant"), Fingerprint: grantFingerprint(t, w.keys, w.tenant, device, 1)}, &w.owner); err != nil {
 			t.Fatal(err)
 		}
 		if err := w.users.SetDevicePermission(ctx, w.tenant, w.owner, store.DevicePermission{DeviceID: device, UserID: target, Read: true, Send: true}); err != nil {
@@ -343,6 +343,7 @@ func TestFlagsActsLockOrder(t *testing.T) {
 		drop := w.command(t, kc.OpItemFlagsDrop, admin, adminSub)
 		remove := w.command(t, kc.OpItemAccessRemove, admin, adminSub)
 		next := uuid.New()
+		deviceFP := grantFingerprint(t, w.keys, w.tenant, device, 1)
 		calls := map[string]func() error{
 			"a raise": func() error {
 				_, _, err := w.c.RunFlagsRaise(lctx, raise, device, raised, []string{kc.CanRead, kc.CanSend},
@@ -371,7 +372,7 @@ func TestFlagsActsLockOrder(t *testing.T) {
 				return err
 			},
 			"a key shared": func() error {
-				err := w.keys.PutGrant(lctx, store.Grant{TenantID: w.tenant, DeviceID: device, UserID: target, Epoch: 1, SealedDSK: []byte("grant")},
+				err := w.keys.PutGrant(lctx, store.Grant{TenantID: w.tenant, DeviceID: device, UserID: target, Epoch: 1, SealedDSK: []byte("grant"), Fingerprint: deviceFP},
 					&w.owner)
 				if errors.Is(err, store.ErrNotFound) {
 					return nil
@@ -531,6 +532,7 @@ func TestOwnConnectionsLockOrder(t *testing.T) {
 		drop := w.command(t, kc.OpItemFlagsDrop, admin, adminSub)
 		remove := w.command(t, kc.OpItemAccessRemove, admin, adminSub)
 		next := uuid.New()
+		deviceFP := grantFingerprint(t, w.keys, w.tenant, device, 1)
 		calls := map[string]func() error{
 			"a drop of read": func() error {
 				_, _, _, err := w.c.RunFlagsDrop(lctx, drop, device, dropped, []string{kc.CanRead}, []string{})
@@ -609,7 +611,7 @@ func TestOwnConnectionsLockOrder(t *testing.T) {
 			},
 			"a key shared": func() error {
 				return raced(w.keys.PutGrant(lctx, store.Grant{TenantID: w.tenant, DeviceID: device, UserID: screened, Epoch: 1,
-					SealedDSK: []byte("grant")}, &w.owner))
+					SealedDSK: []byte("grant"), Fingerprint: deviceFP}, &w.owner))
 			},
 			"the follower's apply": func() error {
 				doc := store.ContractDoc{Sub: droppedSub, Generation: cur, Version: int64(round) + 2, Status: "active",
@@ -706,6 +708,8 @@ func TestResetArchiveLockOrder(t *testing.T) {
 	raced := func(err error) error {
 		if errors.Is(err, store.ErrMCPConnectionState) || errors.Is(err, store.ErrMCPConnectionNotFound) ||
 			errors.Is(err, store.ErrNotFound) || errors.Is(err, store.ErrNumberGone) || errors.Is(err, store.ErrMCPKeyUnsuitable) ||
+			// A key shared after the reset names a key it deleted (DS49).
+			errors.Is(err, store.ErrArchiveKeyChanged) ||
 			sqlState(err) == "23503" || sqlState(err) == "WS002" {
 			return nil
 		}
@@ -736,6 +740,7 @@ func TestResetArchiveLockOrder(t *testing.T) {
 		if err := insert(ctx, fmt.Sprintf("first-%d", round)); err != nil {
 			t.Fatal(err)
 		}
+		numberFP := grantFingerprint(t, w.keys, w.tenant, number, 1)
 		calls := map[string]func() error{
 			"the reset": func() error {
 				_, err := store.ResetArchive(lctx, w.pool, w.tenant, keep)
@@ -770,7 +775,7 @@ func TestResetArchiveLockOrder(t *testing.T) {
 			},
 			"a key shared": func() error {
 				return raced(w.keys.PutGrant(lctx, store.Grant{TenantID: w.tenant, DeviceID: number, UserID: w.owner, Epoch: 1,
-					SealedDSK: []byte("again")}, &w.owner))
+					SealedDSK: []byte("again"), Fingerprint: numberFP}, &w.owner))
 			},
 			"a connection revoked": func() error {
 				_, err := w.conns.Revoke(lctx, w.tenant, w.owner, meta)

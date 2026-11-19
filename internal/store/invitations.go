@@ -25,6 +25,12 @@ var ErrInviteNotRecoverable = errors.New("store: the original invitation code is
 // there. Service invitations stay open.
 var ErrInvitationsPaused = errors.New("store: person invitations into this team are paused: its people join through The Happie Co")
 
+// ErrManagedElsewhere refuses a person invitation that a platform account
+// would issue in the hosted build (DS53): the platform's console manages
+// its workspaces and members. The caller decides who that is; the store
+// only refuses before anything changes.
+var ErrManagedElsewhere = errors.New("store: the platform's console manages this account's workspaces and members")
+
 // invitationsPausedTx is ErrInvitationsPaused's one predicate: a person's
 // role, and a team recorded as a platform workspace. The record is the
 // key, in every mode and with or without a transport, so neither a
@@ -243,7 +249,13 @@ func (u *Users) RevokeInvitation(ctx context.Context, tenant, actor, id uuid.UUI
 		return e
 	})
 }
-func (u *Users) RegenerateInvitation(ctx context.Context, tenant, actor, id uuid.UUID) (string, Invitation, error) {
+
+// RegenerateInvitation revokes a pending or expired invitation's code and
+// issues a fresh one of the same role and address. With refusePeople (a
+// platform account in the hosted build, DS53) a person's invitation is
+// refused with ErrManagedElsewhere before the old code is revoked, so it
+// stays as it was; a service's is regenerated.
+func (u *Users) RegenerateInvitation(ctx context.Context, tenant, actor, id uuid.UUID, refusePeople bool) (string, Invitation, error) {
 	var secret string
 	var out Invitation
 	err := pg.InTenantTx(ctx, u.pool, tenant.String(), func(tx pgx.Tx) error {
@@ -253,6 +265,9 @@ func (u *Users) RegenerateInvitation(ctx context.Context, tenant, actor, id uuid
 		}
 		if old.Status == "accepted" {
 			return ErrInviteInvalid
+		}
+		if refusePeople && old.Role != RoleService {
+			return ErrManagedElsewhere
 		}
 		if e = canInviteHuman(ctx, tx, tenant, old.Role); e != nil {
 			return e

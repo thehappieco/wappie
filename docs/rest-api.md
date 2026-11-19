@@ -110,7 +110,7 @@ parameters are rejected. Query strings are limited to 8192 bytes. Only GET
 | `/v1/messages/{uid}` | `{tenant_id, ...SealedMessage}`. An individual stored row, including control rows. |
 | `/v1/messages/{uid}/history` | `{tenant_id, requested_uid, device_id, chat_key, wa_id, versions, deletion?, reactions?, readers?}`. Complete existing history projection for one message thread. |
 | `/v1/devices/{device}/keys?ids=1,2` | `{tenant_id, device_id, archive_tenant_id, keys: [{id, sealed}]}`. Between 1 and 500 IDs, each 1–2147483647. Missing IDs are omitted; duplicates are folded. |
-| `/v1/grants` | `{tenant_id, user_id, grants: [{device_id, archive_tenant_id, label?, epoch, sealed_dsk}]}`. Current-epoch grants of the authenticated person/service account, filtered by current read access and any API key whitelist. For a platform token, its hidden identity's grants on the numbers it reads now, `user_id` being that identity; a token with no reading key yet has no identity, so `user_id` is empty and `grants` too. |
+| `/v1/grants` | `{tenant_id, user_id, grants: [{device_id, archive_tenant_id, label?, epoch, sealed_dsk, fingerprint}]}`. Current-epoch grants of the authenticated person/service account, filtered by current read access and any API key whitelist. For a platform token, its hidden identity's grants on the numbers it reads now, `user_id` being that identity; a token with no reading key yet has no identity, so `user_id` is empty and `grants` too. `fingerprint` names the number's archive key at that epoch now (lowercase hex SHA-256 of its public key). A client compares it with the key it opened, and a `grant.add` sends the opened key's own fingerprint, never this one ([DS49](decisions.md)). |
 | `/v1/openapi.json` | Public OpenAPI document; no credential required. |
 
 Response fields use the existing WebSocket DTOs, documented in
@@ -169,6 +169,12 @@ messages; only the persisted archive was queried.
 Contacts are ordered by their stored contact key. Pass `next_key` as `after_key`
 while `has_more` is true. This read neither asks WhatsApp for contacts/avatars nor
 creates missing contacts. Names stay sealed; avatar bytes are not returned.
+The names are written one at a time, so they need not share `content_key_id`,
+which is the key of the names written last. A name under another key carries it
+in `push_name_key_id`, `full_name_key_id` or `business_name_key_id`. Open a name
+with that id when it is present, and with `content_key_id` when it is not: the
+name is then under the row's key, or the server predates those fields. Each
+sealed name also states its key in the clear, after its 8-byte header.
 Local personal-contact snapshots used by MCP are separate from this endpoint
 and are never uploaded to the archive server.
 

@@ -137,7 +137,7 @@ func TestGrantRevocationClosesMemberAndServiceSockets(t *testing.T) {
 			if err := keys.CreateArchiveKey(ctx, c.tenant, id, 1, pub); err != nil {
 				t.Fatal(err)
 			}
-			if err := keys.PutGrant(ctx, store.Grant{TenantID: c.tenant, DeviceID: id, UserID: user.ID, Epoch: 1, SealedDSK: []byte("sealed")}, nil); err != nil {
+			if err := keys.PutGrant(ctx, store.Grant{TenantID: c.tenant, DeviceID: id, UserID: user.ID, Epoch: 1, SealedDSK: []byte("sealed"), Fingerprint: grantFingerprint(t, keys, c.tenant, id, 1)}, nil); err != nil {
 				t.Fatal(err)
 			}
 			conn := dial(t, c.srv)
@@ -177,7 +177,7 @@ func TestMemberSubscriptionFiltersReplayAndLiveDevices(t *testing.T) {
 	if err := keys.CreateArchiveKey(ctx, s.tenant, s.device, 1, pub); err != nil {
 		t.Fatal(err)
 	}
-	if err := keys.PutGrant(ctx, store.Grant{TenantID: s.tenant, DeviceID: s.device, UserID: user.ID, Epoch: 1, SealedDSK: []byte("sealed")}, nil); err != nil {
+	if err := keys.PutGrant(ctx, store.Grant{TenantID: s.tenant, DeviceID: s.device, UserID: user.ID, Epoch: 1, SealedDSK: []byte("sealed"), Fingerprint: grantFingerprint(t, keys, s.tenant, s.device, 1)}, nil); err != nil {
 		t.Fatal(err)
 	}
 	hiddenDevice, err := devices.Create(ctx, s.tenant.String(), "hidden", wa.ModePassive)

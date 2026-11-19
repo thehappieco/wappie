@@ -260,7 +260,7 @@ func TestRemoveMemberPreservesHistoricalAttributionWithoutProfileAccess(t *testi
 		t.Fatal(err)
 	}
 	device := protectedNumber(t, h, target)
-	if err := h.keys.PutGrant(ctx, store.Grant{TenantID: h.tenant, DeviceID: device, UserID: owner.ID, Epoch: 1, SealedDSK: []byte("backup")}, &target.ID); err != nil {
+	if err := h.keys.PutGrant(ctx, store.Grant{TenantID: h.tenant, DeviceID: device, UserID: owner.ID, Epoch: 1, SealedDSK: []byte("backup"), Fingerprint: grantFingerprint(t, h.keys, h.tenant, device, 1)}, &target.ID); err != nil {
 		t.Fatal(err)
 	}
 	keys := store.NewAPIKeys(h.pool)

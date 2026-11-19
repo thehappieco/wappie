@@ -88,7 +88,7 @@ func TestAPIKeyDeviceSelectionDoesNotWidenWithNewServiceGrants(t *testing.T) {
 	}
 	grant := func(device string) {
 		t.Helper()
-		if err := store.NewKeys(c.pool).PutGrant(ctx, store.Grant{TenantID: c.tenant, DeviceID: uuid.MustParse(device), UserID: service.ID, Epoch: 1, SealedDSK: []byte("opaque test grant")}, nil); err != nil {
+		if err := store.NewKeys(c.pool).PutGrant(ctx, store.Grant{TenantID: c.tenant, DeviceID: uuid.MustParse(device), UserID: service.ID, Epoch: 1, SealedDSK: []byte("opaque test grant"), Fingerprint: grantFingerprint(t, store.NewKeys(c.pool), c.tenant, uuid.MustParse(device), 1)}, nil); err != nil { //nolint:contextcheck // the fingerprint is read on the test's own context
 			t.Fatal(err)
 		}
 	}

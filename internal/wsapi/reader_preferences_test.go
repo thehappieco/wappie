@@ -21,7 +21,7 @@ func retainBackupReader(t *testing.T, pool *pgxpool.Pool, tenant, device uuid.UU
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.NewKeys(pool).PutGrant(ctx, store.Grant{TenantID: tenant, DeviceID: device, UserID: user.ID, Epoch: 1, SealedDSK: []byte("backup envelope")}, nil); err != nil {
+	if err := store.NewKeys(pool).PutGrant(ctx, store.Grant{TenantID: tenant, DeviceID: device, UserID: user.ID, Epoch: 1, SealedDSK: []byte("backup envelope"), Fingerprint: grantFingerprint(t, store.NewKeys(pool), tenant, device, 1)}, nil); err != nil {
 		t.Fatal(err)
 	}
 	return user.ID
@@ -55,7 +55,7 @@ func TestReadingPreferenceBelongsToOnePersonAndNumber(t *testing.T) {
 	}
 	for _, who := range []store.User{a, b} {
 		for _, id := range []uuid.UUID{device, second} {
-			if err := store.NewKeys(c.pool).PutGrant(ctx, store.Grant{TenantID: c.tenant, DeviceID: id, UserID: who.ID, Epoch: 1, SealedDSK: []byte("sealed")}, nil); err != nil {
+			if err := store.NewKeys(c.pool).PutGrant(ctx, store.Grant{TenantID: c.tenant, DeviceID: id, UserID: who.ID, Epoch: 1, SealedDSK: []byte("sealed"), Fingerprint: grantFingerprint(t, store.NewKeys(c.pool), c.tenant, id, 1)}, nil); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -123,7 +123,7 @@ func TestReaderPreferenceBroadcastReachesOnlySamePerson(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := store.NewKeys(c.pool).PutGrant(ctx, store.Grant{TenantID: c.tenant, DeviceID: device, UserID: user.ID, Epoch: 1, SealedDSK: []byte("sealed")}, nil); err != nil {
+		if err := store.NewKeys(c.pool).PutGrant(ctx, store.Grant{TenantID: c.tenant, DeviceID: device, UserID: user.ID, Epoch: 1, SealedDSK: []byte("sealed"), Fingerprint: grantFingerprint(t, store.NewKeys(c.pool), c.tenant, device, 1)}, nil); err != nil {
 			t.Fatal(err)
 		}
 	}

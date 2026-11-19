@@ -20,9 +20,8 @@ const ArchiveKeyFingerprintLen = 2 * sha256.Size
 //
 // A grant names the key it was sealed for by this, because an epoch does
 // not name a key: after reset-archive -keep-devices, device-key gives the
-// number a new key at epoch 1 again (DS49, wappie#75, not on main yet).
-// This is the one definition. The token grant's context and token.grant
-// use it; DS49 adds grant.add's write.
+// number a new key at epoch 1 again (DS49). This is the one definition.
+// Every grant write, every grant context and token.grant use it.
 func ArchiveKeyFingerprint(publicKey []byte) string {
 	sum := sha256.Sum256(publicKey)
 	return hex.EncodeToString(sum[:])
@@ -46,13 +45,11 @@ func ValidArchiveKeyFingerprint(s string) bool {
 // was made for. It was deleted (reset-archive), or replaced at the same
 // epoch (device-key after reset-archive -keep-devices). A content key
 // sealed to the old key, a value sealed under one, or a grant of it, would
-// be filed as the new key's and open nothing (DS49, wappie#75, not on
-// main yet).
+// be filed as the new key's and open nothing (DS49).
 var ErrArchiveKeyChanged = errors.New("store: the number's archive key changed")
 
-// archiveKeyIsTx is the token grant's check (PutTokenGrant; DS49,
-// wappie#75, not on main yet, makes PutGrant call it too): device's
-// archive key at epoch, not retired, has the
+// archiveKeyIsTx is every grant write's check (PutGrant, and step 7's
+// PutTokenGrant): device's archive key at epoch, not retired, has the
 // fingerprint fp. Another key is ErrArchiveKeyChanged. No key at all is
 // both ErrArchiveKeyChanged and ErrNoArchiveKey, so either test finds it.
 // A number this workspace no longer sees (moved to Personal, or deleted)

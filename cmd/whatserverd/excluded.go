@@ -21,20 +21,29 @@ import (
 // a deletion is logging it out here. The tick stays the backstop while the
 // listening connection is down.
 
-// listenExcluded reconnects and listens until ctx ends. The wait between
-// attempts doubles while connecting keeps failing, up to a minute, and
-// starts again at a second once a listen was established, so failures days
-// apart never leave a whole minute of deletions unheard.
+// listenExcluded listens for deletions until ctx ends (keepListening).
 func (a *app) listenExcluded(ctx context.Context) {
+	a.keepListening(ctx, "listening for deleted numbers failed; the supervisor's tick still releases them",
+		func(ready func()) error {
+			return listenDeviceExcluded(ctx, a.pools.API, func(tenant, device uuid.UUID) {
+				a.onDeviceExcluded(ctx, tenant, device)
+			}, ready)
+		})
+}
+
+// keepListening runs listen until ctx ends, again after each failure,
+// logging failed at Warn. The wait between attempts doubles while
+// connecting keeps failing, up to a minute, and starts again at a second
+// once a listen was established (listen calls ready then), so failures
+// days apart never leave a whole minute of notices unheard.
+func (a *app) keepListening(ctx context.Context, failed string, listen func(ready func()) error) {
 	backoff := time.Second
 	for ctx.Err() == nil {
-		err := listenDeviceExcluded(ctx, a.pools.API, func(tenant, device uuid.UUID) {
-			a.onDeviceExcluded(ctx, tenant, device)
-		}, func() { backoff = time.Second })
+		err := listen(func() { backoff = time.Second })
 		if ctx.Err() != nil {
 			return
 		}
-		a.log.Warn("listening for deleted numbers failed; the supervisor's tick still releases them", "error", err, "retry_in", backoff)
+		a.log.Warn(failed, "error", err, "retry_in", backoff)
 		select {
 		case <-ctx.Done():
 			return
@@ -52,11 +61,24 @@ func (a *app) onDeviceExcluded(ctx context.Context, tenant, device uuid.UUID) {
 	a.release(ctx, device.String(), "deleted")
 }
 
-// listenDeviceExcluded holds one connection of its own, opened with pool's
-// configuration but outside it, so a LISTEN never takes a request's slot,
-// and calls notice for each deletion until ctx ends or the connection
-// fails. It returns once it is listening only through ready, for tests.
+// listenDeviceExcluded calls notice for each deletion until ctx ends or
+// the connection fails (listenNotices).
 func listenDeviceExcluded(ctx context.Context, pool *pgxpool.Pool, notice func(tenant, device uuid.UUID), ready ...func()) error {
+	return listenNotices(ctx, pool, store.DeviceExcludedChannel, func(payload string) {
+		tenant, device, err := store.ParseDeviceExcluded(payload)
+		if err != nil {
+			return
+		}
+		notice(tenant, device)
+	}, ready...)
+}
+
+// listenNotices holds one connection of its own, opened with pool's
+// configuration but outside it, so a LISTEN never takes a request's slot,
+// and calls notice with each payload sent on channel until ctx ends or
+// the connection fails. It returns once it is listening only through
+// ready.
+func listenNotices(ctx context.Context, pool *pgxpool.Pool, channel string, notice func(payload string), ready ...func()) error {
 	conn, err := pgx.ConnectConfig(ctx, pool.Config().ConnConfig.Copy())
 	if err != nil {
 		return err
@@ -67,7 +89,7 @@ func listenDeviceExcluded(ctx context.Context, pool *pgxpool.Pool, notice func(t
 		//nolint:errcheck // closing a listener that is going away anyway
 		_ = conn.Close(closeCtx)
 	}()
-	if _, err := conn.Exec(ctx, "LISTEN "+pgx.Identifier{store.DeviceExcludedChannel}.Sanitize()); err != nil {
+	if _, err := conn.Exec(ctx, "LISTEN "+pgx.Identifier{channel}.Sanitize()); err != nil {
 		return err
 	}
 	for _, f := range ready {
@@ -78,10 +100,6 @@ func listenDeviceExcluded(ctx context.Context, pool *pgxpool.Pool, notice func(t
 		if err != nil {
 			return err
 		}
-		tenant, device, err := store.ParseDeviceExcluded(n.Payload)
-		if err != nil {
-			continue
-		}
-		notice(tenant, device)
+		notice(n.Payload)
 	}
 }

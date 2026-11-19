@@ -97,7 +97,7 @@ func (w *flagsWorld) person(t *testing.T, role string) uuid.UUID {
 func (w *flagsWorld) reads(t *testing.T, user uuid.UUID) {
 	t.Helper()
 	ctx := context.Background()
-	if err := w.keys.PutGrant(ctx, store.Grant{TenantID: w.tenant, DeviceID: w.device, UserID: user, Epoch: 1, SealedDSK: []byte("grant")},
+	if err := w.keys.PutGrant(ctx, store.Grant{TenantID: w.tenant, DeviceID: w.device, UserID: user, Epoch: 1, SealedDSK: []byte("grant"), Fingerprint: grantFingerprint(t, w.keys, w.tenant, w.device, 1)},
 		&w.owner); err != nil {
 		t.Fatal(err)
 	}

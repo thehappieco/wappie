@@ -290,7 +290,7 @@ func (c *deletionConsole) linkedDeviceIn(t *testing.T, tenant uuid.UUID, label s
 func (c *deletionConsole) reads(t *testing.T, user, device uuid.UUID) {
 	t.Helper()
 	ctx := context.Background()
-	if err := store.NewKeys(c.pool).PutGrant(ctx, store.Grant{TenantID: c.tenant, DeviceID: device, UserID: user, Epoch: 1, SealedDSK: []byte("grant")}, &c.owner); err != nil {
+	if err := store.NewKeys(c.pool).PutGrant(ctx, store.Grant{TenantID: c.tenant, DeviceID: device, UserID: user, Epoch: 1, SealedDSK: []byte("grant"), Fingerprint: grantFingerprint(t, store.NewKeys(c.pool), c.tenant, device, 1)}, &c.owner); err != nil {
 		t.Fatal(err)
 	}
 	if err := c.users.SetDevicePermission(ctx, c.tenant, c.owner, store.DevicePermission{DeviceID: device, UserID: user, Read: true, Send: true}); err != nil {
@@ -739,7 +739,8 @@ func TestExcludedFramesRefused(t *testing.T) {
 		{wsapi.TypeDeviceInfo, wsapi.DeviceRef{DeviceID: device.String()}},
 		{wsapi.TypeDeviceStart, wsapi.DeviceRef{DeviceID: device.String()}},
 		{wsapi.TypePair, wsapi.PairRequest{DeviceID: device.String(), Resume: true, Method: "qr"}},
-		{wsapi.TypeGrantAdd, wsapi.GrantRequest{DeviceID: device.String(), UserID: member.String(), Epoch: 1, SealedDSK: []byte("x")}},
+		{wsapi.TypeGrantAdd, wsapi.GrantRequest{DeviceID: device.String(), UserID: member.String(), Epoch: 1, SealedDSK: []byte("x"),
+			Fingerprint: grantFingerprint(t, store.NewKeys(c.pool), c.tenant, device, 1)}},
 		{wsapi.TypeSend, wsapi.SendRequest{DeviceID: device.String(), Chat: "5511999999999@s.whatsapp.net", Body: "hi"}},
 		{wsapi.TypeDeviceTransfer, wsapi.DeviceTransferRequest{DeviceID: device.String(), Confirm: device.String(), TargetWorkspaceID: uuid.NewString()}},
 		{wsapi.TypeKeysGet, wsapi.KeysRequest{DeviceID: device.String(), IDs: []uint32{1}}},

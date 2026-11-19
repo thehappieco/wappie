@@ -57,11 +57,14 @@ func (u *Users) Profile(ctx context.Context, id uuid.UUID) (Profile, error) {
 	})
 	return out, err
 }
+
+// UpdateProfile sets a person's name and avatar. The name of an account
+// that signs in through the provider is id.'s, which each sign-in copies
+// (SyncPlatformName, DS52): for such an account the name sent is ignored,
+// not refused, so a photo saved from any page still saves, and the answer
+// carries the stored name. Only the avatar changes.
 func (u *Users) UpdateProfile(ctx context.Context, id uuid.UUID, name, avatar string) (Profile, error) {
 	name = strings.TrimSpace(name)
-	if !validProfileName(name, true) {
-		return Profile{}, ErrInvalidWorkspaceProfile
-	}
 	avatar, err := normalizeWorkspaceAvatar(avatar)
 	if err != nil {
 		return Profile{}, err
@@ -72,7 +75,17 @@ func (u *Users) UpdateProfile(ctx context.Context, id uuid.UUID, name, avatar st
 	}
 	out := Profile{ID: id}
 	err = pg.InTenantTx(ctx, u.pool, home.String(), func(tx pgx.Tx) error {
-		return tx.QueryRow(ctx, `UPDATE users SET name=$2,avatar=$3,updated_at=now() WHERE id=$1 AND role<>'service' AND status='active' RETURNING email,name,avatar,coalesce(locale,'')`, id, name, avatar).Scan(&out.Email, &out.Name, &out.Avatar, &out.Locale)
+		var source string
+		if err := tx.QueryRow(ctx, `SELECT auth_source FROM users WHERE id=$1 AND role<>'service' AND status='active' FOR UPDATE`, id).Scan(&source); err != nil {
+			return err
+		}
+		if source == PlatformAuthSource {
+			return tx.QueryRow(ctx, `UPDATE users SET avatar=$2,updated_at=now() WHERE id=$1 RETURNING email,name,avatar,coalesce(locale,'')`, id, avatar).Scan(&out.Email, &out.Name, &out.Avatar, &out.Locale)
+		}
+		if !validProfileName(name, true) {
+			return ErrInvalidWorkspaceProfile
+		}
+		return tx.QueryRow(ctx, `UPDATE users SET name=$2,avatar=$3,updated_at=now() WHERE id=$1 RETURNING email,name,avatar,coalesce(locale,'')`, id, name, avatar).Scan(&out.Email, &out.Name, &out.Avatar, &out.Locale)
 	})
 	return out, err
 }

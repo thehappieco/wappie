@@ -36,7 +36,7 @@ func TestWorkspaceDeviceCountsRespectVisibilityAndIsolation(t *testing.T) {
 			t.Fatal(err)
 		}
 		if mode == "read" || mode == "read-old-key" {
-			if err := h.keys.PutGrant(ctx, store.Grant{TenantID: h.tenant, DeviceID: id, UserID: member.ID, Epoch: 1, SealedDSK: []byte("sealed")}, &owner.ID); err != nil {
+			if err := h.keys.PutGrant(ctx, store.Grant{TenantID: h.tenant, DeviceID: id, UserID: member.ID, Epoch: 1, SealedDSK: []byte("sealed"), Fingerprint: grantFingerprint(t, h.keys, h.tenant, id, 1)}, &owner.ID); err != nil {
 				t.Fatal(err)
 			}
 		}
