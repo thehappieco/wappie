@@ -250,6 +250,7 @@ test('each helper state is its own reason; nsm_stale also when the last good sam
     await clock.refresh()
     assert.equal(clock.ok(), false)
     assert.equal(clock.code(), state)
+    assert.equal(clock.summary().clock_code, state, 'healthz names the helper state, starting included')
   }
   helper.set({ last_good_mono_ns: time.monoNs() - 120_001e6 })
   await clock.refresh()

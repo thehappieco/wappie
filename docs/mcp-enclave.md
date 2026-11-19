@@ -205,9 +205,12 @@ from reader 0.6.1 `state` may also be `"clock_unknown"`, and the object adds
 clock minus the NSM's, and its clock minus the timestamps on Go's verified
 requests, the median over a window at the timestamps' 1 s resolution), then
 `"clock_code":<reason>,"clock_disagree_kms":<integer>,"kms_skew_lo_ms":<integer>|null,"kms_skew_hi_ms":<integer>|null,"clock_corr_hour_ms":<integer>|null,"clock_corr_day_ms":<integer>|null`:
-the reason the clock is or is not trusted (one of the fixed `clock_state`
-codes: `ok`, `helper_stale`, `nsm_stale`, `boot_refused`, `cap_exceeded`,
-`chronyd_gone`, `nsm_error`, `unc_high`, `kms_proof`, `nsm_node_proof`);
+the reason the clock is or is not trusted (one of the 11 fixed `clock_state`
+codes: `ok`, `starting`, `helper_stale`, `nsm_stale`, `boot_refused`,
+`cap_exceeded`, `chronyd_gone`, `nsm_error`, `unc_high`, `kms_proof`,
+`nsm_node_proof`; `starting` is the helper's own state until its first good
+NSM sample, so it also follows a restart of nsm-timefeed while the enclave
+runs, and has nothing to do with the `/internal` 503 `starting`);
 how many times this Node process has logged `clock_sources_disagree` for a
 KMS proof (it starts at 0 when Node restarts); the KMS check's range for the
 reader's clock minus true time, in ms; and the helper's ledger of
