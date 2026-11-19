@@ -38,6 +38,8 @@ mkdir -p "$work/base" "$work/head"
 # From deploy/enclave/chrony only the files the image takes are listed: its
 # README.md and test-chrony.sh never reach the image
 # (deploy/enclave/test_build.py checks the list against the Dockerfile).
+# The probes, deploy/enclave/probe and deploy/enclave/clockprobe, are never
+# released and are not listed (test_build.py checks clockprobe stays out).
 paths=(packages/mcp packages/mcp-http deploy/enclave)
 worker=packages/mcp-http/enclave/media/worker
 worker_files=("$worker/package.json" "$worker/package-lock.json" "$worker/image.mjs"

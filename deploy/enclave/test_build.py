@@ -303,5 +303,28 @@ class ChronyTest(unittest.TestCase):
             self.assertIn(path, gate)
 
 
+class ClockProbeIsNotAReleaseInputTest(unittest.TestCase):
+    """deploy/enclave/clockprobe is never released: the release Dockerfile
+    takes nothing from it and the inputs gate does not measure it, so a
+    change there never moves PCR0."""
+
+    def test_the_release_dockerfile_takes_nothing_from_it(self):
+        self.assertNotIn("clockprobe", (HERE / "Dockerfile").read_text())
+
+    def test_the_inputs_gate_does_not_measure_it(self):
+        gate = (HERE.parent.parent / "scripts/check-reader-inputs.sh").read_text()
+        listed = re.search(r"enclave_files=\((.*?)\)", gate, re.S)[1]
+        self.assertNotIn("clockprobe", listed)
+        self.assertNotIn("deploy/enclave ", listed + " ")
+
+    def test_its_fake_drift_build_is_its_own(self):
+        probe = (HERE / "clockprobe" / "Dockerfile.clockprobe").read_text()
+        self.assertIn("--features fake-drift --bin nsm-timefeed", probe)
+        self.assertIn("/opt/clockprobe/fake/nsm-timefeed", probe)
+        # It never replaces the release binary the probe tests.
+        copies = [l for l in probe.splitlines() if l.startswith("COPY ")]
+        self.assertFalse([l for l in copies if "/usr/local/bin/" in l or "/usr/sbin/" in l or "/etc/chrony" in l])
+
+
 if __name__ == "__main__":
     unittest.main()

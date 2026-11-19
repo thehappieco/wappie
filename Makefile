@@ -1,6 +1,6 @@
 .PHONY: help run test test-race lint lint-layout vet fmt cover fuzz dev-up dev-down build tidy check \
 	fixtures-check identifiers-check client-install client-build client-test client-check client-dist-check reader-inputs-check mcp-check mcp-http-check public-source \
-	enclave-check enclave-image enclave-jail chrony-check media-worker-check media-jail-check nsm-attest-check reader-verify
+	enclave-check enclave-image enclave-jail chrony-check clockprobe-check media-worker-check media-jail-check nsm-attest-check reader-verify
 
 GO      ?= go
 PKGS    := ./...
@@ -157,6 +157,21 @@ enclave-jail: ## Run the jail checks and the worker corpus under media-jail (arm
 # privilege is needed. About six minutes.
 chrony-check: ## Run the image's chronyd against a fake NSM feed (arm64 Docker, after enclave-image)
 	sh deploy/enclave/chrony/test-chrony.sh $(ENCLAVE_TAG)
+
+# The clock probe (deploy/enclave/clockprobe, never released) on a built
+# reader image: its unit tests, its image, and a smoke run without /dev/nsm
+# whose console must assemble into a complete report (kept in
+# dist/clockprobe-check). Nothing here sets a clock: the scenarios run only
+# in an enclave (README.md there).
+clockprobe-check: ## Build the clock probe on a built reader image and smoke-run it (arm64 Docker, after enclave-image)
+	python3 -m unittest discover -s deploy/enclave/clockprobe -p 'test_*.py'
+	node --test deploy/enclave/clockprobe/evaluate.test.mjs
+	docker build -q -f deploy/enclave/clockprobe/Dockerfile.clockprobe --build-arg READER_IMAGE=$(ENCLAVE_TAG) \
+	  --build-arg RUST_IMAGE=$(RUST_IMAGE) -t $(ENCLAVE_TAG)-clockprobe . > /dev/null
+	mkdir -p dist/clockprobe-check
+	docker run --rm --network none -e PROBE_CONSOLE=- $(ENCLAVE_TAG)-clockprobe > dist/clockprobe-check/console.log 2>&1
+	python3 deploy/enclave/clockprobe/assemble.py dist/clockprobe-check/console.log dist/clockprobe-check/main
+	@echo "clockprobe-check: ok"
 
 # The attachment workers (§16.11): their own package, installed as the image
 # installs it (no install scripts, pdf.js's optional canvas removed).
