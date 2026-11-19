@@ -223,7 +223,9 @@ jobs:
       - name: Deploy scripts parse
         run: |
           for f in deploy/enclave/*.sh; do bash -n "$f"; done
-          shellcheck deploy/enclave/*.sh deploy/enclave/probe/*.sh deploy/enclave/jailcheck/*.sh deploy/enclave/clockprobe/*.sh
+          for f in deploy/enclave/chrony/test-chrony.sh deploy/enclave/chrony/wappie-clock-start; do sh -n "$f"; done
+          shellcheck deploy/enclave/*.sh deploy/enclave/probe/*.sh deploy/enclave/jailcheck/*.sh deploy/enclave/clockprobe/*.sh \
+            deploy/enclave/chrony/test-chrony.sh deploy/enclave/chrony/wappie-clock-start
           python3 -m py_compile deploy/enclave/kms/render.py
           python3 -m unittest discover -s deploy/enclave -p 'test_*.py'
           python3 -m unittest discover -s deploy/enclave/kms -p 'test_*.py'
