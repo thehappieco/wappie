@@ -60,7 +60,7 @@ type stepUpReply struct {
 // up with it; one created through the provider, or linked before migration
 // 0049 ended the window, has no password and cannot sign in at all.
 func (h *Handler) stepsUpAtProvider(user store.User) bool {
-	return h.Platform != nil && authSource(user) == store.PlatformAuthSource
+	return h.platformManaged(user)
 }
 
 // stepUpHere reports whether this account may step up with a passkey or the

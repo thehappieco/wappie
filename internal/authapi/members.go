@@ -25,6 +25,8 @@ func (h *Handler) memberError(w http.ResponseWriter, err error) {
 		fail(w, http.StatusConflict, "personal_workspace", "create a team workspace to invite people")
 	case errors.Is(err, store.ErrInvitationsPaused):
 		invitationsPaused(w)
+	case errors.Is(err, store.ErrManagedElsewhere):
+		managedElsewhere(w)
 	case errors.Is(err, store.ErrInviteInvalid):
 		fail(w, http.StatusConflict, "invite_invalid", "the invitation is expired, revoked or already accepted")
 	case errors.Is(err, store.ErrInviteNotRecoverable):
@@ -212,6 +214,12 @@ func (h *Handler) inviteMember(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		send(w, http.StatusCreated, map[string]any{"invite": invite, "invitation": invitation, "email_sent": false})
+		return
+	}
+	// A platform account invites no person here: the platform's console
+	// does (DS53). A service invitation is not a person's, and stays.
+	if req.Role != store.RoleService && h.platformManaged(user) {
+		managedElsewhere(w)
 		return
 	}
 	// A standing service account's invitation creates it as soon as it is

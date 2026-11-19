@@ -1238,8 +1238,11 @@ Nothing below ships in this release:
   one held until the platform's generation is confirmed), a disable
   (suspend, keys kept), a session or credential revocation, a team's closure
   and rename, an account's closing;
-- `409 managed_elsewhere` for member changes, workspace creation and the
-  last-owner checks in platform teams, in place of `invitations_paused`;
+- `409 managed_elsewhere` for member changes, accept-invite and the
+  last-owner checks in platform teams, in place of `invitations_paused`.
+  A platform account's workspace creation and person invitations already
+  answer it in the hosted build (DS53 in [decisions](decisions.md)), in
+  every mode;
 - the freshness refusals made binding, the hot paths given a synchronous
   GET, and the mover's owner count of 1 checked beside the local one;
 - the reconciliation of the pilot's team and the retirement of the teams no

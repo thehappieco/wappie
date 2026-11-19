@@ -73,6 +73,13 @@ func (h *Handler) createWorkspace(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// A platform account's workspaces are made in the platform's console
+	// (DS53): none is created here, so no new team appears that no
+	// platform document names.
+	if h.platformManaged(user) {
+		managedElsewhere(w)
+		return
+	}
 	var req struct {
 		Name   string `json:"name"`
 		Avatar string `json:"avatar"`
@@ -126,7 +133,9 @@ func (h *Handler) invitationAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if strings.HasSuffix(r.URL.Path, "/regenerate") {
-		code, inv, e := h.Users.RegenerateInvitation(r.Context(), user.TenantID, user.ID, id)
+		// A platform account regenerates no person's code: that would
+		// issue a new invitation (DS53). A service's still regenerates.
+		code, inv, e := h.Users.RegenerateInvitation(r.Context(), user.TenantID, user.ID, id, h.platformManaged(user))
 		if e != nil {
 			h.memberError(w, e)
 			return
