@@ -647,7 +647,7 @@ func TestContractDocsMatchTheCode(t *testing.T) {
 			store.ContractErrorSnapshotInvalid, store.ContractErrorEventParked, store.ContractErrorEventsRefused, store.ContractErrorEventActor,
 			store.ContractErrorCommandInvalid, store.ContractErrorCommandStuck, store.ContractErrorSectionInvalid,
 			store.ContractErrorSectionParked, store.ContractErrorResultParked, store.ContractErrorTokenFeedSilent, store.ContractErrorTokenLookupInvalid,
-			store.ContractErrorTokenResetLoop} {
+			store.ContractErrorTokenResetLoop, store.ContractErrorApplyFailed, store.ContractErrorClosingContradicted} {
 			says("contract.md", "`"+class+"`")
 		}
 		says("contract-events.md", "`"+store.ContractErrorEventActor+"`")

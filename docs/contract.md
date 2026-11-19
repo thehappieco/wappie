@@ -1785,7 +1785,8 @@ clean until its bounds pass:
   `event_actor_unknown`, the token part's `token_feed_silent`,
   `token_lookup_invalid` and `token_reset_loop`, and the settings part's `command_invalid`,
   `command_stuck`, `command_reset_loop`, `section_invalid`, `section_parked`,
-  `result_parked`, `person_invalid`;
+  `result_parked`, `person_invalid`; and, once E2 wires the apply, its
+  `apply_failed` and `closing_contradicted`;
 - while the contract is on:
   - `the feed was last read … (the platform alerts after 10 minutes)`, past
     5 minutes;
