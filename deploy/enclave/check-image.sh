@@ -36,6 +36,16 @@ env | grep -q "^NODE_ENV=production$" || fail "NODE_ENV is not production"
 if env | grep -E "^(WAPPIE|WS|VIPS|MEDIA_JAIL)_" > /dev/null; then fail "reader configuration in the environment"; fi
 
 [ ! -e /var/log/apk.log ] || fail "/var/log/apk.log is in the image"
+# Every file time is SOURCE_DATE_EPOCH (the Dockerfile sets them all), so a
+# cached stage or a checkout cannot carry its own time into PCR0. What
+# Docker adds to a running container is left out (/.dockerenv, the /etc/mtab
+# link, the three /etc mounts), and so are / and /etc, whose times adding
+# them changes.
+sde=$(stat -c %Y /entrypoint.sh)
+odd=$(find / -xdev \( -path /proc -o -path /sys -o -path /dev -o -path /.dockerenv -o -path /etc/mtab \
+  -o -path /etc/hosts -o -path /etc/hostname -o -path /etc/resolv.conf \) -prune \
+  -o ! -path / ! -path /etc -exec stat -c "%Y %n" {} + | awk -v t="$sde" "\$1 != t" | head -n 5)
+[ -z "$odd" ] || fail "file times other than SOURCE_DATE_EPOCH ($sde): $odd"
 [ -x /entrypoint.sh ] || fail "no /entrypoint.sh"
 sh -n /entrypoint.sh || fail "entrypoint.sh does not parse under the image shell"
 grep -q "^# Media jail (docs/mcp-enclave.md §16.6)" /entrypoint.sh || fail "entrypoint.sh has no media jail block"

@@ -9,7 +9,7 @@
 #
 # Everything in this image is measured into PCR0, so every input is pinned:
 # base images by digest (the defaults below; build.sh records them), npm and
-# cargo dependencies by lockfile, and file times clamped to SOURCE_DATE_EPOCH.
+# cargo dependencies by lockfile, and every file time set to SOURCE_DATE_EPOCH.
 # The spike found that PCR0 changes between clean builds because of file times
 # and /var/log/apk.log (commercial/docs/enclave-spike-plan.md, Day 5), so both
 # are handled here. The Alpine packages (socat, iproute2) still come from the
@@ -158,18 +158,21 @@ COPY deploy/enclave/entrypoint.sh /entrypoint.sh
 # script entrypoint.sh calls to start chronyd and nsm-timefeed. No chronyc.
 COPY deploy/enclave/chrony/common.conf deploy/enclave/chrony/boot.conf deploy/enclave/chrony/run.conf /etc/chrony/
 COPY deploy/enclave/chrony/wappie-clock-start /usr/local/sbin/wappie-clock-start
-# Clamp every time newer than SOURCE_DATE_EPOCH (the apk files, the copied
-# trees and every directory they touched) to it; the base image's older times
-# stay. The reference directory is removed and / is re-clamped last, because
-# removing it changes the time of /. The runtime mounts are skipped.
-# COPY made /opt/media itself 0755; the tree below it is 0555/0444 already.
+# Set every time to SOURCE_DATE_EPOCH: the base image's, the apk files', the
+# copied trees' and every directory they touched. Not only the times newer
+# than it: COPY keeps a file's time, so a binary from a cached stage, or a
+# file from a checkout, can carry a time from before the commit, and would
+# then differ from a clean build's. The reference directory is removed and /
+# is set last, because removing it changes the time of /. The runtime mounts
+# are skipped. COPY made /opt/media itself 0755; the tree below it is
+# 0555/0444 already.
 RUN chmod 0555 /entrypoint.sh /usr/local/bin/nsm-attest /usr/local/bin/nsm-timefeed /usr/local/bin/media-jail /opt/media \
       /usr/sbin/chronyd /usr/local/sbin/wappie-clock-start /etc/chrony \
  && chmod 0444 /etc/chrony/common.conf /etc/chrony/boot.conf /etc/chrony/run.conf \
  && mkdir /.sde && touch -d "@${SOURCE_DATE_EPOCH}" /.sde/ref \
  && find / -xdev \( -path /proc -o -path /sys -o -path /dev -o -path /.sde \
       -o -path /etc/hosts -o -path /etc/hostname -o -path /etc/resolv.conf \) -prune \
-      -o -newer /.sde/ref -exec touch -h -r /.sde/ref {} + \
+      -o -exec touch -h -r /.sde/ref {} + \
  && rm -r /.sde && touch -h -d "@${SOURCE_DATE_EPOCH}" /
 
 # ...then copied whole into an empty image as a single layer. A layer that
