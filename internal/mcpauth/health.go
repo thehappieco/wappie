@@ -17,7 +17,13 @@ import (
 // change in any of them is worth a line in the log. The line also carries
 // the reader's clock as its last request here showed it (skew.go), and a 401
 // to the health check says a clock past the signature's window is the
-// likely cause.
+// likely cause. From reader 0.6.1 the reader also reports its own clock:
+// whether it vouches for it, how sure it is, and how far this server's
+// signatures read from it.
+//
+// The line goes out under one of three messages, and they do not change:
+// the release gate (scripts/reader_policy_gate.py in the cloud repo) finds
+// the fingerprints by matching them exactly.
 
 const (
 	// healthEvery is how often each reader is asked.
@@ -71,10 +77,18 @@ func (h *Handler) checkReader(parent context.Context, a *AttestedReader, failure
 		if errors.Is(err, errHealthzUnauthorized) {
 			h.noteHealthzRefused(parent, a, time.Now())
 		}
+		attrs := []any{"reader", a.ID, "failures", failures, "error", err}
+		// The code the reader named, 503 clock_unknown above all: a
+		// reader that cannot vouch for its clock and found this server's
+		// signature outside its window by it.
+		var status *HealthStatusError
+		if errors.As(err, &status) && status.Code != "" {
+			attrs = append(attrs, "code", status.Code)
+		}
 		if failures >= healthFailures {
-			h.log().Warn("an attested reader is not answering its health check", "reader", a.ID, "failures", failures, "error", err)
+			h.log().Warn("an attested reader is not answering its health check", attrs...)
 		} else {
-			h.log().Info("an attested reader missed a health check", "reader", a.ID, "failures", failures, "error", err)
+			h.log().Info("an attested reader missed a health check", attrs...)
 		}
 		return failures
 	}
@@ -89,6 +103,9 @@ func (h *Handler) checkReader(parent context.Context, a *AttestedReader, failure
 	// The reader's clock as its last request here showed it, signed or
 	// only claimed (skew.go); none until it has sent one.
 	attrs = append(attrs, h.clockAttrs(a.ID, time.Now())...)
+	// The reader's own account of its clock, from 0.6.1; none from an
+	// older reader.
+	attrs = append(attrs, readerClockAttrs(health)...)
 	days := -1
 	if health.CertNotAfter != nil {
 		days = int(time.Until(*health.CertNotAfter).Hours() / 24)
@@ -98,11 +115,56 @@ func (h *Handler) checkReader(parent context.Context, a *AttestedReader, failure
 	case health.CertNotAfter != nil && days < certWarnDays:
 		h.log().Warn("an attested reader's certificate is close to expiry", attrs...)
 	case health.State != "ready":
+		// A reader that cannot vouch for its clock says
+		// "clock_unknown" here.
 		h.log().Warn("an attested reader is not ready", attrs...)
+	case goSkewWide(health.GoSkewMS):
+		// The reader's clock and this server's are skewWarn apart by
+		// the reader's own reading of this server's signatures. The
+		// reader vouches for its clock, so this server's is the
+		// suspect. The message is the usual one: the release gate
+		// (reader_policy_gate.py in the cloud repo) matches the three
+		// health messages exactly.
+		h.log().Warn("attested reader health", attrs...)
 	default:
 		h.log().Info("attested reader health", attrs...)
 	}
 	return 0
+}
+
+// readerClockAttrs are the health line's fields for the clock the reader
+// reports, each only when it sent one.
+func readerClockAttrs(health ReaderHealth) []any {
+	var attrs []any
+	if health.ClockOK != nil {
+		attrs = append(attrs, "clock_ok", *health.ClockOK)
+	}
+	for _, f := range []struct {
+		key string
+		ms  *int64
+	}{
+		{"clock_unc_ms", health.ClockUncMS},
+		{"nsm_skew_ms", health.NSMSkewMS},
+		{"go_skew_ms", health.GoSkewMS},
+	} {
+		if f.ms != nil {
+			attrs = append(attrs, f.key, *f.ms)
+		}
+	}
+	return attrs
+}
+
+// goSkewWide reports whether the reader's reading of this server's clock is
+// skewWarn or more either way.
+func goSkewWide(ms *int64) bool {
+	if ms == nil {
+		return false
+	}
+	abs := *ms
+	if abs < 0 {
+		abs = -abs
+	}
+	return abs >= skewWarn.Milliseconds()
 }
 
 // fingerprint is the first twelve hex characters of a hash, or "none".
