@@ -186,11 +186,19 @@ type ReaderHealth struct {
 	RelaySecrets   int        `json:"relay_secrets"`
 }
 
+// errHealthzUnauthorized is the reader refusing this server's signature on
+// its health check. Its 401 says nothing about why; the monitor names the
+// likely cause (skew.go).
+var errHealthzUnauthorized = errors.New("healthz answered 401")
+
 // Health asks the reader how it is.
 func (c *SignedRelay) Health(ctx context.Context) (ReaderHealth, error) {
 	status, body, err := c.do(ctx, http.MethodGet, "/internal/healthz", nil)
 	if err != nil {
 		return ReaderHealth{}, err
+	}
+	if status == http.StatusUnauthorized {
+		return ReaderHealth{}, fmt.Errorf("%w: %w", ErrReaderUnavailable, errHealthzUnauthorized)
 	}
 	if status != http.StatusOK {
 		return ReaderHealth{}, fmt.Errorf("%w: healthz answered %d", ErrReaderUnavailable, status)

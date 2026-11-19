@@ -133,6 +133,32 @@ detail. The local log carries `hmac_missing`, `hmac_stale`, `hmac_bad` or
 `api.` and for `mcp.`, and CAA restricts `mcp.` certificates to the enclave's
 ACME account).
 
+**The reader's clock, seen from Go** (`internal/mcpauth/skew.go`). The 60 s
+window is the same either way, so a reader clock past it fails every signed
+request in both directions with a bare 401; the enclave has no time service
+and drifts (2026-11, about +17 ppm, +65 s after some six weeks). Go only
+logs; nothing about the window or the signature changes:
+
+- After step 5 admits a request, Go reads skew = the reader's timestamp −
+  Go's clock, in whole seconds (the timestamps' resolution; the time in
+  transit reads as the reader being behind, so a request held on the way
+  shows as negative skew). At |skew| ≥ 10 s it logs WARN, at ≥ 30 s ERROR:
+  `an attested reader's clock is off` with `reader`, `skew_s`,
+  `authenticated=true` and `limit_s=60`.
+- On an `hmac_stale` refusal (step 2, before any signature is checked) it
+  logs the gap the timestamp claims, next to the refusal line:
+  `an attested reader's clock is off (unauthenticated)` with the same keys
+  and `authenticated=false`. Only a configured reader's peer gets this far,
+  but the claim is unsigned. A stale gap is over 60 s, so it is an ERROR.
+- Each of those is logged at most once per 10 minutes per reader, per level
+  and per kind (signed or claimed), so a reader past the window is one line
+  every ten minutes, not one per request.
+- Go → reader: see the health check (§5.1).
+
+Until the reader's clock is corrected inside the enclave, the operator's
+thresholds are these lines: restart the enclave in a quiet hour at the
+WARN, the same day at the ERROR.
+
 **Secrets and rotation.** Go signs with `SECRET` and accepts `SECRET` or
 `SECRET_NEXT`. The enclave boots with one secret S from `boot.json`. It signs
 with its *current* secret and accepts *current* and *previous*. To rotate to
@@ -175,7 +201,18 @@ up, times out after 10 s, and reads at most 64 KiB of a response.
 Health object: `{"ok":true,"reader_id":"enclave","reader_version":"0.2.0","boot_id":<16 hex>,"state":"ready"|"loading","pcr0":<96 hex>,"tls_spki_sha256":<64 hex>|null,"cert_not_after":<RFC 3339>|null,"policy_sha256":<64 hex>|null,"acme_account_uri":<string>|null,"relay_secrets":1|2}`.
 Go calls it every 60 s for each non-hosted reader, logs the `pcr0`, SPKI and
 policy fingerprints and the certificate's days left, and warns after 3
-consecutive failures.
+consecutive failures. The `attested reader health` line also carries the
+reader's clock as its last request to Go showed it (§4): `clock_skew_s`,
+`clock_skew_authenticated` (false when the last reading was a stale
+request's claim) and `clock_skew_age_s`, all omitted until the reader has
+sent one. A **401** from `/internal/healthz` is the reader refusing Go's
+signature, and its body says nothing about why; Go logs, at most once per
+10 minutes per reader, the WARN `an attested reader refused this server's
+signed health check; a clock skew beyond the limit is the likely cause`
+with `reader`, `limit_s=60` and, when known, `last_authenticated_skew_s`,
+`last_authenticated_skew_age_s`, `last_unauthenticated_skew_s` and
+`last_unauthenticated_skew_age_s`. The other cause is a relay secret out of
+step (rotation, §4). The miss lines are unchanged.
 
 On listener 5443, `/internal` and `/internal/*` always answer 404. On 5444 every
 other path answers 404. The Host header is checked against
@@ -576,7 +613,8 @@ TLS setup or handshake timeout). A field is omitted when unknown.
 list every event the enclave writes. `clock_skew_ms` = local time
 minus (the `Date` header + RTT/2) of an unauthenticated `GET https://kms.eu-west-1.amazonaws.com/`
 over vsock 8000, verified TLS, once a minute. It has 1 s resolution, and the
-alarm threshold is 2 s. `uncaughtException` and `unhandledRejection` write
+alarm threshold is 2 s. It is not in `/internal/healthz`; Go's view of the
+same clock is the skew it reads off the reader's signed requests (§4). `uncaughtException` and `unhandledRejection` write
 `{"event":"fatal","code":"uncaught"}` and exit with code 70.
 
 ## 11. Signatures that cross module boundaries
