@@ -194,7 +194,11 @@ test('a real clock behind the gate: the boot waits for agreement, then the gate 
   const done = await connect(w)
   assert.equal((await rpc(w, done.tokens.access_token)).status, 200)
   const healthOf = async () => json(await w.internal('/internal/healthz'))
-  assert.deepEqual(Object.fromEntries(Object.entries(await healthOf()).filter(([key]) => ['state', 'clock_ok', 'nsm_skew_ms'].includes(key))), { state: 'ready', clock_ok: true, nsm_skew_ms: 3 })
+  const keys = ['state', 'clock_ok', 'nsm_skew_ms', 'clock_code', 'clock_disagree_kms', 'clock_corr_hour_ms', 'clock_corr_day_ms']
+  assert.deepEqual(Object.fromEntries(Object.entries(await healthOf()).filter(([key]) => keys.includes(key))),
+    { state: 'ready', clock_ok: true, nsm_skew_ms: 3, clock_code: 'ok', clock_disagree_kms: 0, clock_corr_hour_ms: 0, clock_corr_day_ms: 0 })
+  const opened = await healthOf()
+  assert.ok(Number.isInteger(opened.kms_skew_lo_ms) && Number.isInteger(opened.kms_skew_hi_ms) && opened.kms_skew_lo_ms <= opened.kms_skew_hi_ms, JSON.stringify(opened))
 
   const set = async skew => { helper.nsm_skew_ms = skew; await clock.refresh() }
   await set(4000) // open, and under 5 s: stays open
@@ -202,7 +206,7 @@ test('a real clock behind the gate: the boot waits for agreement, then the gate 
   await set(6000) // over 5 s: closes
   assertClockUnknown(await rpc(w, done.tokens.access_token), 'over 5 s')
   const closed = await healthOf()
-  assert.deepEqual([closed.state, closed.clock_ok], ['clock_unknown', false])
+  assert.deepEqual([closed.state, closed.clock_ok, closed.clock_code], ['clock_unknown', false, 'unc_high'])
   assert.ok(closed.clock_unc_ms > 6000)
   await set(2000) // closed, and not under 1 s: stays closed
   assertClockUnknown(await rpc(w, done.tokens.access_token), 'closed at 2 s')

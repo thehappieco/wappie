@@ -335,6 +335,7 @@ test('a boot 90 s off: KMS proves it, the helper agrees, so no clock_sources_dis
   const codes = log.named('clock_state').map(e => e.code)
   assert.ok(codes.includes('kms_proof'), codes.join(','))
   assert.deepEqual(log.named('clock_sources_disagree'), [])
+  assert.equal(clock.summary().clock_disagree_kms, 0, 'a proof the helper agrees with is not counted')
 })
 
 test('clock_sources_disagree: only from a helper sample taken after the last step Node saw, and once per proof', async () => {
@@ -425,6 +426,71 @@ test('fields(): the health line clock fields, numbers and booleans only, omitted
   })
   for (const [key, value] of Object.entries(fields)) assert.ok(/^[a-z][a-z0-9_]{0,31}$/.test(key) && (typeof value === 'boolean' || Number.isFinite(value)), key)
   assert.equal(clock.fields().clock_refused, 0, 'counted since the last line')
+})
+
+test('summary(): the healthz clock fields, null when unknown, with the reason; clock_refused is neither there nor reset', async () => {
+  const { time, helper, clock, kms, log } = world()
+  const empty = createClock({ readState: async () => { throw new Error('missing') }, monoNs: time.monoNs, perf: time.perf })
+  await empty.refresh()
+  assert.deepEqual(empty.summary(), {
+    clock_ok: false, clock_unc_ms: null, nsm_skew_ms: null, go_skew_ms: null, clock_code: 'helper_stale', clock_disagree_kms: 0,
+    kms_skew_lo_ms: null, kms_skew_hi_ms: null, clock_corr_hour_ms: null, clock_corr_day_ms: null,
+  })
+  helper.set({ nsm_skew_ms: -12.345 })
+  await clock.refresh()
+  kms.add(rangeNow(time, -800.2, 450.7))
+  clock.noteRefused(); clock.noteRefused()
+  clock.noteGo(1_790_000_000, 1_790_000_004_000)
+  const summary = clock.summary()
+  assert.deepEqual(summary, {
+    clock_ok: true, clock_unc_ms: 15, nsm_skew_ms: -12, go_skew_ms: 4000, clock_code: 'ok', clock_disagree_kms: 0,
+    kms_skew_lo_ms: -801, kms_skew_hi_ms: 451, clock_corr_hour_ms: 12, clock_corr_day_ms: 340,
+  })
+  // The same numbers as the health line's.
+  const fields = clock.fields()
+  for (const key of ['clock_ok', 'clock_unc_ms', 'nsm_skew_ms', 'go_skew_ms', 'kms_skew_lo_ms', 'kms_skew_hi_ms', 'clock_corr_hour_ms', 'clock_corr_day_ms']) assert.equal(summary[key], fields[key], key)
+  assert.equal(fields.clock_refused, 2, 'summary() reset nothing')
+  clock.noteRefused()
+  clock.summary(); clock.summary()
+  assert.equal(clock.fields().clock_refused, 1, 'nor does it now')
+  // A helper fault: its own code, and the numbers it still reports.
+  helper.set({ state: 'cap_exceeded', corr_hour_ms: 3600.4, corr_day_ms: 86_399.6 })
+  await clock.refresh()
+  assert.deepEqual(Object.fromEntries(Object.entries(clock.summary()).filter(([key]) => ['clock_ok', 'clock_code', 'clock_corr_hour_ms', 'clock_corr_day_ms'].includes(key))),
+    { clock_ok: false, clock_code: 'cap_exceeded', clock_corr_hour_ms: 3600, clock_corr_day_ms: 86_400 })
+  // Only clock_state transitions are logged, nothing new for a summary.
+  const logged = log.events.length
+  clock.summary()
+  assert.equal(log.events.length, logged)
+  // No KMS check: no KMS range.
+  const { clock: bare } = world({}, { kms: null })
+  await bare.refresh()
+  assert.deepEqual([bare.summary().kms_skew_lo_ms, bare.summary().kms_skew_hi_ms], [null, null])
+})
+
+test('summary(): clock_disagree_kms counts clock_sources_disagree for a KMS proof only, once per proof', async () => {
+  const { time, clock, kms, nsm, log } = world()
+  await clock.refresh()
+  assert.equal(clock.summary().clock_disagree_kms, 0)
+  kms.add(rangeNow(time, 89_000, 91_000)); kms.add(rangeNow(time, 89_000, 91_000))
+  assert.equal(clock.summary().clock_code, 'kms_proof')
+  assert.equal(clock.summary().clock_disagree_kms, 1)
+  clock.ok(); clock.summary()
+  assert.equal(clock.summary().clock_disagree_kms, 1, 'once per proof')
+  // Cleared, then an NSM proof: disagreement logged, not counted.
+  kms.add(rangeNow(time, -900, 900)); kms.add(rangeNow(time, -900, 900))
+  assert.equal(clock.summary().clock_code, 'ok')
+  nsm.add(rangeNow(time, -3000, -2500)); nsm.add(rangeNow(time, -3000, -2500))
+  assert.equal(clock.summary().clock_code, 'nsm_node_proof')
+  assert.equal(log.named('clock_sources_disagree').length, 2)
+  assert.equal(clock.summary().clock_disagree_kms, 1)
+  nsm.add(rangeNow(time, -10, 10)); nsm.add(rangeNow(time, -10, 10))
+  // A second KMS proof counts again.
+  time.advance(5000)
+  kms.add(rangeNow(time, 89_000, 91_000)); kms.add(rangeNow(time, 89_000, 91_000))
+  assert.equal(clock.summary().clock_code, 'kms_proof')
+  assert.equal(clock.summary().clock_disagree_kms, 2)
+  assert.deepEqual(log.named('clock_sources_disagree').map(e => e.code), ['kms_proof', 'nsm_node_proof', 'kms_proof'])
 })
 
 test('start(): reads state.json on a timer, stop() ends it', async () => {

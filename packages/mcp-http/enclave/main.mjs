@@ -321,7 +321,9 @@ export async function startEnclave(options = {}) {
       health: () => ({
         ok: true, reader_id: c.READER_ID, reader_version: c.READER_VERSION, boot_id: material.bootId,
         state: !clock.ok() ? 'clock_unknown' : facts.ready ? 'ready' : 'loading',
-        // The clock as the health line has it: clock_ok, clock_unc_ms, nsm_skew_ms, go_skew_ms (null when unknown).
+        // The clock as the health line has it (clock_ok, clock_unc_ms, nsm_skew_ms, go_skew_ms, kms_skew_lo_ms,
+        // kms_skew_hi_ms, clock_corr_hour_ms, clock_corr_day_ms; null when unknown), its reason clock_code and
+        // the clock_disagree_kms count.
         ...clock.summary(),
         pcr0: facts.pcr0, tls_spki_sha256: certificates.spkiSha256(), cert_not_after: certificates.notAfter() ? new Date(certificates.notAfter()).toISOString().replace(/\.\d{3}Z$/, 'Z') : null,
         policy_sha256: policy.current(), acme_account_uri: facts.acmeUri, relay_secrets: secrets.count(),

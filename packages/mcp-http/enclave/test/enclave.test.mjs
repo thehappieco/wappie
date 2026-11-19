@@ -31,7 +31,8 @@ test('boot, consent through an attested prepare, tools, restart with tokens inta
   const health = await w.internal('/internal/healthz')
   assert.equal(health.status, 200, health.body)
   const object = JSON.parse(health.body)
-  assert.deepEqual(Object.keys(object), ['ok', 'reader_id', 'reader_version', 'boot_id', 'state', 'clock_ok', 'clock_unc_ms', 'nsm_skew_ms', 'go_skew_ms', 'pcr0', 'tls_spki_sha256', 'cert_not_after',
+  assert.deepEqual(Object.keys(object), ['ok', 'reader_id', 'reader_version', 'boot_id', 'state', 'clock_ok', 'clock_unc_ms', 'nsm_skew_ms', 'go_skew_ms', 'clock_code', 'clock_disagree_kms',
+    'kms_skew_lo_ms', 'kms_skew_hi_ms', 'clock_corr_hour_ms', 'clock_corr_day_ms', 'pcr0', 'tls_spki_sha256', 'cert_not_after',
     'policy_sha256', 'acme_account_uri', 'relay_secrets', 'ai_reach'])
   // The clock (reader 0.6.1), here the world's fake one: trusted.
   assert.equal(object.clock_ok, true)

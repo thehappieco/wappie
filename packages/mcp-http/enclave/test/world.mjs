@@ -50,7 +50,10 @@ export function fakeClock({ open = true, never = false } = {}) {
     noteGo(seconds, at) { c.go.push([seconds, at]) },
     onKms(range) { c.kms.push(range) },
     onNsm(sample) { c.nsm.push(sample) },
-    summary: () => ({ clock_ok: c.ok(), clock_unc_ms: c.ok() ? 12 : null, nsm_skew_ms: c.ok() ? 3 : null, go_skew_ms: null }),
+    summary: () => ({
+      clock_ok: c.ok(), clock_unc_ms: c.ok() ? 12 : null, nsm_skew_ms: c.ok() ? 3 : null, go_skew_ms: null, clock_code: c.code(), clock_disagree_kms: 0,
+      kms_skew_lo_ms: null, kms_skew_hi_ms: null, clock_corr_hour_ms: null, clock_corr_day_ms: null,
+    }),
     fields: () => ({ clock_ok: c.ok(), ...(c.ok() ? { clock_unc_ms: 12, nsm_skew_ms: 3 } : {}), clock_refused: c.refused }),
   }
   return c

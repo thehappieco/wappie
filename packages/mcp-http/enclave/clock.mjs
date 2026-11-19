@@ -213,6 +213,9 @@ export function createClock({
   // proof), and Node's view of steps: the last anchor Date.now() −
   // performance.now() and when it last moved by over STEP_TOLERANCE_MS.
   let reported = null, anchorSeen = null, steppedAt = -Infinity
+  // clock_sources_disagree logged for a KMS proof, since this Node process
+  // started (healthz clock_disagree_kms): Go mails on a change of it.
+  let disagreeKms = 0
   let latest = { code: 'helper_stale', unc: null }
 
   async function refresh() {
@@ -282,6 +285,7 @@ export function createClock({
     if (code !== 'kms_proof' && code !== 'nsm_node_proof') reported = null
     else if (reported !== code && contradicts(code === 'kms_proof' ? kms : nsm)) {
       reported = code
+      if (code === 'kms_proof') disagreeKms++
       log?.event('clock_sources_disagree', { code })
     }
     return open
@@ -320,15 +324,25 @@ export function createClock({
     onNsm(sample) { nsm?.add(nsmRange(sample)) },
     /**
      * What /internal/healthz reports (main.mjs health()): the same values as
-     * the health line's, null when unknown, and nothing counted is reset.
+     * the health line's, null when unknown, and nothing counted is reset
+     * (clock_refused, which the line resets, is not here). Also the reason
+     * (`clock_code`, one of the fixed codes) and `clock_disagree_kms`, the
+     * clock_sources_disagree events for a KMS proof since this Node process
+     * started.
      */
     summary() {
-      const clockOk = ok(), s = snapshot, skew = go?.median() ?? null
+      const clockOk = ok(), s = snapshot, skew = go?.median() ?? null, interval = kms?.interval() ?? null
       return {
         clock_ok: clockOk,
         clock_unc_ms: latest.unc === null ? null : Math.ceil(latest.unc),
         nsm_skew_ms: round(s?.nsm_skew_ms) ?? null,
         go_skew_ms: skew,
+        clock_code: code,
+        clock_disagree_kms: disagreeKms,
+        kms_skew_lo_ms: interval ? Math.floor(interval.lo) : null,
+        kms_skew_hi_ms: interval ? Math.ceil(interval.hi) : null,
+        clock_corr_hour_ms: round(s?.corr_hour_ms) ?? null,
+        clock_corr_day_ms: round(s?.corr_day_ms) ?? null,
       }
     },
     fields() {
