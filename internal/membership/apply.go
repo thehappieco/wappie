@@ -61,32 +61,41 @@ const applyBatch = 100
 // store.ErrApplyNeedsEnforce.
 func (m *Members) Apply(ctx context.Context, sub uuid.UUID) (store.ApplyResult, error) {
 	res := store.ApplyResult{Sub: sub}
-	created, err := m.applies().EnsureTeams(ctx, sub)
-	if err != nil {
+	// A step that fails rolled back, and its result says nothing (the
+	// store returns none with an error); the steps before it committed,
+	// and their readers are told and the sessions woken all the same.
+	failed := func(err error) (store.ApplyResult, error) {
+		m.applied(ctx, res)
 		return res, m.applyFailed(ctx, sub, err)
 	}
+	created, err := m.applies().EnsureTeams(ctx, sub)
 	for _, id := range created {
 		res.Absorb(store.ApplyResult{Actions: []store.ApplyAction{{Kind: store.ApplyTeamCreated, Workspace: id}},
 			Counts: store.ApplyCounts{TeamsCreated: 1}})
 	}
+	if err != nil {
+		return failed(err)
+	}
 	ws, err := m.applies().PendingWorkspacesOf(ctx, sub)
 	if err != nil {
-		return res, m.applyFailed(ctx, sub, err)
+		return failed(err)
 	}
 	for _, id := range ws {
 		w, err := m.applies().ApplyWorkspace(ctx, id)
 		if err != nil {
-			return res, m.applyFailed(ctx, sub, err)
+			return failed(err)
 		}
 		res.Absorb(w)
 	}
 	a, err := m.applies().ApplyAccount(ctx, sub)
+	if err != nil {
+		// Never a rolled-back part: a reader told of a connection still
+		// active would drop it.
+		return failed(err)
+	}
 	res.Absorb(a)
 	res.Version, res.Held, res.OperatorDisable = a.Version, a.Held, a.OperatorDisable
 	m.applied(ctx, res)
-	if err != nil {
-		return res, m.applyFailed(ctx, sub, err)
-	}
 	m.logApplied(res)
 	return res, nil
 }
@@ -248,7 +257,7 @@ func (m *Members) logApplied(res store.ApplyResult) {
 			"added", c.Added, "roles", c.Roles, "enabled", c.Enabled, "lost", c.Lost, "teams_created", c.TeamsCreated,
 			"renamed", c.Renamed, "closed", c.Closed, "reopened", c.Reopened, "sessions", c.Sessions, "keys", c.Keys,
 			"connections", c.Connections, "keychain", c.Keychain, "services_removed", c.ServicesRemoved,
-			"services_kept", c.ServicesKept, "strands", c.Strands)...)
+			"services_kept", c.ServicesKept, "invites", c.Invites, "strands", c.Strands)...)
 	}
 	if res.Held != "" {
 		m.log().Warn("contract apply: held", "sub", res.Sub, "reason", res.Held)

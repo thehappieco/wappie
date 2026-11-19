@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -1260,7 +1261,9 @@ func TestApplyIsIdempotent(t *testing.T) {
 	}
 }
 
-// A pass that fails mid-way leaves nothing, and the next pass applies all.
+// A pass that fails mid-way leaves nothing and returns nothing (no
+// connection it ended inside the rolled-back transaction, for a reader to
+// be told of), and the next pass applies all.
 func TestApplyResumesAfterCrash(t *testing.T) {
 	w := newApplyWorld(t)
 	ctx := context.Background()
@@ -1268,10 +1271,21 @@ func TestApplyResumesAfterCrash(t *testing.T) {
 	a := w.team(t, "A", applyMember{owner.user, "owner", ""}, applyMember{p.user, "member", ""})
 	b := w.team(t, "B", applyMember{owner.user, "owner", ""}, applyMember{p.user, "member", ""})
 	w.put(t, owner, docSpec{teams: []docTeam{{id: a, role: "owner"}, {id: b, role: "owner"}}})
+	// One in each team: whichever loss comes first ends one, then fails.
+	conns := []uuid.UUID{w.connection(t, a, p.user, w.at(t, "-1 hour")), w.connection(t, b, p.user, w.at(t, "-1 hour"))}
 	w.put(t, p, docSpec{})
 	store.SetApplyFaultForTest(t, 1)
-	if _, err := w.c.ApplyAccountForTest(ctx, p.sub); err == nil {
+	failed, err := w.c.ApplyAccountForTest(ctx, p.sub)
+	if err == nil {
 		t.Fatal("the fault did not fail the apply")
+	}
+	if len(failed.Ended) != 0 || len(failed.Actions) != 0 || failed.Counts != (store.ApplyCounts{}) {
+		t.Fatalf("a rolled-back apply returned %v, ended %v", kinds(failed), failed.Ended)
+	}
+	for _, conn := range conns {
+		if w.revoked(t, "mcp_connections", conn) {
+			t.Fatal("a rolled-back apply ended a connection")
+		}
 	}
 	for _, ws := range []uuid.UUID{a, b} {
 		if role, _ := w.membership(t, ws, p.user); role != "member" {
@@ -1598,5 +1612,195 @@ func TestForgetClosedAccount(t *testing.T) {
 	}
 	if err := cw.c.ClosingUnsubscribed(ctx, cw.p.sub); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A closed account's team loss that would strand a number (the person is
+// its last key holder) waits for the closing's confirmation, as the
+// personal numbers' deletion does; the confirmation leaves the hold for
+// the next pass, which applies it.
+func TestApplyClosingStrandWaitsForConfirmation(t *testing.T) {
+	cw := newClosedWorld(t)
+	ctx := context.Background()
+	device := cw.number(t, cw.team)
+	cw.reads(t, cw.team, device, cw.p.user)
+	r := cw.apply(t, cw.p)
+	if has(r, store.ApplyMemberLost) || r.Held != store.HeldClosingUnconfirmed || r.Counts.Strands != 0 {
+		t.Fatalf("before the confirmation: %v held %q strands %d", kinds(r), r.Held, r.Counts.Strands)
+	}
+	if role, _ := cw.membership(t, cw.team, cw.p.user); role != "member" {
+		t.Fatalf("a stranding loss applied before the closing was confirmed: %q", role)
+	}
+	if n := cw.count(t, cw.team, `SELECT count(*) FROM device_key_grants WHERE user_id = $1`, cw.p.user); n != 1 {
+		t.Fatalf("the last key holder's grant: %d", n)
+	}
+	if _, err := cw.c.ConfirmClosingForTest(ctx, cw.p.sub, store.ContractDoc{Sub: cw.p.sub, Generation: cw.gen, Status: "closed"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, held := cw.markers(t, cw.p.sub); held == nil || *held != store.HeldClosingUnconfirmed {
+		t.Fatalf("the confirmation cleared the hold the next pass needs: %v", held)
+	}
+	subs, _, err := cw.c.PendingApply(ctx, 10)
+	if err != nil || len(subs) == 0 || subs[0] != cw.p.sub {
+		t.Fatalf("the next pass does not take the account first: %v %v", subs, err)
+	}
+	r = cw.apply(t, cw.p)
+	if !has(r, store.ApplyMemberLost) || r.Held != "" || r.Counts.Strands != 1 {
+		t.Fatalf("after the confirmation: %v held %q strands %d", kinds(r), r.Held, r.Counts.Strands)
+	}
+	if role, _ := cw.membership(t, cw.team, cw.p.user); role != "" {
+		t.Fatalf("still in the team: %q", role)
+	}
+	if _, held := cw.markers(t, cw.p.sub); held != nil {
+		t.Fatalf("the hold after the pass: %v", *held)
+	}
+}
+
+// A closing the document stops saying before its confirmation is dropped:
+// nothing is left to confirm, and a later closing starts its own record,
+// seen anew. A confirmed closing is forgotten only while the document
+// still says closed and the account is still disabled, and the forgotten
+// record keeps the sub and the times only.
+func TestClosingRecordFollowsTheDocument(t *testing.T) {
+	cw := newClosedWorld(t)
+	ctx := context.Background()
+	cw.apply(t, cw.p)
+	var seen time.Time
+	if err := cw.pool.QueryRow(ctx, `SELECT seen_at FROM contract_closings WHERE sub = $1`, cw.p.sub).Scan(&seen); err != nil {
+		t.Fatal(err)
+	}
+	cw.put(t, cw.p, docSpec{})
+	cw.apply(t, cw.p)
+	if confirm, _, _, err := cw.c.PendingClosings(ctx, 10); err != nil || len(confirm) != 0 {
+		t.Fatalf("an active document left a closing to confirm: %v %v", confirm, err)
+	}
+	cw.put(t, cw.p, docSpec{status: "closed"})
+	if r := cw.apply(t, cw.p); !has(r, store.ApplyClosingSeen) {
+		t.Fatalf("a second closing: %v", kinds(r))
+	}
+	var again time.Time
+	if err := cw.pool.QueryRow(ctx, `SELECT seen_at FROM contract_closings WHERE sub = $1`, cw.p.sub).Scan(&again); err != nil || !again.After(seen) {
+		t.Fatalf("the second closing kept the first's seen_at: %v, was %v, %v", again, seen, err)
+	}
+
+	if _, err := cw.c.ConfirmClosingForTest(ctx, cw.p.sub, store.ContractDoc{Sub: cw.p.sub, Generation: cw.gen, Status: "closed"}); err != nil {
+		t.Fatal(err)
+	}
+	cw.in(t, cw.p.personal, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `DELETE FROM devices WHERE tenant_id = $1`, cw.p.personal)
+		return err
+	})
+	cw.exec(t, `UPDATE contract_closings SET purge_due_at = clock_timestamp() WHERE sub = $1`, cw.p.sub)
+	// The document says active again (not applied yet): nothing is forgotten.
+	cw.put(t, cw.p, docSpec{})
+	if _, done, err := cw.c.ForgetClosedForTest(ctx, cw.p.sub); err != nil || done {
+		t.Fatalf("forgotten under an active document: %v %v", done, err)
+	}
+	var link bool
+	if err := cw.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM platform_identities WHERE sub = $1)`, cw.p.sub).Scan(&link); err != nil || !link {
+		t.Fatalf("the account went under an active document: %v %v", link, err)
+	}
+	cw.put(t, cw.p, docSpec{status: "closed"})
+	if _, done, err := cw.c.ForgetClosedForTest(ctx, cw.p.sub); err != nil || !done {
+		t.Fatalf("the forgetting: %v %v", done, err)
+	}
+	var kept bool
+	if err := cw.pool.QueryRow(ctx, `SELECT user_id IS NULL AND personal_workspace IS NULL AND forgotten_at IS NOT NULL
+		FROM contract_closings WHERE sub = $1`, cw.p.sub).Scan(&kept); err != nil || !kept {
+		t.Fatalf("the forgotten record keeps more than the sub and the times: %v %v", kept, err)
+	}
+}
+
+// A team only a replaced document named is neither pending nor created:
+// records stay, and a restart keeps them.
+func TestApplyCreatesOnlyTeamsADocumentLists(t *testing.T) {
+	w := newApplyWorld(t)
+	ctx := context.Background()
+	a := w.person(t)
+	gone := uuid.New()
+	w.put(t, a, docSpec{teams: []docTeam{{id: gone, role: "owner", name: strp("Antiga")}}})
+	w.put(t, a, docSpec{})
+	_, workspaces, err := w.c.PendingApply(ctx, 10)
+	if err != nil || slices.Contains(workspaces, gone) {
+		t.Fatalf("a team no document lists is pending: %v %v", workspaces, err)
+	}
+	if r, err := w.c.ApplyWorkspaceForTest(ctx, gone); err != nil || has(r, store.ApplyTeamCreated) {
+		t.Fatalf("the apply of a team no document lists: %v %v", kinds(r), err)
+	}
+	if made, err := w.c.EnsureTeamsForTest(ctx, a.sub); err != nil || len(made) != 0 {
+		t.Fatalf("EnsureTeams: %v %v", made, err)
+	}
+	var exists bool
+	if err := w.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM tenants WHERE id = $1)`, gone).Scan(&exists); err != nil || exists {
+		t.Fatalf("a team no document lists was created: %v %v", exists, err)
+	}
+}
+
+// A recovery's stop revokes the person's invitations still pending from
+// before it, and stops a service invited before it though redeemed after.
+func TestApplyCredentialsRevokePendingInvites(t *testing.T) {
+	w := newApplyWorld(t)
+	ctx := context.Background()
+	p := w.person(t)
+	team := w.team(t, "Vendas", applyMember{p.user, "owner", ""})
+	invite := func(at time.Time) uuid.UUID {
+		var id uuid.UUID
+		if err := w.pool.QueryRow(ctx, `INSERT INTO invites (invite_id, tenant_id, role, created_by, expires_at, created_at)
+			VALUES ($1, $2, 'member', $3, clock_timestamp() + interval '7 days', $4) RETURNING id`, randBytes(t, 32), team, p.user, at).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	before, after := invite(w.at(t, "-2 hours")), invite(w.at(t, "-1 minute"))
+	svc := w.service(t, team, p.user, w.at(t, "-2 hours"))
+	w.exec(t, `UPDATE invites SET completed_at = clock_timestamp(), claimed_at = clock_timestamp() WHERE claimed_by = $1`, svc)
+	at := w.at(t, "-1 hour")
+	w.put(t, p, docSpec{creds: &at, teams: []docTeam{{id: team, role: "owner"}}})
+	diffs, _, err := w.c.DifferencesOf(ctx, p.sub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var want store.ContractDifference
+	for _, d := range diffs {
+		if d.Kind == store.DiffCredentialsWouldStop {
+			want = d
+		}
+	}
+	if want.Invites != 1 || want.Services != 1 {
+		t.Fatalf("credentials_would_stop: %+v", want)
+	}
+	r := w.apply(t, p)
+	if r.Counts.Invites != 1 || r.Counts.ServicesRemoved != 1 {
+		t.Fatalf("the stop: %+v", r.Counts)
+	}
+	revoked := func(id uuid.UUID) bool {
+		var r bool
+		if err := w.pool.QueryRow(ctx, `SELECT revoked_at IS NOT NULL FROM invites WHERE id = $1`, id).Scan(&r); err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	if !revoked(before) || revoked(after) {
+		t.Fatalf("invitations: before %v, after %v", revoked(before), revoked(after))
+	}
+	if role, _ := w.membership(t, team, svc); role != "" {
+		t.Fatalf("the service invited before the recovery: %q", role)
+	}
+}
+
+// team_closed is the apply's own suspension only: at observe, a team the
+// platform's record holds closed and an operator suspended says error.
+func TestSnapshotTeamClosedIsTheApplysOnly(t *testing.T) {
+	w := newApplyWorld(t)
+	ctx := context.Background()
+	a := w.person(t)
+	team := w.team(t, "Vendas", applyMember{a.user, "owner", ""})
+	device := w.number(t, team)
+	w.reads(t, team, device, a.user)
+	w.put(t, a, docSpec{teams: []docTeam{{id: team, role: "owner", status: "closed", wversion: 2}}})
+	w.exec(t, `UPDATE tenants SET status = 'suspended' WHERE id = $1`, team)
+	snap, err := w.c.Snapshot(ctx, team)
+	if err != nil || len(snap.Items) != 1 || snap.Items[0].Reason != store.SnapshotError {
+		t.Fatalf("an operator's suspension of a closed team: %+v %v", snap.Items, err)
 	}
 }

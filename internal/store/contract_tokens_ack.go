@@ -25,8 +25,11 @@ import (
 // them: an operator's open stop of its selector; an apply_failed one, as
 // local_rule; its creator's local account disabled here
 // (creator_disabled_here: by the operator, users.disabled_by; a disable
-// the contract applied is the platform's own, and the belt reports it as
-// revoked from the stored document); and, before enforce, its creator's local
+// the contract applied is the platform's own, and where the belt refuses
+// the token from the stored document it reports it as revoked, but the
+// belt reads the times only, so a contract's disable it misses, a
+// disabled document whose disabled_at is null or not after the token,
+// stays creator_disabled_here); and, before enforce, its creator's local
 // membership removed or disabled, or a local role that is not owner or
 // admin, or no local account at all (local_rule). Token auth (tokenLiveSQL)
 // refuses a token with any.
@@ -43,12 +46,25 @@ const tokenSuspendedSQL = `
 	UNION
 	SELECT t.id, 'creator_disabled_here' FROM contract_tokens t
 	  JOIN platform_identities pi ON pi.sub = t.created_by
-	  JOIN users u ON u.id = pi.user_id AND u.status = 'disabled' AND u.disabled_by = 'operator'
+	  JOIN users u ON u.id = pi.user_id AND u.status = 'disabled'
+	 WHERE u.disabled_by = 'operator' OR NOT ` + tokenBeltRefusesSQL + `
 	UNION
 	SELECT t.id, 'local_rule' FROM contract_tokens t
 	 WHERE NOT EXISTS (SELECT 1 FROM platform_identities pi
 	                     JOIN workspace_memberships m ON m.user_id = pi.user_id AND m.tenant_id = t.tenant_id
 	                    WHERE pi.sub = t.created_by AND m.status = 'active' AND m.role IN ('owner', 'admin'))`
+
+// tokenBeltRefusesSQL holds for a token (contract_tokens t) the stored
+// document of its creator refuses (the belt, tokenLiveParts.Belt): a
+// disable or a recovery after the token, or a document that drops its
+// workspace.
+//
+//nolint:gosec // G101: a query, not a credential
+const tokenBeltRefusesSQL = `EXISTS (SELECT 1 FROM contract_accounts a WHERE a.sub = t.created_by AND a.doc IS NOT NULL
+	AND (a.disabled_at > t.created_at OR a.credentials_revoked_at > t.created_at
+	     OR NOT EXISTS (SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(a.doc->'workspaces') = 'array'
+	                                                       THEN a.doc->'workspaces' ELSE '[]' END) aw
+	                    WHERE aw->>'id' = t.tenant_id::text)))`
 
 // TokenAck is one acknowledgement to send, and what to mark once the
 // platform accepts it.

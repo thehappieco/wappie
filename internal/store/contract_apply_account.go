@@ -227,7 +227,17 @@ type credentialTargets struct {
 	// services are the standing service accounts they invited that are
 	// still active members.
 	services []serviceRef
+	// invites are their invitations still pending (neither redeemed,
+	// revoked nor expired): a code kept from before the recovery would
+	// still let someone in.
+	invites []uuid.UUID
 }
+
+// pendingInvitesSQL is a person's ($1) invitations made before $2 that are
+// still pending: what a recovery's stop revokes. An invitation is alias i;
+// invites has no row-level security.
+const pendingInvitesSQL = `i.created_by = $1 AND i.created_at < $2 AND i.completed_at IS NULL AND i.revoked_at IS NULL
+	AND i.expires_at > clock_timestamp()`
 
 // credentialTargetsTx reads what user made before at, among tenants (their
 // workspaces, for the keychain).
@@ -250,8 +260,10 @@ func credentialTargetsTx(ctx context.Context, tx pgx.Tx, user uuid.UUID, tenants
 	if t.connections, err = pgx.CollectRows(rows, scanConnRef); err != nil {
 		return t, err
 	}
+	// An invitation made before at stops its service, though redeemed
+	// after it.
 	rows, err = tx.Query(ctx, `SELECT DISTINCT tenant_id, claimed_by FROM invites WHERE created_by = $1 AND role = 'service'
-		AND NOT provisional AND completed_at IS NOT NULL AND completed_at < $2 AND claimed_by IS NOT NULL
+		AND NOT provisional AND completed_at IS NOT NULL AND created_at < $2 AND claimed_by IS NOT NULL
 		ORDER BY tenant_id, claimed_by`, user, at)
 	if err != nil {
 		return t, err
@@ -282,6 +294,13 @@ func credentialTargetsTx(ctx context.Context, tx pgx.Tx, user uuid.UUID, tenants
 		}
 		t.services = append(t.services, s)
 	}
+	rows, err = tx.Query(ctx, `SELECT i.id FROM invites i WHERE `+pendingInvitesSQL+` ORDER BY i.id`, user, at)
+	if err != nil {
+		return t, err
+	}
+	if t.invites, err = pgx.CollectRows(rows, pgx.RowTo[uuid.UUID]); err != nil {
+		return t, err
+	}
 	sorted := slices.Clone(tenants)
 	slices.SortFunc(sorted, compareIDs)
 	for _, ws := range slices.Compact(sorted) {
@@ -308,8 +327,9 @@ func credentialTargetsTx(ctx context.Context, tx pgx.Tx, user uuid.UUID, tenants
 // (credentials_revoked_at, the W45 ask): their keys (contract), their live
 // connections (credentials_revoked, each through endMCPConnectionTx, which
 // removes a content or AI connection's service account), their keychain
-// items (emptied, and the AI connections naming them end), and every live
-// key acting as a standing service account they invited (contract). Such
+// items (emptied, and the AI connections naming them end), their pending
+// invitations (revoked), and every live key acting as a standing service
+// account they invited before at (contract). Such
 // an account is removed, with a history row, where every number it holds a
 // key of keeps a human holder (everyGrantKeepsAHumanHolderTx, the
 // retirement's rule); otherwise it is kept keyless (service_kept,
@@ -363,6 +383,15 @@ func (r *applyRun) stopCredentials(ctx context.Context, at time.Time) error {
 		keychain += n
 		r.out.Ended = append(r.out.Ended, e...)
 	}
+	invites := int64(len(t.invites))
+	if r.st.apply && len(t.invites) > 0 {
+		tag, err := r.tx.Exec(ctx, `UPDATE invites SET revoked_at = now(), secret_ciphertext = NULL
+			WHERE id = ANY ($1) AND completed_at IS NULL AND revoked_at IS NULL`, t.invites)
+		if err != nil {
+			return err
+		}
+		invites = tag.RowsAffected()
+	}
 	var removed, kept int64
 	for _, s := range t.services {
 		if err := r.inWorkspace(ctx, s.tenant); err != nil {
@@ -403,10 +432,11 @@ func (r *applyRun) stopCredentials(ctx context.Context, at time.Time) error {
 			return err
 		}
 	}
-	total := keys + int64(len(t.connections)) + keychain + removed + kept
+	total := keys + int64(len(t.connections)) + keychain + invites + removed + kept
 	if total > 0 {
 		r.out.add(ApplyAction{Kind: ApplyCredentialsStopped, User: r.user, Count: total})
 	}
+	r.out.Counts.Invites += invites
 	r.out.Counts.Keys += keys
 	r.out.Counts.Connections += int64(len(t.connections))
 	r.out.Counts.Keychain += keychain

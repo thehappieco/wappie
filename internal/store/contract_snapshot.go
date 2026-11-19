@@ -212,7 +212,7 @@ func snapshotTx(ctx context.Context, tx pgx.Tx, out *ContractSnapshot) error {
 	var quota, closed bool
 	if err := tx.QueryRow(ctx, `SELECT t.id IS NOT NULL, coalesce(t.status, ''), `+snapshotQuotaSQL+`,
 			coalesce((SELECT mode = 'on' FROM contract_token_state), false),
-			coalesce((SELECT c.status = 'closed' FROM contract_workspaces c WHERE c.workspace_id = w.id), false)
+			coalesce((SELECT c.applied_status = 'closed' FROM contract_workspaces c WHERE c.workspace_id = w.id), false)
 		FROM (SELECT $1::uuid AS id) w LEFT JOIN tenants t ON t.id = w.id`, out.Workspace).
 		Scan(&out.Local, &status, &quota, &out.TokenMode, &closed); err != nil {
 		return err
@@ -229,9 +229,11 @@ func snapshotTx(ctx context.Context, tx pgx.Tx, out *ContractSnapshot) error {
 // tx with deleted numbers visible; with the token mode on, their ordinals
 // and tokens too (snapshotTokensTx).
 //
-// teamClosed is a workspace the platform closed and Wappie suspended (the
-// apply at enforce, DS54): a number paused for that alone says team_closed,
-// where any other workspace not active says error.
+// teamClosed is a workspace the apply suspended because the platform
+// closed it (applied_status, which only the apply at enforce sets, DS54):
+// a number paused for that alone says team_closed, where any other
+// workspace not active says error. Off and at observe nothing sets it, so
+// the snapshot there is as before 0055.
 func snapshotItemsTx(ctx context.Context, tx pgx.Tx, workspace uuid.UUID, at time.Time, active, quota bool, out *ContractSnapshot,
 	teamClosed bool) error {
 	// The numbers. The predicate is exactly what 0051's devices trigger

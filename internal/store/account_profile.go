@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 
@@ -26,6 +27,12 @@ var Locales = []string{"en", "pt", "es", "fr", "de"}
 
 // ErrInvalidLocale is a locale that is not one of Locales.
 var ErrInvalidLocale = errors.New("store: not a supported locale")
+
+// ErrPersonalNameNotUpdated is SetLocale's when the language is saved but
+// the personal workspace's name could not follow it; the profile returned
+// with it is the saved one. The name is best effort: the next apply or
+// locale change sets it.
+var ErrPersonalNameNotUpdated = errors.New("store: the language is saved; the personal workspace's name is not")
 
 // SetLocale records the language a person's console is set to, for the
 // e-mails this server sends them. Their identity's row holds it, whichever
@@ -53,7 +60,10 @@ func (u *Users) SetLocale(ctx context.Context, id uuid.UUID, locale string) (Pro
 		_, err := renamePersonalTx(ctx, tx, id, out.Locale)
 		return err
 	})
-	return out, err
+	if err != nil {
+		return out, fmt.Errorf("%w: %w", ErrPersonalNameNotUpdated, err)
+	}
+	return out, nil
 }
 
 func (u *Users) Profile(ctx context.Context, id uuid.UUID) (Profile, error) {

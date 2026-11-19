@@ -1086,7 +1086,7 @@ difference as a group `d1`, `d2`, … of ids, roles, statuses and counts.
 | `team_closed` | the platform's team is closed and Wappie's is not |
 | `name` | the platform's team has another name (never logged) |
 | `sessions_would_end` | live sessions that began before the document's `sessions_revoked_at` |
-| `credentials_would_stop` | API keys, connections and standing service accounts created before its `credentials_revoked_at` |
+| `credentials_would_stop` | API keys, connections, standing service accounts (by when they were invited) and pending invitations created before its `credentials_revoked_at` |
 | `unnamed_tenant` | (`contract diff` only) a team here that no document names |
 
 ```
@@ -1971,7 +1971,7 @@ The actions:
 
 | Action | What it does at enforce |
 |---|---|
-| `team_created` | a team the documents name that Wappie lacks: the platform's id and name, kind team, no capacity row, no avatar |
+| `team_created` | a team a document of the stored generation names that Wappie lacks: the platform's id and name, kind team, no capacity row, no avatar |
 | `member_added`, `role_changed`, `member_enabled` | a membership the document lists: added, given its role (a demotion ends the person's sessions there and expires their pending invitations), or set active with nothing restored |
 | `member_lost` | a person's membership in a recorded workspace the document does not list: every effect of a removal, and their AI keychain items there |
 | `team_renamed`, `personal_named` | a workspace's name at the highest `wversion`; a personal one with no name, "Espaço pessoal" in its owner's language |
@@ -1979,18 +1979,21 @@ The actions:
 | `account_suspended`, `account_enabled` | a disable suspends the person (sessions, keys and connections end; grants, permissions and memberships stay); an active document lifts only the contract's disable |
 | `operator_disable` | an operator's disable stands over an active document |
 | `sessions_ended` | sessions whose family began before `sessions_revoked_at` (or a risen `disabled_at`) |
-| `credentials_stopped`, `service_kept` | what the person made before `credentials_revoked_at`; a service account they invited that is a number's sole key holder is kept, keyless |
-| `closing_seen` | a closed account: suspended, every team left, the closing recorded and held until a fresh answer confirms it |
+| `credentials_stopped`, `service_kept` | what the person made before `credentials_revoked_at`, their pending invitations included; a service account they invited that is a number's sole key holder is kept, keyless |
+| `closing_seen` | a closed account: suspended, every team left (but one whose number it is the last key holder of, held with the closing), the closing recorded and held until a fresh answer confirms it |
 | `orphan_keys_revoked` | keys acting as a service user with no membership in their workspace, and its stray grants |
 | `held` | a part left for a later pass: `strands_unconfirmed`, `no_tenant`, `personal_mismatch`, `closing_unconfirmed` |
 
 A loss that would strand a number is held until the platform's
-generation is confirmed, then records `item.stranded` with the app as the
-actor and no cause. A closing is confirmed only by a fresh signed GET of
-the confirmed generation that still says closed: the personal
-workspace's numbers are then deleted (logged out, purged within 30 days
-of the closing seen), and once purged the account is forgotten and
-unsubscribed. An active answer deletes nothing and logs ERROR
+generation is confirmed (and, for a closed account, its closing), then
+records `item.stranded` with the app as the actor and no cause. A closing
+is confirmed only by a fresh signed GET of the confirmed generation that
+still says closed: the personal workspace's numbers are then deleted
+(logged out, purged within 30 days of the closing seen), the next pass
+applies the team losses the closing held, and once purged the account is
+forgotten and unsubscribed, while its document still says closed. A
+document that says anything else before the confirmation drops the
+closing's record. An active answer deletes nothing and logs ERROR
 `closing_contradicted`. Going back to observe undoes nothing.
 
 The log lines (ids, codes and counts only): INFO `contract apply:

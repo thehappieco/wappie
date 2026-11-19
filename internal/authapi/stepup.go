@@ -277,6 +277,9 @@ func (h *Handler) locale(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, store.ErrInvalidLocale):
 		fail(w, http.StatusBadRequest, "bad_request", "locale must be one of en, pt, es, fr or de")
 		return
+	case errors.Is(err, store.ErrPersonalNameNotUpdated):
+		// The language is saved; only the name did not follow.
+		h.log().Warn("language saved; the personal workspace's name not updated", "user", user.ID, "error", err)
 	case err != nil:
 		fail(w, http.StatusInternalServerError, "internal", "could not save your language")
 		return

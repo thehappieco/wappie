@@ -11,16 +11,19 @@ import (
 
 // A closed account at enforce (DS54; E1c). The account's part of a closed
 // document (whose workspaces is []): the person is suspended and leaves
-// every team at once, the personal workspace is left as it is, and the
-// closing is recorded (contract_closings.seen_at) and held
-// (closing_unconfirmed). Only a fresh signed GET of the confirmed
+// every team at once (but a team whose number they are the last key holder
+// of, which waits for the confirmation), the personal workspace is left as
+// it is, and the closing is recorded (contract_closings.seen_at) and held
+// (closing_unconfirmed). A document that says anything else again drops a
+// record not confirmed yet. Only a fresh signed GET of the confirmed
 // generation that still answers closed confirms it (ConfirmClosing): each
 // number of the personal workspace is then deleted by the app (logged out,
-// purged within 30 days of the closing seen), and a registration that never
-// linked is deleted at once. Once every personal number is purged, the
-// account is forgotten (ForgetClosed): its users row goes, and with it its
-// personal workspace, platform identity, wraps, sessions and passkeys by
-// their foreign keys. The caller then sends the platform's unsubscribe
+// purged within 30 days of the closing seen), a registration that never
+// linked is deleted at once, and the next pass applies the team losses
+// held. Once every personal number is purged, the account is forgotten
+// (ForgetClosed), while its document still says closed: its users row
+// goes, and with it its personal workspace, platform identity, wraps,
+// sessions and passkeys by their foreign keys. The caller then sends the platform's unsubscribe
 // (ClosingUnsubscribed). The record of the closing (sub and times) stays 13
 // months (RetainClosings). An active fresh answer deletes nothing
 // (ErrClosingContradicted, logged at ERROR as closing_contradicted).
@@ -54,27 +57,47 @@ type ClosingResult struct {
 }
 
 // closing records a closed account's closing, and holds it until a fresh
-// answer confirms it.
+// answer confirms it. A record not confirmed yet takes the account's
+// current local account and personal workspace and keeps when it was seen;
+// one of another local account, or forgotten, is a closing of its own and
+// starts again (a forgotten sub can come back through a new link). The
+// caller holds the account's row.
 func (r *applyRun) closing(ctx context.Context) error {
 	var personal *uuid.UUID
 	if r.personal != uuid.Nil {
 		personal = &r.personal
 	}
-	var confirmed *time.Time
-	seen := true
-	var err error
-	if r.st.apply {
-		err = r.tx.QueryRow(ctx, `INSERT INTO contract_closings (sub, user_id, personal_workspace) VALUES ($1, $2, $3)
-			ON CONFLICT (sub) DO UPDATE SET sub = excluded.sub RETURNING confirmed_at, xmax <> 0`, r.sub, r.user, personal).
-			Scan(&confirmed, &seen)
-	} else {
-		err = r.tx.QueryRow(ctx, `SELECT confirmed_at, true FROM contract_closings WHERE sub = $1`, r.sub).Scan(&confirmed, &seen)
-		if errors.Is(err, pgx.ErrNoRows) {
-			seen, err = false, nil
-		}
+	var user *uuid.UUID
+	var confirmed, forgotten *time.Time
+	err := r.tx.QueryRow(ctx, `SELECT user_id, confirmed_at, forgotten_at FROM contract_closings WHERE sub = $1`, r.sub).
+		Scan(&user, &confirmed, &forgotten)
+	seen := err == nil
+	if errors.Is(err, pgx.ErrNoRows) {
+		err = nil
 	}
 	if err != nil {
 		return err
+	}
+	if seen && (forgotten != nil || user == nil || *user != r.user) {
+		seen, confirmed = false, nil
+		if r.st.apply {
+			if _, err := r.tx.Exec(ctx, `DELETE FROM contract_closings WHERE sub = $1`, r.sub); err != nil {
+				return err
+			}
+		}
+	}
+	if r.st.apply {
+		switch {
+		case !seen:
+			_, err = r.tx.Exec(ctx, `INSERT INTO contract_closings (sub, user_id, personal_workspace) VALUES ($1, $2, $3)`,
+				r.sub, r.user, personal)
+		case confirmed == nil:
+			_, err = r.tx.Exec(ctx, `UPDATE contract_closings SET user_id = $2, personal_workspace = $3 WHERE sub = $1`,
+				r.sub, r.user, personal)
+		}
+		if err != nil {
+			return err
+		}
 	}
 	if !seen {
 		r.out.add(ApplyAction{Kind: ApplyClosingSeen, User: r.user, Workspace: r.personal})
@@ -148,8 +171,10 @@ func (c *Contract) confirmClosing(ctx context.Context, sub uuid.UUID, fresh Cont
 			sub, due); err != nil {
 			return err
 		}
-		_, err = tx.Exec(ctx, `UPDATE contract_accounts SET apply_held = NULL, apply_held_since = NULL
-			WHERE sub = $1 AND apply_held = 'closing_unconfirmed'`, sub)
+		// The hold stays for the next pass, first in line: it applies
+		// the team losses the closing held (those that strand a number)
+		// and clears it.
+		_, err = tx.Exec(ctx, `UPDATE contract_accounts SET apply_last_at = NULL WHERE sub = $1 AND apply_held IS NOT NULL`, sub)
 		return err
 	})
 	return out, err
@@ -200,24 +225,37 @@ func quarantinePersonalTx(ctx context.Context, tx pgx.Tx, personal uuid.UUID, pu
 			if n.purgeAfter != nil && n.purgeAfter.After(last) {
 				last = *n.purgeAfter
 			}
+			continue
 		case n.pending:
-			if _, err := tx.Exec(ctx, `DELETE FROM devices WHERE id = $1 AND lid IS NULL AND pn IS NULL AND last_connected_at IS NULL`,
-				n.id); err != nil {
+			tag, err := tx.Exec(ctx, `DELETE FROM devices WHERE id = $1 AND lid IS NULL AND pn IS NULL AND last_connected_at IS NULL`, n.id)
+			if err != nil {
 				return last, err
 			}
-			out.Deleted++
-		default:
-			q := Quarantined{DeviceID: n.id}
-			if err := quarantineTx(ctx, tx, personal, n.id, quarantineBy{purgeBy: &purgeBy}, &q); err != nil {
-				return last, err
+			if tag.RowsAffected() == 1 {
+				out.Deleted++
+				continue
 			}
+			// It linked since the read (a code scanned before the
+			// suspension): deleted below like any live number, under
+			// its row.
+		}
+		q := Quarantined{DeviceID: n.id}
+		err := quarantineTx(ctx, tx, personal, n.id, quarantineBy{purgeBy: &purgeBy}, &q)
+		if errors.Is(err, ErrNotFound) {
+			// Gone since the read.
+			continue
+		}
+		if err != nil {
+			return last, err
+		}
+		if !q.Already {
 			out.Quarantined++
 			if q.Session != nil {
 				out.Sessions = append(out.Sessions, *q.Session)
 			}
-			if q.PurgeAfter.After(last) {
-				last = q.PurgeAfter
-			}
+		}
+		if q.PurgeAfter.After(last) {
+			last = q.PurgeAfter
 		}
 	}
 	return last, nil
@@ -228,9 +266,12 @@ func quarantinePersonalTx(ctx context.Context, tx pgx.Tx, personal uuid.UUID, pu
 // enforce: its users row is deleted, and its personal workspace, platform
 // identity, wraps, sessions and passkeys go by their foreign keys (a
 // transfer it made keeps its record with no actor, an outbound message it
-// decided keeps its with no decider: 0055). It records forgotten_at. false,
-// writing nothing, while a personal number or a team membership remains
-// (a loss held for a strand).
+// decided keeps its with no decider: 0055). It records forgotten_at, and
+// drops the record's local account and personal workspace: it keeps the
+// sub and the times only. false, writing nothing, while a personal number
+// or a team membership remains (a loss held for a strand), or once the
+// stored document of the stored generation no longer says closed or the
+// account is no longer disabled here.
 func (c *Contract) ForgetClosed(ctx context.Context, sub uuid.UUID) (ClosingResult, bool, error) {
 	return c.forgetClosed(ctx, sub, true)
 }
@@ -260,11 +301,19 @@ func (c *Contract) forgetClosed(ctx context.Context, sub uuid.UUID, gate bool) (
 		if confirmedAt == nil || user == nil {
 			return nil
 		}
+		// Only while the stored document of the stored generation still
+		// says closed and the account is still disabled here: anything
+		// else forgets nothing.
+		var still bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM contract_accounts a JOIN contract_state s ON s.generation = a.generation
+				WHERE a.sub = $1 AND a.doc IS NOT NULL AND a.doc->>'status' = 'closed')`, sub).Scan(&still); err != nil || !still {
+			return err
+		}
 		var home uuid.UUID
 		err = tx.QueryRow(ctx, `SELECT tenant_id FROM user_logins WHERE user_id = $1`, *user).Scan(&home)
 		if errors.Is(err, pgx.ErrNoRows) {
 			// Forgotten already, by another hand: only the record is left.
-			_, err = tx.Exec(ctx, `UPDATE contract_closings SET forgotten_at = clock_timestamp() WHERE sub = $1`, sub)
+			_, err = tx.Exec(ctx, forgetClosingSQL, sub)
 			forgotten = err == nil
 			return err
 		}
@@ -309,10 +358,15 @@ func (c *Contract) forgetClosed(ctx context.Context, sub uuid.UUID, gate bool) (
 		if err := scope(ctx, tx, home, uuid.Nil); err != nil {
 			return err
 		}
+		// The person's row last, after the workspace's (DB23's order).
+		var disabled bool
+		if err := tx.QueryRow(ctx, `SELECT status = 'disabled' FROM users WHERE id = $1 FOR UPDATE`, *user).Scan(&disabled); err != nil || !disabled {
+			return err
+		}
 		if _, err := tx.Exec(ctx, `DELETE FROM users WHERE id = $1`, *user); err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx, `UPDATE contract_closings SET forgotten_at = clock_timestamp() WHERE sub = $1`, sub); err != nil {
+		if _, err := tx.Exec(ctx, forgetClosingSQL, sub); err != nil {
 			return err
 		}
 		forgotten = true
@@ -320,6 +374,11 @@ func (c *Contract) forgetClosed(ctx context.Context, sub uuid.UUID, gate bool) (
 	})
 	return out, forgotten, err
 }
+
+// forgetClosingSQL marks a closing ($1) forgotten: the record keeps the
+// sub and the times only, for its 13 months.
+const forgetClosingSQL = `UPDATE contract_closings SET forgotten_at = clock_timestamp(), user_id = NULL, personal_workspace = NULL
+	WHERE sub = $1`
 
 // ClosingUnsubscribed records that the platform's unsubscribe of a
 // forgotten account was sent and answered.

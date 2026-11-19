@@ -127,6 +127,7 @@ type ApplyCounts struct {
 	TeamsCreated, Renamed, Closed, Reopened            int64
 	Sessions, Keys, Connections, Keychain              int64
 	ServicesRemoved, ServicesKept, OrphanKeys, Strands int64
+	Invites                                            int64
 }
 
 // ApplyResult is what one account's or one workspace's apply did, or its
@@ -169,6 +170,7 @@ func (r *ApplyResult) Absorb(o ApplyResult) {
 	c.ServicesKept += d.ServicesKept
 	c.OrphanKeys += d.OrphanKeys
 	c.Strands += d.Strands
+	c.Invites += d.Invites
 }
 
 // PendingWorkspacesOf lists the workspaces sub's stored document names
@@ -320,7 +322,12 @@ func (c *Contract) applyAccount(ctx context.Context, sub uuid.UUID, gate bool) (
 		out, err = applyAccountTx(ctx, tx, st, sub)
 		return err
 	})
-	return out, err
+	if err != nil {
+		// The transaction rolled back: nothing it did stands, so nothing
+		// of it is returned for a caller to act on.
+		return ApplyResult{Sub: sub}, err
+	}
+	return out, nil
 }
 
 // PlanAccount is what applying sub's document would do now: its teams'
@@ -403,7 +410,9 @@ func (c *Contract) PlanAll(ctx context.Context) (ApplyPlan, error) {
 // whose applied markers differ from the stored document, or with a part
 // held, least recently applied first; and the recorded workspaces whose
 // wversion is ahead of what was applied (a personal one only once its
-// workspace exists), or a team that has no workspace yet, in id order.
+// workspace exists), or a team that has no workspace yet and that a
+// document of the stored generation still lists (teamListedSQL), in id
+// order.
 func (c *Contract) PendingApply(ctx context.Context, limit int) (subs, workspaces []uuid.UUID, err error) {
 	rows, err := c.pool.Query(ctx, `SELECT a.sub FROM contract_accounts a
 		JOIN platform_identities pi ON pi.sub = a.sub CROSS JOIN contract_state s
@@ -420,7 +429,8 @@ func (c *Contract) PendingApply(ctx context.Context, limit int) (subs, workspace
 		return nil, nil, err
 	}
 	rows, err = c.pool.Query(ctx, `SELECT w.workspace_id FROM contract_workspaces w LEFT JOIN tenants t ON t.id = w.workspace_id
-		WHERE (t.id IS NOT NULL AND w.wversion > coalesce(w.applied_wversion, -1)) OR (w.kind = 'team' AND t.id IS NULL)
+		WHERE (t.id IS NOT NULL AND w.wversion > coalesce(w.applied_wversion, -1))
+		   OR (w.kind = 'team' AND t.id IS NULL AND `+teamListedSQL+`)
 		ORDER BY w.workspace_id LIMIT $1`, limit)
 	if err != nil {
 		return nil, nil, err
@@ -492,6 +502,9 @@ type applyRun struct {
 	due        map[uuid.UUID]bool
 	out        *ApplyResult
 	losses     int
+	// closed: the document is closed; closingConfirmed: a fresh signed
+	// answer confirmed it (contract_closings.confirmed_at).
+	closed, closingConfirmed bool
 }
 
 // applyAccountTx is one sub's apply (st.apply) or plan, in tx, which holds
@@ -569,11 +582,12 @@ func (r *applyRun) read(ctx context.Context) error {
 	for _, w := range r.doc.Workspaces {
 		ids = append(ids, w.ID)
 	}
-	// Where the person's keys, connections and invited services are, for
-	// a suspension or a recovery's stop.
+	// Where the person's keys, connections, invited services and pending
+	// invitations are, for a suspension or a recovery's stop.
 	rows, err := r.tx.Query(ctx, `SELECT tenant_id FROM api_keys WHERE (created_by = $1 OR acts_as = $1) AND revoked_at IS NULL
 		UNION SELECT tenant_id FROM mcp_connections WHERE created_by = $1 AND status IN ('pending', 'active', 'reseal')
-		UNION SELECT tenant_id FROM invites WHERE created_by = $1 AND role = 'service' AND NOT provisional AND claimed_by IS NOT NULL`, r.user)
+		UNION SELECT tenant_id FROM invites WHERE created_by = $1 AND role = 'service' AND NOT provisional AND claimed_by IS NOT NULL
+		UNION SELECT tenant_id FROM invites WHERE created_by = $1 AND completed_at IS NULL AND revoked_at IS NULL`, r.user)
 	if err != nil {
 		return err
 	}
@@ -678,6 +692,23 @@ func (r *applyRun) lock(ctx context.Context) error {
 // a closing's record.
 func (r *applyRun) run(ctx context.Context) error {
 	closed := r.doc.Status == "closed"
+	r.closed = closed
+	if closed {
+		// Read under the account's row, which ConfirmClosing takes first.
+		// A record forgotten, or of another local account, is not this
+		// closing's (closing starts it again).
+		err := r.tx.QueryRow(ctx, `SELECT confirmed_at IS NOT NULL AND forgotten_at IS NULL AND user_id IS NOT DISTINCT FROM $2
+			FROM contract_closings WHERE sub = $1`, r.sub, r.user).Scan(&r.closingConfirmed)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
+	} else if r.st.apply {
+		// A closing the platform's document no longer says, never
+		// confirmed, is dropped: a later closing starts its own record.
+		if _, err := r.tx.Exec(ctx, `DELETE FROM contract_closings WHERE sub = $1 AND confirmed_at IS NULL`, r.sub); err != nil {
+			return err
+		}
+	}
 	switch {
 	case closed || r.doc.Status == "disabled":
 		switch {
@@ -874,17 +905,26 @@ func roleRank(role string) int {
 	return 0
 }
 
-// loss applies the loss of one membership (applyMembershipLossTx).
+// loss applies the loss of one membership (applyMembershipLossTx). One
+// that would strand a number waits for the confirmed generation, and, for
+// a closed account, for its closing's confirmation too: stranding deletes
+// the last key holder's grants, which nothing undoes, so it needs the same
+// fresh signed answer as the personal numbers' deletion.
 func (r *applyRun) loss(ctx context.Context, id uuid.UUID) error {
 	if err := r.inWorkspace(ctx, id); err != nil {
 		return err
 	}
-	l, err := applyMembershipLossTx(ctx, r.tx, id, r.user, r.email, r.st.generation != nil && r.st.confirmed, r.st.apply)
+	generation := r.st.generation != nil && r.st.confirmed
+	l, err := applyMembershipLossTx(ctx, r.tx, id, r.user, r.email, generation && (!r.closed || r.closingConfirmed), r.st.apply)
 	if err != nil {
 		return err
 	}
 	if l.held {
-		r.hold(HeldStrandsUnconfirmed, id)
+		reason := HeldStrandsUnconfirmed
+		if generation && r.closed {
+			reason = HeldClosingUnconfirmed
+		}
+		r.hold(reason, id)
 		return nil
 	}
 	r.out.add(ApplyAction{Kind: ApplyMemberLost, User: r.user, Workspace: id, Count: int64(l.stranded)})
@@ -938,13 +978,15 @@ func snapshotsDueNowTx(ctx context.Context, tx pgx.Tx, due map[uuid.UUID]bool) e
 
 // EnsureTeams creates, for sub's stored document, every team it lists that
 // Wappie has no workspace of: each in a transaction of its own
-// (ensureTeamTx), at enforce. It returns the teams created.
+// (ensureTeamTx), at enforce. It returns the teams created (with an
+// error, those created before it, each committed).
 func (c *Contract) EnsureTeams(ctx context.Context, sub uuid.UUID) ([]uuid.UUID, error) {
 	return c.ensureTeams(ctx, sub, true)
 }
 
 func (c *Contract) ensureTeams(ctx context.Context, sub uuid.UUID, gate bool) ([]uuid.UUID, error) {
 	rows, err := c.pool.Query(ctx, `SELECT DISTINCT (w->>'id')::uuid FROM contract_accounts a
+		JOIN contract_state s ON s.generation = a.generation
 		CROSS JOIN LATERAL jsonb_array_elements(a.doc->'workspaces') w
 		WHERE a.sub = $1 AND a.doc IS NOT NULL AND w->>'kind' = 'team'
 		  AND NOT EXISTS (SELECT 1 FROM tenants t WHERE t.id = (w->>'id')::uuid)
@@ -977,8 +1019,18 @@ func (c *Contract) ensureTeams(ctx context.Context, sub uuid.UUID, gate bool) ([
 // teamFallbackName names a team whose documents give it no name.
 const teamFallbackName = "Equipe"
 
-// ensureTeamTx creates the team id when it is recorded and Wappie has no
-// workspace of it: the platform's id and its name at the highest wversion,
+// teamListedSQL holds for a recorded workspace (alias w) that a stored
+// document of the stored generation lists as a team. Records are never
+// deleted, and a restart keeps them: a team only an older or a replaced
+// document named is not created.
+const teamListedSQL = `EXISTS (SELECT 1 FROM contract_accounts la
+		JOIN contract_state ls ON ls.generation = la.generation
+		CROSS JOIN LATERAL jsonb_array_elements(la.doc->'workspaces') lw
+		WHERE la.doc IS NOT NULL AND lw->>'kind' = 'team' AND (lw->>'id')::uuid = w.workspace_id)`
+
+// ensureTeamTx creates the team id when it is recorded, a document of the
+// stored generation lists it (teamListedSQL), and Wappie has no workspace
+// of it: the platform's id and its name at the highest wversion,
 // kind team, suspended when its record is closed (and the suspension the
 // contract's, applied_status), with no workspace_capacity row (the
 // platform's teams have no cap) and no avatar. The record's row, locked
@@ -998,8 +1050,10 @@ func ensureTeamTx(ctx context.Context, tx pgx.Tx, st applyState, id uuid.UUID) (
 	if err != nil {
 		return false, err
 	}
-	var exists bool
-	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM tenants WHERE id = $1)`, id).Scan(&exists); err != nil || exists {
+	var exists, listed bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM tenants WHERE id = $1),
+			EXISTS (SELECT 1 FROM contract_workspaces w WHERE w.workspace_id = $1 AND `+teamListedSQL+`)`, id).
+		Scan(&exists, &listed); err != nil || exists || !listed {
 		return false, err
 	}
 	if !st.apply {
@@ -1079,7 +1133,11 @@ func (c *Contract) applyWorkspace(ctx context.Context, id uuid.UUID, gate bool) 
 		out, err = applyWorkspaceTx(ctx, tx, st, id)
 		return err
 	})
-	return out, err
+	if err != nil {
+		// Rolled back: nothing of it is returned.
+		return ApplyResult{Workspace: id}, err
+	}
+	return out, nil
 }
 
 // applyWorkspaceTx is one workspace's apply (st.apply) or plan.

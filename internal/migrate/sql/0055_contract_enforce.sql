@@ -125,7 +125,12 @@
 --      COMMIT;
 --
 -- It runs first: 0055 down, then 0053 down (whose guard refuses while 55 is
--- applied), and so on. Migration 0054 is R4's; 0056 is R7's.
+-- applied), and so on. But 0053's step 1 (contract tokens off, and for
+-- older targets 0052's and 0051's step 1; contract mode off turns them all
+-- off) runs before 0055 down, with this release's binary while the database
+-- is still at 55: those commands refuse a database not at their binary's
+-- version, and no binary sits at 53 or 54. Migration 0054 is R4's; 0056 is
+-- R7's.
 
 -- wappie-billing keeps running through this migration, as through 0051 and
 -- 0053: tenants, users and workspace_memberships in SHARE ROW EXCLUSIVE

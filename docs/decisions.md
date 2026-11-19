@@ -3386,16 +3386,20 @@ would do, read-only, in any mode.
   stands.
 - `sessions_revoked_at` ends every session whose family began before it.
   `credentials_revoked_at` stops what the person made before it: their API
-  keys, MCP and AI connections, AI keychain items, and the keys of standing
-  service accounts they invited, removing each such account where every
+  keys, MCP and AI connections, AI keychain items, their pending
+  invitations, and the keys of standing service accounts they invited
+  before it (though redeemed after), removing each such account where every
   number it holds keeps a human holder, and keeping it keyless otherwise.
   Platform tokens are not written to: the belt refuses them from the stored
   document.
-- A closed account is suspended and leaves every team at once. After a
-  fresh signed answer confirms the closing, its personal workspace's
-  numbers are deleted (logged out, purged within 30 days), and after the
-  purge the account is forgotten and unsubscribed. The record of the
-  closing (sub and time) stays 13 months.
+- A closed account is suspended and leaves every team at once, but a team
+  whose number it is the last key holder of: that loss waits for the
+  closing's confirmation too. After a fresh signed answer confirms the
+  closing, its personal workspace's numbers are deleted (logged out, purged
+  within 30 days), and after the purge the account is forgotten and
+  unsubscribed, only while its document still says closed. A document that
+  says anything else before the confirmation drops the closing's record.
+  The record of the closing (sub and times) stays 13 months.
 - Owners' member disables and Wappie's strand override leave hosted (E3);
   the workspace avatar is retired there (E3, C1) and E1 deletes none. Going
   back to observe undoes nothing.

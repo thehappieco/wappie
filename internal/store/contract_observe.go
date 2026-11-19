@@ -48,8 +48,8 @@ const (
 	// DiffSessionsWouldEnd: live sessions whose family began before
 	// sessions_revoked_at.
 	DiffSessionsWouldEnd = "sessions_would_end"
-	// DiffCredentialsWouldStop: keys, connections and standing service
-	// accounts made before credentials_revoked_at.
+	// DiffCredentialsWouldStop: keys, connections, standing service
+	// accounts and pending invitations made before credentials_revoked_at.
 	DiffCredentialsWouldStop = "credentials_would_stop"
 	// DiffUnnamedTenant: a local team no document names (contract diff
 	// only).
@@ -72,8 +72,8 @@ type ContractDifference struct {
 	// Count is personal_mismatch's numbers in the local personal workspace,
 	// or sessions_would_end's sessions.
 	Count int64
-	// Keys, Connections and Services are credentials_would_stop's.
-	Keys, Connections, Services int64
+	// Keys, Connections, Services and Invites are credentials_would_stop's.
+	Keys, Connections, Services, Invites int64
 	// TenantMissing: platform_only for a workspace Wappie has none of.
 	TenantMissing bool
 }
@@ -427,7 +427,7 @@ func differencesTx(ctx context.Context, tx pgx.Tx, sub uuid.UUID) ([]ContractDif
 		if err != nil {
 			return nil, err
 		}
-		if d.Keys+d.Connections+d.Services > 0 {
+		if d.Keys+d.Connections+d.Services+d.Invites > 0 {
 			add(d)
 		}
 	}
@@ -438,15 +438,15 @@ func differencesTx(ctx context.Context, tx pgx.Tx, sub uuid.UUID) ([]ContractDif
 // stop (README 6.2, credentials_revoked_at), as credentialTargetsTx reads
 // it for the apply: API keys of their own (a connection's key counts as
 // its connection), MCP connections still live and AI connections (keychain
-// entries) in their workspaces, and standing service accounts they invited
-// that are still members.
+// entries) in their workspaces, standing service accounts they invited
+// that are still members, and their pending invitations.
 func credentialsTx(ctx context.Context, tx pgx.Tx, user uuid.UUID, tenants []uuid.UUID, at time.Time) (ContractDifference, error) {
 	t, err := credentialTargetsTx(ctx, tx, user, tenants, at)
 	if err != nil {
 		return ContractDifference{}, err
 	}
 	return ContractDifference{Kind: DiffCredentialsWouldStop, Keys: int64(len(t.keys)),
-		Connections: int64(len(t.connections) + len(t.keychain)), Services: int64(len(t.services))}, nil
+		Connections: int64(len(t.connections) + len(t.keychain)), Services: int64(len(t.services)), Invites: int64(len(t.invites))}, nil
 }
 
 // noSubTx lists, for each of the workspaces that is a platform workspace

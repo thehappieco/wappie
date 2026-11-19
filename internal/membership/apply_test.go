@@ -126,6 +126,30 @@ func TestMembersApplyTellsEndedReaders(t *testing.T) {
 	}
 }
 
+// A failed account apply rolled back: whatever its result lists, no reader
+// is told of a connection, and nothing is woken or logged as applied.
+func TestMembersApplyFailedTellsNobody(t *testing.T) {
+	w := newWorld(t)
+	ctx := context.Background()
+	sub := uuid.New()
+	rec := &tellRecorder{}
+	fake := &fakeApplier{account: store.ApplyResult{Sub: sub, Version: 3,
+		Actions: []store.ApplyAction{{Kind: store.ApplyMemberLost, Workspace: uuid.New()}},
+		Ended:   []store.EndedConnection{{ID: "c1", Reader: "hosted"}},
+		Counts:  store.ApplyCounts{Lost: 1, Connections: 1}}, err: errors.New("rolled back")}
+	m := w.members
+	m.applier, m.Readers, m.Sockets = fake, rec, rec
+	if _, err := m.Apply(ctx, sub); err == nil {
+		t.Fatal("a failed apply returned no error")
+	}
+	if len(rec.told) != 0 || rec.waken != 0 {
+		t.Fatalf("a rolled-back apply told %v, woke the sessions %d times", rec.told, rec.waken)
+	}
+	if len(w.logs.Lines("mcp connection revoked")) != 0 || len(w.logs.Lines("contract apply: applied")) != 0 {
+		t.Fatalf("a rolled-back apply was logged as done:\n%s", w.logs)
+	}
+}
+
 // Observe never applies: no file of the package but apply.go, and none of
 // whatserverd's but contract_apply.go, calls an apply. E2 wires them.
 func TestObserveNeverApplies(t *testing.T) {

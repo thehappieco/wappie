@@ -14,7 +14,8 @@ import (
 // removeMember, without its refusals (the manager's role, the last owner,
 // the strand check), and the person's AI keychain items in that workspace.
 // A loss that would strand a number (its last key holder) waits until the
-// platform's generation is confirmed; then each number records
+// platform's generation is confirmed, and a closed account's until its
+// closing is confirmed too; then each number records
 // item.stranded with the app as the actor and no cause (the platform fills
 // removed or closed), and its other owners get their number_stranded
 // notice. Token rows are not written: DS47 and DS48 keep a person's loss
@@ -23,8 +24,8 @@ import (
 
 // lossResult is what one membership's loss did, or would do.
 type lossResult struct {
-	// held: it would strand a number and the generation is not confirmed;
-	// nothing was written.
+	// held: it would strand a number and may not yet (the generation, or
+	// a closed account's closing, is not confirmed); nothing was written.
 	held bool
 	// stranded counts the numbers it stranded.
 	stranded int
@@ -35,8 +36,9 @@ type lossResult struct {
 }
 
 // applyMembershipLossTx applies the loss of user's membership in tenant
-// (apply), or says what it would do. confirmed is whether the platform's
-// generation is confirmed. email is the person's address, for the history
+// (apply), or says what it would do. confirmed is whether it may strand a
+// number: the platform's generation is confirmed and, for a closed
+// account, so is its closing (applyRun.loss). email is the person's address, for the history
 // and their pending invitations, as removeMember reads it. The caller holds
 // app.tenant_id = tenant, the workspace's row lock and the person's row.
 func applyMembershipLossTx(ctx context.Context, tx pgx.Tx, tenant, user uuid.UUID, email string, confirmed, apply bool) (lossResult, error) {
