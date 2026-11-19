@@ -226,6 +226,7 @@ type ReaderHealth struct {
 var ReaderClockCodes = []string{
 	"ok", "helper_stale", "nsm_stale", "boot_refused", "cap_exceeded",
 	"chronyd_gone", "nsm_error", "unc_high", "kms_proof", "nsm_node_proof",
+	"starting",
 }
 
 // readerHealthWire is the health object as it arrives: the clock fields are

@@ -25,6 +25,7 @@ func TestHealthReadsTheClockCause(t *testing.T) {
 		{name: "all", raw: `"clock_code":"cap_exceeded","clock_disagree_kms":2,"kms_skew_lo_ms":-1500,"kms_skew_hi_ms":900,"clock_corr_hour_ms":3100,"clock_corr_day_ms":-4200`,
 			code: str("cap_exceeded"), disagree: ms(2), lo: ms(-1500), hi: ms(900), corrHour: ms(3100), corrDay: ms(-4200)},
 		{name: "every known code", raw: `"clock_code":"nsm_node_proof"`, code: str("nsm_node_proof")},
+		{name: "the helper starting", raw: `"clock_code":"starting"`, code: str("starting")},
 		{name: "null", raw: `"clock_code":null,"clock_disagree_kms":null,"kms_skew_lo_ms":null,"kms_skew_hi_ms":null,"clock_corr_hour_ms":null,"clock_corr_day_ms":null`},
 		{name: "unknown code", raw: `"clock_code":"evil_word"`},
 		{name: "code not a code's shape", raw: `"clock_code":"Cap Exceeded"`},

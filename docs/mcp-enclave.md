@@ -212,7 +212,8 @@ helper's corrections over the last hour and day), and may send the whole
 health object, with `"code":"clock_unknown"` added, as the body of its 503
 `clock_unknown`. Go keeps `clock_code` only when it is one of `ok`,
 `helper_stale`, `nsm_stale`, `boot_refused`, `cap_exceeded`,
-`chronyd_gone`, `nsm_error`, `unc_high`, `kms_proof` and `nsm_node_proof`,
+`chronyd_gone`, `nsm_error`, `unc_high`, `kms_proof`, `nsm_node_proof` and
+`starting` (the clock helper's own state until its first good sample),
 and `clock_disagree_kms` only as a whole number from 0; the others read as
 the four above. A 503 whose body is not this reader's ok health object is a
 bare code, as before.
