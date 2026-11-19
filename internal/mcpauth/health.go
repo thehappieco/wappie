@@ -41,7 +41,9 @@ const (
 
 // MonitorReaders asks every attested reader for its health once a minute
 // until ctx ends. Nothing it learns changes what this server does; it is
-// there so the log shows a reader's state before a person notices.
+// there so the log shows a reader's state before a person notices, and so
+// that the operator is mailed when a reader cannot vouch for its clock
+// (clock_alerts.go).
 func (h *Handler) MonitorReaders(ctx context.Context) {
 	for _, a := range h.Attested {
 		go h.monitorReader(ctx, a, healthEvery)
@@ -94,6 +96,7 @@ func (h *Handler) checkReader(parent context.Context, a *AttestedReader, failure
 		} else {
 			h.log().Info("an attested reader missed a health check", attrs...)
 		}
+		h.ClockAlerts.Observe(parent, a.ID, ReaderHealth{}, err, time.Now())
 		return failures
 	}
 	if failures >= healthFailures {
@@ -133,6 +136,8 @@ func (h *Handler) checkReader(parent context.Context, a *AttestedReader, failure
 	default:
 		h.log().Info("attested reader health", attrs...)
 	}
+	// After the line, which a mail must not hold up.
+	h.ClockAlerts.Observe(parent, a.ID, health, nil, time.Now())
 	return 0
 }
 
