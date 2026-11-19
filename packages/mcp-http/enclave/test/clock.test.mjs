@@ -3,8 +3,11 @@
 // moves by hand.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import {
-  BOOT_SKEW_MS, createClock, createGoSkew, createKmsCheck, createNsmCheck, GO_SKEW_MAX, kmsRange, nsmRange, parseState, READY_TIMEOUT_MS, STATE_FRESH_MS, WINDOW_MS,
+  BOOT_SKEW_MS, createClock, createCountFile, createGoSkew, createKmsCheck, createNsmCheck, GO_SKEW_MAX, kmsRange, nsmRange, parseState, READY_TIMEOUT_MS, STATE_FRESH_MS, WINDOW_MS,
 } from '../clock.mjs'
 
 const EPOCH = Date.UTC(2026, 10, 19, 12, 0, 0)
@@ -492,6 +495,50 @@ test('summary(): clock_disagree_kms counts clock_sources_disagree for a KMS proo
   assert.equal(clock.summary().clock_code, 'kms_proof')
   assert.equal(clock.summary().clock_disagree_kms, 2)
   assert.deepEqual(log.named('clock_sources_disagree').map(e => e.code), ['kms_proof', 'nsm_node_proof', 'kms_proof'])
+})
+
+test('clock_disagree_kms goes on across a Node restart in the same enclave boot (disagreeStore)', async () => {
+  const saved = []
+  const store = { value: 0, load: () => store.value, save: async n => { saved.push(n); store.value = n } }
+  const first = world({}, { disagreeStore: store })
+  await first.clock.refresh()
+  first.kms.add(rangeNow(first.time, 89_000, 91_000)); first.kms.add(rangeNow(first.time, 89_000, 91_000))
+  assert.equal(first.clock.summary().clock_disagree_kms, 1)
+  first.clock.summary()
+  assert.deepEqual(saved, [1], 'saved once per proof')
+  // Node restarts: a new clock against the same store starts from 1, not 0,
+  // so a proof right after the restart is 2 and Go sees it go up.
+  const second = world({}, { disagreeStore: store })
+  await second.clock.refresh()
+  assert.equal(second.clock.summary().clock_disagree_kms, 1)
+  assert.equal(second.clock.summary().clock_code, 'ok')
+  second.kms.add(rangeNow(second.time, 89_000, 91_000)); second.kms.add(rangeNow(second.time, 89_000, 91_000))
+  assert.equal(second.clock.summary().clock_disagree_kms, 2)
+  assert.deepEqual(saved, [1, 2])
+  // Without a store the count is this process's alone.
+  const alone = world()
+  await alone.clock.refresh()
+  assert.equal(alone.clock.summary().clock_disagree_kms, 0)
+})
+
+test('createCountFile: 0 when missing or malformed, writes in call order at 0600, a failed write never throws', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'wappie-clock-'))
+  t.after(() => rm(dir, { recursive: true, force: true }))
+  const path = join(dir, 'clock_disagree_kms')
+  const file = createCountFile(path)
+  assert.equal(file.load(), 0)
+  file.save(1)
+  await file.save(2)
+  assert.equal(await readFile(path, 'utf8'), '2\n')
+  assert.equal((await stat(path)).mode & 0o777, 0o600)
+  assert.equal(createCountFile(path).load(), 2, 'a new process reads it back')
+  for (const text of ['', 'x', '-1\n', '1.5\n', '1e3\n', '9'.repeat(16)]) {
+    await writeFile(path, text)
+    assert.equal(createCountFile(path).load(), 0, JSON.stringify(text))
+  }
+  const failing = createCountFile(join(dir, 'missing', 'count'))
+  await failing.save(3)
+  assert.equal(failing.load(), 0)
 })
 
 test('start(): reads state.json on a timer, stop() ends it', async () => {

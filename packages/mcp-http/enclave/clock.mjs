@@ -34,7 +34,9 @@
 // clock Node has seen: a sample from before a step describes the old clock,
 // while the checks' ranges have been moved to the new one.
 
+import { readFileSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
+import { writePrivate } from '../state.mjs'
 
 export const STATE_FILE = '/run/wappie-clock/state.json'
 export const READ_EVERY_MS = 5000
@@ -195,16 +197,45 @@ export function createGoSkew({ windowMs = WINDOW_MS, max = GO_SKEW_MAX, mono = (
   }
 }
 
+/** The file in RUN_DIR (main.mjs) that keeps clock_disagree_kms across Node restarts. */
+export const DISAGREE_FILE = 'clock_disagree_kms'
+
+/**
+ * A count kept in `path`, for createClock's `disagreeStore`. RUN_DIR is
+ * tmpfs that lives exactly as long as the enclave boot, like boot_id, so
+ * the count goes on across a Node restart and starts at 0 with a new
+ * boot_id: Go can take a value higher than the last it saw for that boot_id
+ * as a new disagreement. `load()` is synchronous and gives 0 for a missing
+ * or malformed file; `save(n)` writes in call order and never throws (a
+ * failed write keeps only the in-memory count).
+ */
+export function createCountFile(path, { read = readFileSync, write = writePrivate } = {}) {
+  let chain = Promise.resolve()
+  return {
+    load() {
+      let text
+      try { text = read(path, 'utf8') } catch { return 0 }
+      return typeof text === 'string' && /^\d{1,15}\n?$/.test(text) ? Number(text.trim()) : 0
+    },
+    save(n) {
+      chain = chain.then(() => write(path, `${n}\n`)).catch(() => {})
+      return chain
+    },
+  }
+}
+
 /**
  * `readState()` returns state.json's text; `kms` and `nsm` are the checks
  * above; `go` is createGoSkew (Go's signed timestamps, go_skew_ms);
  * `probe()` takes one KMS Date sample (it feeds `kms` itself);
  * `monoNs()` is CLOCK_MONOTONIC in ns (the helper's mono_ns), `perf()`
- * performance.now() (the checks' timebase), `wall()` Date.now(). `ok()` is the runtime rule,
+ * performance.now() (the checks' timebase), `wall()` Date.now();
+ * `disagreeStore` is createCountFile (or null: the count lives only in this
+ * Node process). `ok()` is the runtime rule,
  * `ready()` the boot rule, `fields()` the health line's clock fields.
  */
 export function createClock({
-  readState = () => readFile(STATE_FILE, 'utf8'), kms = createKmsCheck(), nsm = null, probe = async () => {}, log,
+  readState = () => readFile(STATE_FILE, 'utf8'), kms = createKmsCheck(), nsm = null, probe = async () => {}, log, disagreeStore = null,
   monoNs = () => Number(process.hrtime.bigint()), perf = () => performance.now(), wall = Date.now, go = createGoSkew({ mono: perf }),
   wait = ms => new Promise(resolve => setTimeout(resolve, ms)), everyMs = READ_EVERY_MS,
 } = {}) {
@@ -213,9 +244,10 @@ export function createClock({
   // proof), and Node's view of steps: the last anchor Date.now() −
   // performance.now() and when it last moved by over STEP_TOLERANCE_MS.
   let reported = null, anchorSeen = null, steppedAt = -Infinity
-  // clock_sources_disagree logged for a KMS proof, since this Node process
-  // started (healthz clock_disagree_kms): Go mails on a change of it.
-  let disagreeKms = 0
+  // clock_sources_disagree logged for a KMS proof in this enclave boot
+  // (healthz clock_disagree_kms), carried across Node restarts by
+  // disagreeStore: Go mails when it goes up.
+  let disagreeKms = disagreeStore?.load() ?? 0
   let latest = { code: 'helper_stale', unc: null }
 
   async function refresh() {
@@ -285,7 +317,7 @@ export function createClock({
     if (code !== 'kms_proof' && code !== 'nsm_node_proof') reported = null
     else if (reported !== code && contradicts(code === 'kms_proof' ? kms : nsm)) {
       reported = code
-      if (code === 'kms_proof') disagreeKms++
+      if (code === 'kms_proof') { disagreeKms++; void disagreeStore?.save(disagreeKms) }
       log?.event('clock_sources_disagree', { code })
     }
     return open
@@ -327,8 +359,8 @@ export function createClock({
      * the health line's, null when unknown, and nothing counted is reset
      * (clock_refused, which the line resets, is not here). Also the reason
      * (`clock_code`, one of the fixed codes) and `clock_disagree_kms`, the
-     * clock_sources_disagree events for a KMS proof since this Node process
-     * started.
+     * clock_sources_disagree events for a KMS proof in this enclave boot
+     * (disagreeStore; this Node process alone without one).
      */
     summary() {
       const clockOk = ok(), s = snapshot, skew = go?.median() ?? null, interval = kms?.interval() ?? null

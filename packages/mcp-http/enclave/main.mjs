@@ -25,6 +25,7 @@
 // same path, with code constants_invalid, before anything else starts.
 import { createServer as createHTTPServer } from 'node:http'
 import { realpathSync } from 'node:fs'
+import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { createAttestor, decodeAttestationDocument } from '../attestation.mjs'
 import { createLog } from '../log.mjs'
@@ -37,7 +38,7 @@ import { parseBootJson, readLocal as readLocalPort } from './boot.mjs'
 import { imageConstants, PORTS } from './constants.mjs'
 import { createReadingLimits } from './budgets.mjs'
 import { createCIMDFetcher } from './cimd-fetch.mjs'
-import { createClock, createKmsCheck, createNsmCheck } from './clock.mjs'
+import { createClock, createCountFile, createKmsCheck, createNsmCheck, DISAGREE_FILE } from './clock.mjs'
 import { createContent } from './content.mjs'
 import { createHealthLine, createMemSampler, clockSkew, HEALTH_EVERY_MS, prefix } from './health.mjs'
 import { createHmacGuard } from './hmac.mjs'
@@ -131,9 +132,12 @@ export async function startEnclave(options = {}) {
   // The reader's clock (clock.mjs): whether the system clock, which chronyd
   // steers to NSM time, can be trusted right now. It hears every KMS answer's
   // Date and every attestation document's NSM timestamp, and probes the KMS
-  // endpoint's Date itself while it waits at boot.
+  // endpoint's Date itself while it waits at boot. Its count of KMS
+  // disagreements lives in the run directory (tmpfs, per enclave boot, like
+  // boot_id), so a Node restart carries it on.
+  const runDir = overrides.runDir ?? c.RUN_DIR
   const kmsDate = () => clockSkew({ url: overrides.clockUrl, fetch: options.fetch, now, onRange: range => clock.onKms(range) })
-  const clock = options.clock ?? createClock({ kms: createKmsCheck({ wall: now, log }), nsm: createNsmCheck({ wall: now }), probe: kmsDate, log, wall: now })
+  const clock = options.clock ?? createClock({ kms: createKmsCheck({ wall: now, log }), nsm: createNsmCheck({ wall: now }), probe: kmsDate, log, wall: now, disagreeStore: createCountFile(join(runDir, DISAGREE_FILE)) })
   const facts = { pcr0: null, state: null, secrets: null, certificates: null, policy: null, acmeUri: null, content: null, reader: null, budgets: null, ready: false }
 
   // Every document the NSM signs carries PCR0; the first one tells the reader its own.
@@ -270,7 +274,6 @@ export async function startEnclave(options = {}) {
     // 7. The challenge listener, then the per-boot key and the certificate.
     const challengeServer = challenges.server()
     await listen(challengeServer, ports.challenge, host)
-    const runDir = overrides.runDir ?? c.RUN_DIR
     const material = await step('tls_key_failed', () => bootMaterial(runDir))
     const names = [c.PUBLIC_HOST, `${material.bootId}${c.BOOT_NAME_SUFFIX}`]
     const certificates = createCertificates({ dir: runDir, material, names, acme, log, now, wait })
