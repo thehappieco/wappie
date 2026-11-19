@@ -125,6 +125,8 @@ export function createRelay({ archive, secret, fetch = globalThis.fetch, timeout
 }
 
 const json = (value, status = 200) => Response.json(value, { status, headers: { 'Cache-Control': 'no-store' } })
+/** The reader's clock is not trusted (reader 0.6.1): try again in a minute. */
+export const clockUnknown = () => Response.json({ code: 'clock_unknown' }, { status: 503, headers: { 'Cache-Control': 'no-store', 'Retry-After': '60' } })
 
 /** Only Go on this host may call these; anything else sees a 404. */
 export function internalGuard(request, info, secret) {
@@ -174,8 +176,16 @@ export function decodeCiphertext(value) {
  * - `liveList` (live_list_v1, §19.22) adds `POST /internal/workspaces/{id}/live-list`.
  * - `unknownLiveMax` is the live connections a workspace may hold of
  *   clients nobody tested and console tokens together (§19.10).
+ * - `clock` (reader 0.6.1, enclave/clock.mjs) is the reader's clock. The
+ *   guard always runs first, so a caller without a valid signature learns
+ *   nothing about the clock: a missing or bad signature stays 401 whatever
+ *   the clock says. While the clock is not trusted, a request Go really
+ *   signed whose timestamp looks stale gets 503 `clock_unknown` (our clock,
+ *   not Go's, is the likely fault), and so does every request that passes
+ *   the guard, except healthz, which answers 200 with its `state`
+ *   `clock_unknown` (health() says so) so that Go keeps seeing the reader.
  */
-export function internalRoutes({ state, secret, now, pendingFor, auth, health, prepare, rotateSecret, content, unknownLiveMax, liveList }) {
+export function internalRoutes({ state, secret, now, pendingFor, auth, health, prepare, rotateSecret, content, unknownLiveMax, liveList, clock }) {
   const refused = (meta, error) => {
     meta.code = error.code
     return json({ code: error.code, ...(Number.isInteger(error.retry_after_s) ? { retry_after_s: error.retry_after_s } : {}), ...(error.limit === 'month' || error.limit === 'day' ? { limit: error.limit } : {}) }, error.status)
@@ -186,9 +196,17 @@ export function internalRoutes({ state, secret, now, pendingFor, auth, health, p
   return async (request, info, meta) => {
     const path = new URL(request.url).pathname
     const rejected = await guard(request, info)
-    if (rejected) { meta.route = 'internal'; meta.code = rejected.headers.get('x-wappie-code') ?? (rejected.status === 401 ? 'unauthorized' : rejected.status === 503 ? 'unavailable' : 'not_found'); return withoutCode(rejected) }
+    const healthz = path === '/internal/healthz' && request.method === 'GET'
+    const unknown = Boolean(clock) && !clock.ok()
+    if (rejected) {
+      meta.route = 'internal'
+      meta.code = rejected.headers.get('x-wappie-code') ?? (rejected.status === 401 ? 'unauthorized' : rejected.status === 503 ? 'unavailable' : 'not_found')
+      if (unknown && meta.code === 'hmac_stale') { meta.code = 'clock_unknown'; return clockUnknown() }
+      return withoutCode(rejected)
+    }
     let match
-    if (path === '/internal/healthz' && request.method === 'GET') { meta.route = 'GET /internal/healthz'; return json(health ? health() : { ok: true }) }
+    if (healthz) { meta.route = 'GET /internal/healthz'; return json(health ? health() : { ok: true }) }
+    if (unknown) { meta.route = 'internal'; meta.code = 'clock_unknown'; return clockUnknown() }
     if (path === '/internal/relay-secret' && request.method === 'POST' && rotateSecret) {
       meta.route = 'POST /internal/relay-secret'
       const body = await strictBody(request, ['ciphertext'])

@@ -272,6 +272,23 @@ export function createClock({
     noteGo(seconds, at) { go?.note(seconds, at) },
     /** go_skew_ms now, or null with no verified request in the window. */
     goSkew: () => go?.median() ?? null,
+    /** One KMS answer's range (kms.mjs dateRangeMiddleware, health.mjs clockSkew). */
+    onKms(range) { kms?.add(range) },
+    /** One attestation run as attest.mjs's onSample gives it. */
+    onNsm(sample) { nsm?.add(nsmRange(sample)) },
+    /**
+     * What /internal/healthz reports (main.mjs health()): the same values as
+     * the health line's, null when unknown, and nothing counted is reset.
+     */
+    summary() {
+      const clockOk = ok(), s = snapshot, skew = go?.median() ?? null
+      return {
+        clock_ok: clockOk,
+        clock_unc_ms: latest.unc === null ? null : Math.ceil(latest.unc),
+        nsm_skew_ms: round(s?.nsm_skew_ms) ?? null,
+        go_skew_ms: skew,
+      }
+    },
     fields() {
       const clockOk = ok(), s = snapshot, interval = kms?.interval() ?? null
       const taken = refused

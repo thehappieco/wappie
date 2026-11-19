@@ -6,6 +6,7 @@
 // call answer what was recorded, dedupe answers an identical call, and a
 // lost answer is `send_uncertain`, final for automation, never repeated.
 import { randomBytes } from 'node:crypto'
+import { RelayError } from '../../internal.mjs'
 import { messageURLs } from '../provider.mjs'
 import { dedupeKey } from './dedupe.mjs'
 import { DRAFTS_PER_HOUR, SEND_MIN_INTERVAL_MS, SEND_ROUTE_TIMEOUT_MS, SENDS_PER_DAY } from './policy.mjs'
@@ -81,7 +82,13 @@ export function createSends(ctx) {
     let answer
     try {
       answer = await relay.sending(id, record.api_key, 'POST', 'send', { timeout: SEND_ROUTE_TIMEOUT_MS, body: { client_ref: clientRef(), kind: 'self', device_id: device, text } })
-    } catch {
+    } catch (error) {
+      // Refused here because the reader's clock is not trusted (relay.mjs):
+      // nothing left, so it does not count and may be tried again.
+      if (error instanceof RelayError && error.code === 'clock_unknown') {
+        windows.sends.release(id, taken.slot)
+        throw refusal('send_failed')
+      }
       // The request may have reached Go and the message WhatsApp: it counts, and it is never sent again.
       event('send_uncertain', id)
       throw refusal('send_uncertain', { keep: true })

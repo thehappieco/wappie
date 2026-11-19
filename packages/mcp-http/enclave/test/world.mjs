@@ -29,6 +29,34 @@ export const relayContext = { purpose: 'wappie-mcp-relay', reader_id: 'enclave' 
 export const LEGACY_POLICY = Object.freeze({ mode: 'allowlist', hosts: ['claude.ai', 'chatgpt.com'] })
 
 /**
+ * A clock for startEnclave's `clock` (clock.mjs createClock's interface) set
+ * by hand: `c.open` (true, false, or a function answering either) is what
+ * ok() says, and ready() resolves at once unless `c.never` is set, when it
+ * fails as a clock that never became trusted does. It counts what the reader
+ * tells it: `refused` (relay calls refused), `go` (verified Go timestamps),
+ * `kms` (KMS ranges) and `nsm` (attestation samples).
+ */
+export function fakeClock({ open = true, never = false } = {}) {
+  const c = {
+    open, never, refused: 0, go: [], kms: [], nsm: [], readies: 0,
+    ok: () => Boolean(typeof c.open === 'function' ? c.open() : c.open),
+    async ready() {
+      c.readies++
+      if (c.never) throw Object.assign(new Error('clock_unknown'), { code: 'clock_unknown' })
+    },
+    refresh: async () => {}, start() {}, stop() {},
+    code: () => (c.ok() ? 'ok' : 'unc_high'),
+    noteRefused() { c.refused++ },
+    noteGo(seconds, at) { c.go.push([seconds, at]) },
+    onKms(range) { c.kms.push(range) },
+    onNsm(sample) { c.nsm.push(sample) },
+    summary: () => ({ clock_ok: c.ok(), clock_unc_ms: c.ok() ? 12 : null, nsm_skew_ms: c.ok() ? 3 : null, go_skew_ms: null }),
+    fields: () => ({ clock_ok: c.ok(), ...(c.ok() ? { clock_unc_ms: 12, nsm_skew_ms: 3 } : {}), clock_refused: c.refused }),
+  }
+  return c
+}
+
+/**
  * Everything the enclave talks to, plus a way to (re)start it the way
  * entrypoint.sh would. `archive(apiKey)` replaces the synthetic archive (it
  * returns a fixture with `server` and `close`); `w.jail`, when set before a
@@ -47,8 +75,13 @@ export const LEGACY_POLICY = Object.freeze({ mode: 'allowlist', hosts: ['claude.
  * answered a call or the enclave has written a line: for what the enclave
  * does after its answer, never awaited by it (a best-effort revoke, a budget
  * hit, a request's line written once its response has gone).
+ *
+ * The reader's clock (reader 0.6.1) is `w.clock`: by default a fakeClock that
+ * is always trusted, so the tests that move `w.skew` by minutes never close
+ * the gate. A test of the gate passes its own `clock` (a fakeClock it sets,
+ * or a real createClock) to `world()` or sets `w.clock` before a start.
  */
-export async function world(t, { bootJson, archive, constants: replaced = {} } = {}) {
+export async function world(t, { bootJson, archive, constants: replaced = {}, clock: clockOption } = {}) {
   const apiKey = `${randomBytes(4).toString('hex')}.${randomBytes(32).toString('base64url')}`
   const f = await (archive ?? (token => fixture({ token })))(apiKey)
   const relaySecret = randomBytes(32).toString('base64url')
@@ -77,7 +110,7 @@ export async function world(t, { bootJson, archive, constants: replaced = {} } =
   const c = { ...Object.fromEntries(Object.entries(constants).filter(([, value]) => typeof value !== 'function')), KMS_READER_KEY_ARN: READER_KEY, KMS_BOOT_KEY_ARN: BOOT_KEY, ...replaced }
   const w = {
     f, go, ca, acme, kms, nsmCalls, lines, exits, apiKey, relaySecret, goSecrets, runDir, enclave: null, skew: 0, frozenAt: null, jail: null, aiTransport: null, mediaDelay: null,
-    clientPolicy: LEGACY_POLICY, cimdFetcher: null,
+    clientPolicy: LEGACY_POLICY, cimdFetcher: null, clock: clockOption ?? fakeClock(),
     until: waits.until,
     /**
      * Holds the clock still from here to the world's end, `w.skew` still
@@ -91,6 +124,7 @@ export async function world(t, { bootJson, archive, constants: replaced = {} } =
     async start() {
       w.enclave = await startEnclave({
         constants: c, sink, kms, attest: nsm, now: clock, exit: code => exits.push(code), wait: () => new Promise(resolve => setTimeout(resolve, 5)), challenges: challenges(),
+        clock: w.clock,
         ...(w.jail ? { jail: w.jail } : {}),
         // Never a real provider: the AI egress goes to w.aiTransport (ai-stubs.mjs), or fails.
         aiTransport: (url, init) => (w.aiTransport ? w.aiTransport(url, init) : Promise.reject(new TypeError('fetch failed'))),

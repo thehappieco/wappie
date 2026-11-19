@@ -17,6 +17,7 @@ import { createServer } from '@whatserver2/mcp'
 import { inNetwork, parseAddress, parseCIDR } from '@whatserver2/mcp/bundle'
 import { ICON_FILES } from '@whatserver2/mcp/icons'
 import { AttestationError, decodeNonce } from './attestation.mjs'
+import { clockUnknown } from './internal.mjs'
 import { clientIP, ipKey } from './limits.mjs'
 import { homePage, robotsResponse } from './pages.mjs'
 import { configFor, providerFor, tierOf } from './provider.mjs'
@@ -27,6 +28,9 @@ export const ATTESTATION_PER_MINUTE = 10
 // All addresses together (reader 0.6.1): each request runs nsm-attest, and
 // the NSM and the single vCPU are shared with nsm-timefeed, which keeps the clock.
 export const ATTESTATION_ALL_PER_MINUTE = 60
+
+/** The OAuth and MCP routes, which a clock not trusted closes (reader 0.6.1). */
+const MCP_ROUTES = new Set(['/mcp', '/mcp/authorize', '/mcp/authorize/complete', '/mcp/authorize/decline', '/mcp/token', '/mcp/register', '/mcp/revoke'])
 
 /** Whether `address` lies in one of a console token's allowed networks (§19.18); an empty list allows every network. */
 export function networkAllowed(networks, address) {
@@ -79,9 +83,16 @@ function iconResponse(request, { type, bytes }) {
  * from anywhere else (§19.18). `readerVersion` is the version every MCP
  * server names in serverInfo, and `site` (`{console, documentation}`) the
  * links of the page at `/` on the public listener (§19.29).
+ *
+ * From reader 0.6.1 `clock` (enclave/clock.mjs) closes `/mcp` and every
+ * `/mcp/*` route with 503 `clock_unknown` while the reader's clock is not
+ * trusted: tokens, codes and consents all carry times. The discovery
+ * documents, the icons, the page at `/`, robots.txt and `/attestation`
+ * (whose timestamp is the NSM's, and which is how an operator looks at a
+ * reader in trouble) stay open, and any other path keeps its 404.
  */
 export function createRouter({ state, metadata, as, internal, verifier, limiter, log, archive, publicHost, listenerHosts, attestation, trustForwarded = true, content,
-  clientLimits, readingLimits, readerVersion, site = {} }) {
+  clientLimits, readingLimits, readerVersion, site = {}, clock }) {
   const gate = requireBearerAuth({ verifier, requiredScopes: ['wappie:read'], resourceMetadataUrl: metadata.resourceMetadataUrl })
   // What every MCP server built here names (§19.29): the icon URLs this listener serves, the reader's version, and whether
   // this reader can open content, so that a metadata connection is told it may reconnect for text.
@@ -135,6 +146,11 @@ export function createRouter({ state, metadata, as, internal, verifier, limiter,
           if (error instanceof AttestationError) { meta.code = error.code; return refuse(error.status, error.code) }
           throw error
         }
+      }
+      if (clock && (path === '/mcp' || path.startsWith('/mcp/')) && !clock.ok()) {
+        meta.route = MCP_ROUTES.has(path) ? `${request.method} ${path}` : 'unmatched'
+        meta.code = 'clock_unknown'
+        return clockUnknown()
       }
       switch (path) {
         case '/mcp': {
