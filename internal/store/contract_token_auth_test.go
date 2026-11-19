@@ -312,7 +312,8 @@ func TestATokensPauseIsItsCreators(t *testing.T) {
 	ctx := context.Background()
 	device := w.Number("Vendas")
 	member := w.Linked("member", "member", uuid.New())
-	if err := w.Keys.PutGrant(ctx, store.Grant{TenantID: w.Tenant, DeviceID: device, UserID: member, Epoch: 1, SealedDSK: []byte("g")}, &w.Owner); err != nil {
+	if err := w.Keys.PutGrant(ctx, store.Grant{TenantID: w.Tenant, DeviceID: device, UserID: member, Epoch: 1, SealedDSK: []byte("g"),
+		Fingerprint: w.ArchiveKey(device, 1)}, &w.Owner); err != nil {
 		t.Fatal(err)
 	}
 	if err := w.Users.SetDevicePermission(ctx, w.Tenant, w.Owner, store.DevicePermission{DeviceID: device, UserID: member, Read: true}); err != nil {

@@ -575,7 +575,8 @@ func TestDeviceReadersListsTokensApart(t *testing.T) {
 	}
 	detail := payload[wsapi.DeviceDetail](t, f)
 	listed("device.info", detail.Tokens, detail.Readers)
-	f = ask(t, c, hello, wsapi.TypeGrantAdd, wsapi.GrantRequest{DeviceID: dev, UserID: other.String(), Epoch: 1, SealedDSK: []byte("sealed")})
+	f = ask(t, c, hello, wsapi.TypeGrantAdd, wsapi.GrantRequest{DeviceID: dev, UserID: other.String(), Epoch: 1, SealedDSK: []byte("sealed"),
+		Fingerprint: grantFingerprint(t, store.NewKeys(c.pool), c.tenant, uuid.MustParse(dev), 1)})
 	if f.Type != wsapi.TypeReaders {
 		t.Fatalf("grant.add: %s %s", f.Type, f.Payload)
 	}

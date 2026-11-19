@@ -149,7 +149,8 @@ func (w *World) Number(label string) uuid.UUID {
 	if err := w.Keys.CreateArchiveKey(ctx, w.Tenant, device, 1, pub); err != nil {
 		w.T.Fatal(err)
 	}
-	if err := w.Keys.PutGrant(ctx, store.Grant{TenantID: w.Tenant, DeviceID: device, UserID: w.Owner, Epoch: 1, SealedDSK: []byte("grant")}, &w.Owner); err != nil {
+	if err := w.Keys.PutGrant(ctx, store.Grant{TenantID: w.Tenant, DeviceID: device, UserID: w.Owner, Epoch: 1, SealedDSK: []byte("grant"),
+		Fingerprint: store.ArchiveKeyFingerprint(pub.Bytes())}, &w.Owner); err != nil {
 		w.T.Fatal(err)
 	}
 	if err := w.Users.SetDevicePermission(ctx, w.Tenant, w.Owner, store.DevicePermission{DeviceID: device, UserID: w.Owner, Read: true, Send: true, Manage: true}); err != nil {
@@ -394,7 +395,8 @@ func (w *World) Rotate(device uuid.UUID, epoch uint16) {
 		w.T.Fatal(err)
 	}
 	// The owner reads the new epoch, so it can seal it to a token again.
-	if err := w.Keys.PutGrant(ctx, store.Grant{TenantID: w.Tenant, DeviceID: device, UserID: w.Owner, Epoch: epoch, SealedDSK: []byte("grant")}, &w.Owner); err != nil {
+	if err := w.Keys.PutGrant(ctx, store.Grant{TenantID: w.Tenant, DeviceID: device, UserID: w.Owner, Epoch: epoch, SealedDSK: []byte("grant"),
+		Fingerprint: store.ArchiveKeyFingerprint(pub.Bytes())}, &w.Owner); err != nil {
 		w.T.Fatal(err)
 	}
 }

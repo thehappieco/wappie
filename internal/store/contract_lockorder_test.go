@@ -618,7 +618,7 @@ func TestATokenCommitBesideTheWorkspacesRealWriters(t *testing.T) {
 		}},
 		"grant.add": {"grant.add", `SELECT 1 FROM workspace_memberships WHERE user_id = $3 FOR UPDATE`, func(w world) error {
 			return w.keys.PutGrant(context.Background(), store.Grant{TenantID: w.tenant, DeviceID: w.device, UserID: w.member, Epoch: 1,
-				SealedDSK: []byte("grant")}, &w.owner)
+				SealedDSK: []byte("grant"), Fingerprint: w.archive}, &w.owner)
 		}},
 	}
 	// The pairs whose writer reaches the rows the commit takes: a move-out

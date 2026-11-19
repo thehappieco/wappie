@@ -75,7 +75,7 @@ func TestARenewalsKeyProvesItsGrantsOnREST(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := r.w.Keys.PutGrant(ctx, store.Grant{TenantID: r.w.Tenant, DeviceID: device, UserID: svc.ID, Epoch: r.w.Epoch(device),
-		SealedDSK: []byte("sealed to the attested key")}, &r.w.Owner); err != nil {
+		SealedDSK: []byte("sealed to the attested key"), Fingerprint: r.w.ArchiveKey(device, r.w.Epoch(device))}, &r.w.Owner); err != nil {
 		t.Fatal(err)
 	}
 	in20 := time.Now().Add(20 * time.Minute)

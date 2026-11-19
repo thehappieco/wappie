@@ -156,7 +156,8 @@ func TestATokenIdentityIsNeverAMember(t *testing.T) {
 	// taken for a person.
 	admin := w.linked("admin", "admin", uuid.New(), true)
 	for name, err := range map[string]error{
-		"grant.add": w.keys.PutGrant(ctx, store.Grant{TenantID: w.tenant, DeviceID: device, UserID: *identity, Epoch: 1, SealedDSK: []byte("g")}, &w.owner),
+		"grant.add": w.keys.PutGrant(ctx, store.Grant{TenantID: w.tenant, DeviceID: device, UserID: *identity, Epoch: 1, SealedDSK: []byte("g"),
+			Fingerprint: w.archiveKey(device, 1)}, &w.owner),
 		"a permission": w.users.SetDevicePermission(ctx, w.tenant, w.owner,
 			store.DevicePermission{DeviceID: device, UserID: *identity, Read: true}),
 		"a member's update":       w.users.UpdateMember(ctx, w.tenant, w.owner, *identity, "admin", "active"),
@@ -1195,7 +1196,8 @@ func TestAnOldEpochsTokenGrantHoldsTheNumber(t *testing.T) {
 	}
 	// The mover holds every epoch's key, or the preview stops before the
 	// others.
-	if err := w.keys.PutGrant(ctx, store.Grant{TenantID: w.tenant, DeviceID: device, UserID: w.owner, Epoch: 2, SealedDSK: []byte("grant")}, &w.owner); err != nil {
+	if err := w.keys.PutGrant(ctx, store.Grant{TenantID: w.tenant, DeviceID: device, UserID: w.owner, Epoch: 2, SealedDSK: []byte("grant"),
+		Fingerprint: store.ArchiveKeyFingerprint(pub.Bytes())}, &w.owner); err != nil {
 		t.Fatal(err)
 	}
 	if got := why(); got != "read,old_key" {

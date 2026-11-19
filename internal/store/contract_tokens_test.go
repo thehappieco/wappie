@@ -147,7 +147,8 @@ func (w *tokenWorld) number(id uuid.UUID) uuid.UUID {
 func (w *tokenWorld) reads(user, device uuid.UUID) {
 	w.t.Helper()
 	ctx := context.Background()
-	if err := w.keys.PutGrant(ctx, store.Grant{TenantID: w.tenant, DeviceID: device, UserID: user, Epoch: 1, SealedDSK: []byte("grant")}, &w.owner); err != nil {
+	if err := w.keys.PutGrant(ctx, store.Grant{TenantID: w.tenant, DeviceID: device, UserID: user, Epoch: 1, SealedDSK: []byte("grant"),
+		Fingerprint: grantFingerprint(w.t, w.keys, w.tenant, device, 1)}, &w.owner); err != nil {
 		w.t.Fatal(err)
 	}
 	if err := w.users.SetDevicePermission(ctx, w.tenant, w.owner, store.DevicePermission{DeviceID: device, UserID: user, Read: true}); err != nil {

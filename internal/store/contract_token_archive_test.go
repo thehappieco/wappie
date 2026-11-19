@@ -31,7 +31,8 @@ func (w *tokenWorld) rekey(device uuid.UUID) {
 	if err := w.keys.CreateArchiveKey(ctx, w.tenant, device, 1, pub); err != nil {
 		w.t.Fatal(err)
 	}
-	if err := w.keys.PutGrant(ctx, store.Grant{TenantID: w.tenant, DeviceID: device, UserID: w.owner, Epoch: 1, SealedDSK: []byte("grant")}, &w.owner); err != nil {
+	if err := w.keys.PutGrant(ctx, store.Grant{TenantID: w.tenant, DeviceID: device, UserID: w.owner, Epoch: 1, SealedDSK: []byte("grant"),
+		Fingerprint: store.ArchiveKeyFingerprint(pub.Bytes())}, &w.owner); err != nil {
 		w.t.Fatal(err)
 	}
 }
