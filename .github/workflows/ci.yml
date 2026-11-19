@@ -244,6 +244,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: make media-jail-check
+      - run: make nsm-attest-check
       - run: make enclave-image ENCLAVE_TAG=wappie-reader:ci
       # The jail itself: the escape tests, media-jail's signals and table, and
       # every corpus file through the workers under media-jail, natively and

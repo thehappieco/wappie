@@ -1,6 +1,6 @@
 .PHONY: help run test test-race lint lint-layout vet fmt cover fuzz dev-up dev-down build tidy check \
 	fixtures-check identifiers-check client-install client-build client-test client-check client-dist-check reader-inputs-check mcp-check mcp-http-check public-source \
-	enclave-check enclave-image enclave-jail media-worker-check media-jail-check reader-verify
+	enclave-check enclave-image enclave-jail media-worker-check media-jail-check nsm-attest-check reader-verify
 
 GO      ?= go
 PKGS    := ./...
@@ -163,6 +163,22 @@ RUST_IMAGE ?= $(shell sed -n 's/^ARG RUST_IMAGE=//p' deploy/enclave/Dockerfile)
 media-jail-check: ## Test and build media-jail in the pinned rust image (arm64 Docker)
 	docker run --rm -v "$(CURDIR)/deploy/enclave/media-jail:/mj:ro" -w /mj -e CARGO_TARGET_DIR=/tmp/target $(RUST_IMAGE) \
 	  sh -c 'apk add --no-cache musl-dev > /dev/null && cargo test --locked && cargo test --locked --features emulate-old-kernel && cargo build --locked --release'
+
+# nsm-attest and nsm-timefeed: unit tests (with and without the probe-only
+# fake-drift feature), the release build, the exit codes without /dev/nsm,
+# and the fake-drift marker: absent from the release nsm-timefeed, present
+# in a fake-drift build.
+nsm-attest-check: ## Test and build nsm-attest and nsm-timefeed in the pinned rust image (arm64 Docker)
+	docker run --rm -v "$(CURDIR)/deploy/enclave/nsm-attest:/nsm:ro" -w /nsm -e CARGO_TARGET_DIR=/tmp/target $(RUST_IMAGE) \
+	  sh -c 'set -e; apk add --no-cache musl-dev > /dev/null; cargo test --locked; cargo test --locked --features fake-drift; \
+	    cargo build --locked --release; bin=/tmp/target/release; \
+	    rc=0; $$bin/nsm-timefeed > /dev/null 2>&1 || rc=$$?; test $$rc -eq 3; \
+	    rc=0; $$bin/nsm-timefeed relative /tmp > /dev/null 2>&1 || rc=$$?; test $$rc -eq 3; \
+	    rc=0; $$bin/nsm-timefeed /run/chrony/nsm.sock /tmp > /dev/null 2>&1 || rc=$$?; test $$rc -eq 2; \
+	    rc=0; $$bin/nsm-attest - - - > /dev/null 2>&1 || rc=$$?; test $$rc -eq 2; \
+	    if grep -q WAPPIE_FAKE_DRIFT $$bin/nsm-timefeed; then echo "release nsm-timefeed holds WAPPIE_FAKE_DRIFT" >&2; exit 1; fi; \
+	    cargo build --locked --release --features fake-drift; grep -q WAPPIE_FAKE_DRIFT $$bin/nsm-timefeed; \
+	    echo "nsm-attest-check: ok"'
 
 reader-verify: client-build ## Install and test the attestation CLI and the CT monitor
 	$(NPM) --prefix tools/reader-verify ci

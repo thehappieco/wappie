@@ -76,7 +76,9 @@ version = "0.1.0"
 dependencies = [
  "aws-nitro-enclaves-nsm-api",
  "hex",
+ "libc",
  "serde_bytes",
+ "serde_cbor",
 ]
 
 [[package]]
