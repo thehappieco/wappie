@@ -699,6 +699,7 @@ whatserverd contract mode off|observe
 whatserverd contract settings off|read [--platform-told]
 whatserverd contract settings status [--check]
 whatserverd contract tokens on|off|status
+whatserverd contract apply -dry-run [-sub S]|-confirm N
 whatserverd tokens suspend [-note N] SELECTOR|TOKEN|-
 whatserverd tokens suspend -replay F
 whatserverd tokens lift SELECTOR|TOKEN|-
@@ -708,8 +709,8 @@ whatserverd tokens retire-keys -dry-run|-apply -confirm N
 
 Run them as the server's user, with the socket's group and its
 configuration, and from the server's own working directory, as the
-deletion commands above: `status`, `diff`, `mode`, `settings` and `tokens`
-read the `.env` of their working directory (a root-only one stops them before they do
+deletion commands above: `status`, `diff`, `mode`, `settings`, `tokens` and
+`apply` read the `.env` of their working directory (a root-only one stops them before they do
 anything) and the database, which they never migrate, refusing a schema
 that is not exactly this binary's. `check` reads neither a `.env` nor the
 database, only its environment and the secret's files. For example:
@@ -955,6 +956,20 @@ generation, or `gone`, and subscribes everyone again by itself. If a
 rotation happened after the platform's backup, Wappie holds a secret the
 platform no longer has: `contract check` exits `3`, and the owner
 reinstalls it (`contract-secret reset`, then the install).
+
+### Rolling back below 0055
+
+A binary older than 0055 (the enforce apply's markers, DS54) refuses a
+database at version 55, so its down-step comes first, before 0053's. Stop
+the server and the billing service, check the file's sha256 against the
+release's (`migration55_sha256`), and run the down-step in the header of
+`0055_contract_enforce.sql` as the owner of the tables. It refuses at
+enforce and while a migration after 0055 is applied, and a refusal changes
+nothing. It drops the apply's markers and the closing records, a transfer
+record whose actor was forgotten and an owner's notice the app raised, each
+counted; keys and connections ended with 0055's reasons stay ended, without
+a reason; an account the contract disabled and a team it suspended stay so.
+Then 0053's down-step, if the release is older still.
 
 ### Rolling back below 0053
 

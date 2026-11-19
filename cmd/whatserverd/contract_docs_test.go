@@ -293,6 +293,7 @@ func TestContractDocsMatchTheCode(t *testing.T) {
 			{"whatserverd contract settings off|read|on [--platform-told]", "settings off|read|on|status"},
 			{"whatserverd contract settings status [--check]", "settings off|read|on|status"},
 			{"whatserverd contract tokens on|off|status", "tokens on|off|status"},
+			{"whatserverd contract apply -dry-run [-sub S]|-confirm N", "apply -dry-run [-sub S]|-confirm N"},
 			{"whatserverd tokens suspend [-note N] SELECTOR|TOKEN|-", "tokens suspend [-note N] SELECTOR|TOKEN|-"},
 			{"whatserverd tokens suspend -replay F", "suspend -replay F"},
 			{"whatserverd tokens lift SELECTOR|TOKEN|-", "lift SELECTOR|TOKEN|-"},

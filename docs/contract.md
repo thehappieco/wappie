@@ -1946,14 +1946,65 @@ in a transaction of their own that takes no workspace or token row: the
 token's sticky row, then its selector's stops, then its selector's date,
 in the applier's order.
 
+## Applying the documents (enforce E1)
+
+What enforce does with the stored documents is in this release, and does
+nothing yet (DS54 in [decisions](decisions.md); migration 0055): every
+apply refuses unless the mode is `enforce`, which only E2 can set.
+
+```
+whatserverd contract apply -dry-run [-sub S]|-confirm N
+```
+
+As the service user from the server's working directory, like `contract
+diff`. `-dry-run` reads in one read-only transaction, in any mode, and
+writes nothing: one line per action, by ids, roles and counts (never an
+address, a name or a label), then `N actions, M held`. With `-sub` it lists
+one sub's: its teams' creation, its workspaces' parts and its account's.
+`-confirm N` applies every workspace, account and the orphan services'
+sweep once `N` is the dry run's count of actions; before enforce it refuses
+("contract apply: refused: … needs the contract at enforce") and writes
+nothing.
+
+The actions:
+
+| Action | What it does at enforce |
+|---|---|
+| `team_created` | a team the documents name that Wappie lacks: the platform's id and name, kind team, no capacity row, no avatar |
+| `member_added`, `role_changed`, `member_enabled` | a membership the document lists: added, given its role (a demotion ends the person's sessions there and expires their pending invitations), or set active with nothing restored |
+| `member_lost` | a person's membership in a recorded workspace the document does not list: every effect of a removal, and their AI keychain items there |
+| `team_renamed`, `personal_named` | a workspace's name at the highest `wversion`; a personal one with no name, "Espaço pessoal" in its owner's language |
+| `team_closed`, `team_reopened` | a closed team suspended; reopened only when the contract suspended it |
+| `account_suspended`, `account_enabled` | a disable suspends the person (sessions, keys and connections end; grants, permissions and memberships stay); an active document lifts only the contract's disable |
+| `operator_disable` | an operator's disable stands over an active document |
+| `sessions_ended` | sessions whose family began before `sessions_revoked_at` (or a risen `disabled_at`) |
+| `credentials_stopped`, `service_kept` | what the person made before `credentials_revoked_at`; a service account they invited that is a number's sole key holder is kept, keyless |
+| `closing_seen` | a closed account: suspended, every team left, the closing recorded and held until a fresh answer confirms it |
+| `orphan_keys_revoked` | keys acting as a service user with no membership in their workspace, and its stray grants |
+| `held` | a part left for a later pass: `strands_unconfirmed`, `no_tenant`, `personal_mismatch`, `closing_unconfirmed` |
+
+A loss that would strand a number is held until the platform's
+generation is confirmed, then records `item.stranded` with the app as the
+actor and no cause. A closing is confirmed only by a fresh signed GET of
+the confirmed generation that still says closed: the personal
+workspace's numbers are then deleted (logged out, purged within 30 days
+of the closing seen), and once purged the account is forgotten and
+unsubscribed. An active answer deletes nothing and logs ERROR
+`closing_contradicted`. Going back to observe undoes nothing.
+
+The log lines (ids, codes and counts only): INFO `contract apply:
+applied`, WARN `contract apply: held` and `contract apply: operator
+disable stands`, ERROR `contract apply: failed` (its class recorded as
+`apply_failed` for `--check`), ERROR `contract apply: closing_contradicted`,
+INFO `contract orphan services: swept`.
+
 ## What enforce adds
 
 Nothing below ships in this release:
 
-- applying the documents: memberships and roles, a removal (a stranding
-  one held until the platform's generation is confirmed), a disable
-  (suspend, keys kept), a session or credential revocation, a team's closure
-  and rename, an account's closing;
+- the switch: mode `enforce` (0055's CHECK widened), every held person
+  subscribed again, and the apply wired into the follower, a sign-in's
+  documents and the leader's pass;
 - `409 managed_elsewhere` for member changes, accept-invite and the
   last-owner checks in platform teams, in place of `invitations_paused`.
   A platform account's workspace creation and person invitations already
