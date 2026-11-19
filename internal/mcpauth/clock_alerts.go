@@ -209,7 +209,9 @@ func (c *ClockAlerts) Observe(ctx context.Context, readerID string, health Reade
 	class, h := classify(health, err)
 	store := alertStore{path: filepath.Join(c.Dir, ReaderAlertsFile)}
 	var claims []claimed
+	var suppressed []string
 	updateErr := store.update(func(st *alertState) error {
+		claims, suppressed = nil, nil
 		tr := st.Readers[readerID]
 		switch {
 		case class == classNone:
@@ -224,13 +226,13 @@ func (c *ClockAlerts) Observe(ctx context.Context, readerID string, health Reade
 			st.Readers[readerID] = tr
 		}
 		for _, d := range observe(tr, class, h, now) {
-			if at, ok := tr.Failed[d.word]; ok && now.Sub(at) < alertRetry {
+			if at, ok := tr.Failed[d.word]; ok && within(now, at, alertRetry) {
 				continue
 			}
 			if last, ok := st.Sent[d.word]; ok && within(now, last, alertWindow) {
 				d.mark(tr)
 				delete(tr.Failed, d.word)
-				c.logDecision(d.word, alertSuppressed, nil)
+				suppressed = append(suppressed, d.word)
 				continue
 			}
 			claims = append(claims, claimed{dueAlert: d, at: now, prev: st.Sent[d.word]})
@@ -241,6 +243,9 @@ func (c *ClockAlerts) Observe(ctx context.Context, readerID string, health Reade
 	if updateErr != nil {
 		c.warnState(updateErr, now)
 		return
+	}
+	for _, word := range suppressed {
+		c.logDecision(word, alertSuppressed, nil)
 	}
 	for _, cl := range claims {
 		sendErr := c.Mail(ctx, cl.word, cl.nums)
