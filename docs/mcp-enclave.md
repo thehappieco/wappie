@@ -191,21 +191,43 @@ up, times out after 10 s, and reads at most 64 KiB of a response.
 
 | Method and path | Request | Success | Other statuses |
 |---|---|---|---|
-| `GET /internal/healthz` | none | 200 health object (below) | 401 |
+| `GET /internal/healthz` | none | 200 health object (below) | 401; from 0.6.1, 503 `clock_unknown` |
 | `GET /internal/requests/{id}` | none | 200 descriptor (the fields `link.mjs` `descriptor()` returns today; `reader_public_key` is the request's own X25519 key, and `kid` is the first 16 hex of its SHA-256) | 404, 503 `starting` |
 | `POST /internal/requests/{id}/prepare` | `{"nonce": b64url}`: 16 to 64 bytes decoded, strict keys | 200 prepared descriptor (§6.3) | 400 `bad_request`, 404, 429 `too_many_prepares` (more than 10 per request), 503 `policy_unknown`, `tls_not_ready`, `attest_failed` or `starting` |
 | `POST /internal/requests/{id}/bundle` | today's `BundleRelay` (`connection_id`, `tenant_id`, `kid`, `sealed`, `expires_at`) | 204 | today's codes; `unknown_kid` if `kid` is not the request's |
 | `POST /internal/connections/{id}/revoke` | none | 204 (idempotent) | 401 |
 | `POST /internal/relay-secret` | `{"ciphertext": base64}`: standard base64 with padding, 1 to 6144 bytes decoded | 204 | 400 `bad_request`, 502 `kms_failed` |
 
-Health object: `{"ok":true,"reader_id":"enclave","reader_version":"0.2.0","boot_id":<16 hex>,"state":"ready"|"loading","pcr0":<96 hex>,"tls_spki_sha256":<64 hex>|null,"cert_not_after":<RFC 3339>|null,"policy_sha256":<64 hex>|null,"acme_account_uri":<string>|null,"relay_secrets":1|2}`.
+Health object: `{"ok":true,"reader_id":"enclave","reader_version":"0.2.0","boot_id":<16 hex>,"state":"ready"|"loading","pcr0":<96 hex>,"tls_spki_sha256":<64 hex>|null,"cert_not_after":<RFC 3339>|null,"policy_sha256":<64 hex>|null,"acme_account_uri":<string>|null,"relay_secrets":1|2}`;
+from reader 0.6.1 `state` may also be `"clock_unknown"`, and the object adds
+`"clock_ok":true|false|null,"clock_unc_ms":<integer>|null,"nsm_skew_ms":<integer>|null,"go_skew_ms":<integer>|null`
+(the reader's clock, §10: whether it vouches for it, its uncertainty, its
+clock minus the NSM's, and its clock minus the timestamps on Go's verified
+requests, the median over a window at the timestamps' 1 s resolution).
+Go reads the clock fields apart (`internal/mcpauth/signed_relay.go`
+`ReaderHealth`): a field that is missing (an older reader), null, not a
+number (not a boolean for `clock_ok`) or more than a day either way is left
+out, and never fails the answer; a fraction is rounded to whole
+milliseconds.
 Go calls it every 60 s for each non-hosted reader, logs the `pcr0`, SPKI and
 policy fingerprints and the certificate's days left, and warns after 3
 consecutive failures. The `attested reader health` line also carries the
 reader's clock as its last request to Go showed it (§4): `clock_skew_s`,
 `clock_skew_authenticated` (false when the last reading was a stale
 request's claim) and `clock_skew_age_s`, all omitted until the reader has
-sent one. A **401** from `/internal/healthz` is the reader refusing Go's
+sent one. From 0.6.1 it adds `clock_ok`, `clock_unc_ms`, `nsm_skew_ms` and
+`go_skew_ms`, each only when the reader sent it. The line goes out under one
+of three messages, unchanged, which `scripts/reader_policy_gate.py` in the
+cloud repo matches exactly: the WARN `an attested reader's certificate is
+close to expiry` under 20 days left, else the WARN `an attested reader is
+not ready` for any state but `ready` (`clock_unknown` included), else
+`attested reader health`, a WARN when |go_skew_ms| ≥ 10000 (the reader
+vouches for its clock, so Go's host clock is the suspect) and INFO
+otherwise. A 0.6.1 reader that cannot vouch for its clock and finds Go's
+signature outside its window by that clock answers **503 `clock_unknown`**
+instead of a 401; Go reads the code of any answer other than 200 or 401
+(`HealthStatusError`, a code only when it matches
+`^[a-z][a-z0-9_]{0,39}$`) and the miss lines carry it as `code`. A **401** from `/internal/healthz` is the reader refusing Go's
 signature, and its body says nothing about why; Go logs, at most once per
 10 minutes per reader, the WARN `an attested reader refused this server's
 signed health check; a clock skew beyond the limit is the likely cause`
@@ -614,7 +636,8 @@ list every event the enclave writes. `clock_skew_ms` = local time
 minus (the `Date` header + RTT/2) of an unauthenticated `GET https://kms.eu-west-1.amazonaws.com/`
 over vsock 8000, verified TLS, once a minute. It has 1 s resolution, and the
 alarm threshold is 2 s. It is not in `/internal/healthz`; Go's view of the
-same clock is the skew it reads off the reader's signed requests (§4). `uncaughtException` and `unhandledRejection` write
+same clock is the skew it reads off the reader's signed requests (§4), and
+from 0.6.1 the clock fields of the health object (§5.1). `uncaughtException` and `unhandledRejection` write
 `{"event":"fatal","code":"uncaught"}` and exit with code 70.
 
 ## 11. Signatures that cross module boundaries

@@ -9,9 +9,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -184,6 +186,101 @@ type ReaderHealth struct {
 	PolicySHA256   *string    `json:"policy_sha256"`
 	ACMEAccountURI *string    `json:"acme_account_uri"`
 	RelaySecrets   int        `json:"relay_secrets"`
+	// The reader's clock, from reader 0.6.1 (docs/mcp-enclave.md §5.1).
+	// Each is nil from an older reader, when the reader sends null (it does
+	// not know), and when the value is not one Go reads: a field here never
+	// costs the health line, which carries the fingerprints the release
+	// gate reads.
+	//
+	// ClockOK is whether the reader vouches for its clock; when it does
+	// not, its state is "clock_unknown". ClockUncMS is its uncertainty,
+	// NSMSkewMS its clock minus the NSM's, and GoSkewMS its clock minus the
+	// timestamps on Go's verified requests, the median over a window, with
+	// the timestamps' 1 s resolution.
+	ClockOK    *bool  `json:"clock_ok"`
+	ClockUncMS *int64 `json:"clock_unc_ms"`
+	NSMSkewMS  *int64 `json:"nsm_skew_ms"`
+	GoSkewMS   *int64 `json:"go_skew_ms"`
+}
+
+// readerHealthWire is the health object as it arrives: the clock fields are
+// read apart, so a shape Go does not expect leaves the field out instead of
+// failing the whole answer. The outer fields shadow the embedded ones.
+type readerHealthWire struct {
+	ReaderHealth
+	ClockOK    json.RawMessage `json:"clock_ok"`
+	ClockUncMS json.RawMessage `json:"clock_unc_ms"`
+	NSMSkewMS  json.RawMessage `json:"nsm_skew_ms"`
+	GoSkewMS   json.RawMessage `json:"go_skew_ms"`
+}
+
+// maxClockMS bounds a clock field: a day either way is past anything a
+// reader can mean, and keeps the conversion to int64 exact.
+const maxClockMS = 24 * 60 * 60 * 1000
+
+// absent is a field left out or sent as null. Unmarshal reads a null into
+// a bool or a number as nothing at all, so it is told apart first.
+func absent(raw json.RawMessage) bool {
+	return len(raw) == 0 || string(raw) == "null"
+}
+
+// healthBool is a JSON boolean, or nil for anything else.
+func healthBool(raw json.RawMessage) *bool {
+	var v bool
+	if absent(raw) || json.Unmarshal(raw, &v) != nil {
+		return nil
+	}
+	return &v
+}
+
+// healthMS is a JSON number of milliseconds within maxClockMS, rounded to
+// the nearest whole one, or nil for anything else.
+func healthMS(raw json.RawMessage) *int64 {
+	var v float64
+	if absent(raw) || json.Unmarshal(raw, &v) != nil || math.Abs(v) > maxClockMS {
+		return nil
+	}
+	ms := int64(math.Round(v))
+	return &ms
+}
+
+// ReaderCodeClockUnknown is a 0.6.1 reader that cannot vouch for its clock
+// and, by that clock, found Go's signature outside its window: it answers
+// 503 with this code instead of a 401. A reader that cannot vouch for its
+// clock but accepts the signature answers 200 with state "clock_unknown".
+const ReaderCodeClockUnknown = "clock_unknown"
+
+// HealthStatusError is the reader answering its health check with a status
+// other than 200 or 401. It is ErrReaderUnavailable.
+type HealthStatusError struct {
+	// Status is the reader's answer.
+	Status int
+	// Code is the {"code":...} of the body when it has the shape of one
+	// (ReaderCodeClockUnknown, say), else empty.
+	Code string
+}
+
+func (e *HealthStatusError) Error() string {
+	msg := ErrReaderUnavailable.Error() + ": healthz answered " + strconv.Itoa(e.Status)
+	if e.Code != "" {
+		msg += " " + e.Code
+	}
+	return msg
+}
+
+// Unwrap makes the answer ErrReaderUnavailable.
+func (e *HealthStatusError) Unwrap() error { return ErrReaderUnavailable }
+
+// healthCode is the body's code when it has the shape of one, else empty:
+// the body is the reader's, and only a code goes into the log.
+func healthCode(body []byte) string {
+	var e struct {
+		Code string `json:"code"`
+	}
+	if json.Unmarshal(body, &e) != nil || !codePattern.MatchString(e.Code) {
+		return ""
+	}
+	return e.Code
 }
 
 // errHealthzUnauthorized is the reader refusing this server's signature on
@@ -201,12 +298,17 @@ func (c *SignedRelay) Health(ctx context.Context) (ReaderHealth, error) {
 		return ReaderHealth{}, fmt.Errorf("%w: %w", ErrReaderUnavailable, errHealthzUnauthorized)
 	}
 	if status != http.StatusOK {
-		return ReaderHealth{}, fmt.Errorf("%w: healthz answered %d", ErrReaderUnavailable, status)
+		return ReaderHealth{}, &HealthStatusError{Status: status, Code: healthCode(body)}
 	}
-	var health ReaderHealth
-	if err := json.Unmarshal(body, &health); err != nil {
+	var wire readerHealthWire
+	if err := json.Unmarshal(body, &wire); err != nil {
 		return ReaderHealth{}, fmt.Errorf("%w: healthz is not the health object", ErrReaderUnavailable)
 	}
+	health := wire.ReaderHealth
+	health.ClockOK = healthBool(wire.ClockOK)
+	health.ClockUncMS = healthMS(wire.ClockUncMS)
+	health.NSMSkewMS = healthMS(wire.NSMSkewMS)
+	health.GoSkewMS = healthMS(wire.GoSkewMS)
 	if !health.OK || health.ReaderID != c.ReaderID {
 		// A reader answering under another id is a routing mistake, and
 		// the one thing worse than no answer is the wrong reader's.
