@@ -125,8 +125,11 @@ export function createRelay({ archive, secret, fetch = globalThis.fetch, timeout
 }
 
 const json = (value, status = 200) => Response.json(value, { status, headers: { 'Cache-Control': 'no-store' } })
-/** The reader's clock is not trusted (reader 0.6.1): try again in a minute. */
-export const clockUnknown = () => Response.json({ code: 'clock_unknown' }, { status: 503, headers: { 'Cache-Control': 'no-store', 'Retry-After': '60' } })
+/**
+ * The reader's clock is not trusted (reader 0.6.1): try again in a minute.
+ * `body` replaces the bare `{code}` (healthz's health object, code added).
+ */
+export const clockUnknown = (body = {}) => Response.json({ ...body, code: 'clock_unknown' }, { status: 503, headers: { 'Cache-Control': 'no-store', 'Retry-After': '60' } })
 
 /** Only Go on this host may call these; anything else sees a 404. */
 export function internalGuard(request, info, secret) {
@@ -184,6 +187,9 @@ export function decodeCiphertext(value) {
  *   not Go's, is the likely fault), and so does every request that passes
  *   the guard, except healthz, which answers 200 with its `state`
  *   `clock_unknown` (health() says so) so that Go keeps seeing the reader.
+ *   healthz's stale 503 carries the health object with `code` added, so Go
+ *   still learns why (clock_code and the rest); other routes' is bare. Only
+ *   Go can get it: the signature is checked before the timestamp.
  */
 export function internalRoutes({ state, secret, now, pendingFor, auth, health, prepare, rotateSecret, content, unknownLiveMax, liveList, clock }) {
   const refused = (meta, error) => {
@@ -201,7 +207,7 @@ export function internalRoutes({ state, secret, now, pendingFor, auth, health, p
     if (rejected) {
       meta.route = 'internal'
       meta.code = rejected.headers.get('x-wappie-code') ?? (rejected.status === 401 ? 'unauthorized' : rejected.status === 503 ? 'unavailable' : 'not_found')
-      if (unknown && meta.code === 'hmac_stale') { meta.code = 'clock_unknown'; return clockUnknown() }
+      if (unknown && meta.code === 'hmac_stale') { meta.code = 'clock_unknown'; return clockUnknown(healthz && health ? health() : {}) }
       return withoutCode(rejected)
     }
     let match

@@ -63,7 +63,7 @@ test('public listener: /mcp and every /mcp/* route answer 503 clock_unknown whil
   assert.equal((await rpc(w, done.tokens.access_token)).status, 200)
 })
 
-test('internal listener: the HMAC guard runs first; a valid or stale signature gets 503 clock_unknown, healthz 200 with state clock_unknown; unsigned or forged stays 401', async t => {
+test('internal listener: the HMAC guard runs first; a valid or stale signature gets 503 clock_unknown (healthz\'s stale one with the health object), healthz 200 with state clock_unknown; unsigned or forged stays 401', async t => {
   const clock = fakeClock()
   const w = await world(t, { clock })
   await w.start()
@@ -82,14 +82,28 @@ test('internal listener: the HMAC guard runs first; a valid or stale signature g
   }
   assert.equal(clock.go.length, heardBefore, 'a forged timestamp records nothing')
   // Go's real signature that looks stale: our clock is the likely fault.
-  assertClockUnknown(await w.internal(healthz, { signed: stale(healthz) }), 'stale healthz')
+  // healthz's 503 carries the health object, so Go still learns why; any other route's is bare.
+  const staleHealth = await w.internal(healthz, { signed: stale(healthz) })
+  assert.equal(staleHealth.status, 503, staleHealth.body)
+  for (const [name, value] of [['cache-control', 'no-store'], ['retry-after', '60'], ['x-wappie-code', undefined]]) assert.equal(staleHealth.headers[name], value, name)
+  const staleBody = json(staleHealth)
+  assert.equal(staleBody.code, 'clock_unknown')
+  assert.equal(staleBody.state, 'clock_unknown')
+  assert.match(staleBody.boot_id, /^[0-9a-f]{16}$/)
+  assert.match(staleBody.pcr0, /^[0-9a-f]{96}$/)
+  for (const key of ['clock_ok', 'clock_unc_ms', 'nsm_skew_ms', 'go_skew_ms', 'clock_code', 'clock_disagree_kms', 'kms_skew_lo_ms', 'kms_skew_hi_ms', 'clock_corr_hour_ms', 'clock_corr_day_ms']) assert.ok(key in staleBody, key)
+  assert.equal(staleBody.clock_ok, false)
+  assert.equal(staleBody.clock_code, 'unc_high')
   assertClockUnknown(await w.internal(other, { signed: stale(other) }), 'stale request')
-  assert.equal(clock.go.length, heardBefore + 2, 'Go\'s time is heard from a stale but verified signature')
+  const postStale = `/internal/connections/${'0'.repeat(8)}-0000-4000-8000-${'0'.repeat(12)}/revoke`
+  assertClockUnknown(await w.internal(postStale, { method: 'POST', signed: goHeaders(w.relaySecret, { method: 'POST', target: postStale, now: Date.now() - 90_000 }) }), 'stale POST')
+  assert.equal(clock.go.length, heardBefore + 3, 'Go\'s time is heard from a stale but verified signature')
   // A valid one: every route but healthz is refused, healthz says why.
   assertClockUnknown(await w.internal(other), 'valid request')
   const health = await w.internal(healthz)
   assert.equal(health.status, 200, health.body)
   const body = json(health)
+  assert.deepEqual(Object.keys(staleBody), [...Object.keys(body), 'code'], 'the stale 503 is the health object, code added')
   assert.equal(body.state, 'clock_unknown')
   assert.equal(body.clock_ok, false)
   assert.equal(body.clock_unc_ms, null)
