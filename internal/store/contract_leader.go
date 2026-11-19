@@ -291,7 +291,10 @@ func restartTx(ctx context.Context, tx pgx.Tx, gen *uuid.UUID, confirmed bool) e
 	if _, err := tx.Exec(ctx, `SELECT 1 FROM contract_workspaces ORDER BY workspace_id FOR UPDATE`); err != nil {
 		return err
 	}
-	rows, err := tx.Query(ctx, `UPDATE contract_workspaces w SET wversion = 0,
+	// The apply's applied_wversion goes with wversion (0055), so the new
+	// generation's names and statuses apply again; applied_status stays,
+	// since it says whose suspension a closed workspace's is.
+	rows, err := tx.Query(ctx, `UPDATE contract_workspaces w SET wversion = 0, applied_wversion = NULL,
 		snapshot_due_at = clock_timestamp(), snapshot_tries = 0, snapshot_ok_at = NULL,
 		events_due_at = CASE WHEN events_due_at IS NULL THEN NULL ELSE clock_timestamp() END, events_tries = 0,
 		events_not_found_since = NULL, not_found_since = NULL, parked_at = NULL

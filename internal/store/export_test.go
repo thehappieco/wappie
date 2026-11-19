@@ -93,3 +93,68 @@ func (c *Contract) SnapshotSeqForTest(ctx context.Context, workspace uuid.UUID, 
 	}
 	return seq, err == nil, err
 }
+
+// The contract's apply past its mode gate (DS54): 0051's CHECK holds no
+// enforce until E2, so the tests of E1 run each apply as enforce would,
+// with every other check and lock the same.
+
+// ApplyAccountForTest is ApplyAccount at any mode.
+func (c *Contract) ApplyAccountForTest(ctx context.Context, sub uuid.UUID) (ApplyResult, error) {
+	return c.applyAccount(ctx, sub, false)
+}
+
+// ApplyWorkspaceForTest is ApplyWorkspace at any mode.
+func (c *Contract) ApplyWorkspaceForTest(ctx context.Context, id uuid.UUID) (ApplyResult, error) {
+	return c.applyWorkspace(ctx, id, false)
+}
+
+// EnsureTeamsForTest is EnsureTeams at any mode.
+func (c *Contract) EnsureTeamsForTest(ctx context.Context, sub uuid.UUID) ([]uuid.UUID, error) {
+	return c.ensureTeams(ctx, sub, false)
+}
+
+// ApplyForTest is a sub's whole apply at any mode, as membership's Apply
+// runs it: its teams created, its workspaces applied, then its account.
+func (c *Contract) ApplyForTest(ctx context.Context, sub uuid.UUID) (ApplyResult, error) {
+	if _, err := c.ensureTeams(ctx, sub, false); err != nil {
+		return ApplyResult{}, err
+	}
+	var ids []uuid.UUID
+	err := pgx.BeginTxFunc(ctx, c.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+		var err error
+		ids, err = docWorkspacesTx(ctx, tx, sub)
+		return err
+	})
+	if err != nil {
+		return ApplyResult{}, err
+	}
+	for _, id := range ids {
+		if _, err := c.applyWorkspace(ctx, id, false); err != nil {
+			return ApplyResult{}, err
+		}
+	}
+	return c.applyAccount(ctx, sub, false)
+}
+
+// ConfirmClosingForTest is ConfirmClosing at any mode.
+func (c *Contract) ConfirmClosingForTest(ctx context.Context, sub uuid.UUID, fresh ContractDoc) (ClosingResult, error) {
+	return c.confirmClosing(ctx, sub, fresh, false)
+}
+
+// ForgetClosedForTest is ForgetClosed at any mode.
+func (c *Contract) ForgetClosedForTest(ctx context.Context, sub uuid.UUID) (ClosingResult, bool, error) {
+	return c.forgetClosed(ctx, sub, false)
+}
+
+// SweepOrphanServicesForTest is SweepOrphanServices at any mode.
+func (c *Contract) SweepOrphanServicesForTest(ctx context.Context) (OrphanSweep, error) {
+	return c.sweepOrphanServices(ctx, false)
+}
+
+// SetApplyFaultForTest makes the apply of an account fail after its n-th
+// lost membership, until the test ends: a crash in the middle of a pass.
+func SetApplyFaultForTest(t testing.TB, n int) {
+	old := applyFaultAfter
+	applyFaultAfter = n
+	t.Cleanup(func() { applyFaultAfter = old })
+}

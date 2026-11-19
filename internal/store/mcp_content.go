@@ -117,29 +117,37 @@ func endMCPConnectionTx(ctx context.Context, tx pgx.Tx, tenant uuid.UUID, id, st
 // is given by a person; it does not outlive their place in the workspace.
 // The caller holds the tenant transaction and the tenants row lock.
 func endConnectionsOfMemberTx(ctx context.Context, tx pgx.Tx, tenant, member uuid.UUID, removed bool) error {
-	rows, err := tx.Query(ctx, `SELECT id::text, service_user_id IS NOT DISTINCT FROM $2 FROM mcp_connections
+	_, err := endConnectionsOfMemberListTx(ctx, tx, tenant, member, removed)
+	return err
+}
+
+// endConnectionsOfMemberListTx is endConnectionsOfMemberTx, returning the
+// connections it ended, for their readers to be told (the contract's apply).
+func endConnectionsOfMemberListTx(ctx context.Context, tx pgx.Tx, tenant, member uuid.UUID, removed bool) ([]EndedConnection, error) {
+	rows, err := tx.Query(ctx, `SELECT id::text, reader, service_user_id IS NOT DISTINCT FROM $2 FROM mcp_connections
 		WHERE tenant_id=$1 AND status IN ('pending','active','reseal') AND (service_user_id=$2 OR created_by=$2)
 		ORDER BY id`, tenant, member)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	type target struct {
-		id        string
-		asService bool
+		id, reader string
+		asService  bool
 	}
 	var targets []target
 	for rows.Next() {
 		var t target
-		if err := rows.Scan(&t.id, &t.asService); err != nil {
+		if err := rows.Scan(&t.id, &t.reader, &t.asService); err != nil {
 			rows.Close()
-			return err
+			return nil, err
 		}
 		targets = append(targets, t)
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
-		return err
+		return nil, err
 	}
+	var ended []EndedConnection
 	for _, t := range targets {
 		reason := ReasonMemberDisabled
 		switch {
@@ -150,11 +158,15 @@ func endConnectionsOfMemberTx(ctx context.Context, tx pgx.Tx, tenant, member uui
 		case removed:
 			reason = ReasonMemberRemoved
 		}
-		if _, err := endMCPConnectionTx(ctx, tx, tenant, t.id, statusRevoked, reason); err != nil {
-			return err
+		did, err := endMCPConnectionTx(ctx, tx, tenant, t.id, statusRevoked, reason)
+		if err != nil {
+			return nil, err
+		}
+		if did {
+			ended = append(ended, EndedConnection{ID: t.id, Reader: t.reader})
 		}
 	}
-	return nil
+	return ended, nil
 }
 
 // tenantOf reads a connection's workspace from the ledger, which carries no

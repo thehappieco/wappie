@@ -43,6 +43,16 @@ func (u *Users) SetLocale(ctx context.Context, id uuid.UUID, locale string) (Pro
 		return tx.QueryRow(ctx, `UPDATE users SET locale=$2 WHERE id=$1 AND role<>'service' AND status='active'
 			RETURNING email,name,avatar,coalesce(locale,'')`, id, locale).Scan(&out.Email, &out.Name, &out.Avatar, &out.Locale)
 	})
+	if err != nil {
+		return out, err
+	}
+	// A personal workspace the contract's apply named (DS54) follows its
+	// owner's language. In a transaction of its own, after the users row is
+	// released: the apply takes the workspace's row before the person's.
+	err = pg.InTx(ctx, u.pool, func(tx pgx.Tx) error {
+		_, err := renamePersonalTx(ctx, tx, id, out.Locale)
+		return err
+	})
 	return out, err
 }
 

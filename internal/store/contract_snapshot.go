@@ -30,6 +30,9 @@ const (
 	SnapshotNeedsReauth = "needs_reauth"
 	SnapshotQuota       = "quota"
 	SnapshotError       = "error"
+	// SnapshotTeamClosed: the platform closed the team, and the apply
+	// suspended its workspace (DS54).
+	SnapshotTeamClosed = "team_closed"
 )
 
 // ContractSnapshot is what Wappie's own tables say of one platform
@@ -206,25 +209,31 @@ func snapshotTx(ctx context.Context, tx pgx.Tx, out *ContractSnapshot) error {
 		return err
 	}
 	var status string
-	var quota bool
+	var quota, closed bool
 	if err := tx.QueryRow(ctx, `SELECT t.id IS NOT NULL, coalesce(t.status, ''), `+snapshotQuotaSQL+`,
-			coalesce((SELECT mode = 'on' FROM contract_token_state), false)
+			coalesce((SELECT mode = 'on' FROM contract_token_state), false),
+			coalesce((SELECT c.status = 'closed' FROM contract_workspaces c WHERE c.workspace_id = w.id), false)
 		FROM (SELECT $1::uuid AS id) w LEFT JOIN tenants t ON t.id = w.id`, out.Workspace).
-		Scan(&out.Local, &status, &quota, &out.TokenMode); err != nil {
+		Scan(&out.Local, &status, &quota, &out.TokenMode, &closed); err != nil {
 		return err
 	}
 	if !out.Local {
 		return nil
 	}
 	return withQuarantine(ctx, tx, func() error {
-		return snapshotItemsTx(ctx, tx, out.Workspace, out.MeasuredAt, status == "active", quota, out)
+		return snapshotItemsTx(ctx, tx, out.Workspace, out.MeasuredAt, status == "active", quota, out, closed && status == "suspended")
 	})
 }
 
 // snapshotItemsTx fills out's items from the workspace's tables, read in
 // tx with deleted numbers visible; with the token mode on, their ordinals
 // and tokens too (snapshotTokensTx).
-func snapshotItemsTx(ctx context.Context, tx pgx.Tx, workspace uuid.UUID, at time.Time, active, quota bool, out *ContractSnapshot) error {
+//
+// teamClosed is a workspace the platform closed and Wappie suspended (the
+// apply at enforce, DS54): a number paused for that alone says team_closed,
+// where any other workspace not active says error.
+func snapshotItemsTx(ctx context.Context, tx pgx.Tx, workspace uuid.UUID, at time.Time, active, quota bool, out *ContractSnapshot,
+	teamClosed bool) error {
 	// The numbers. The predicate is exactly what 0051's devices trigger
 	// wakes on, so a number never enters the snapshot unannounced.
 	rows, err := tx.Query(ctx, `SELECT id, label, coalesce(pn, ''), status, paused, coalesce(pause_cause, ''),
@@ -251,6 +260,9 @@ func snapshotItemsTx(ctx context.Context, tx pgx.Tx, workspace uuid.UUID, at tim
 		it.Hint = label.HintFromPN(pn)
 		out.Labels[label.Classify(name, pn, it.ID.String())]++
 		it.State, it.Reason = snapshotState(deleted, paused, cause, status, active, quota)
+		if teamClosed && it.State == SnapshotSyncPaused && it.Reason == SnapshotError && status != "banned" {
+			it.Reason = SnapshotTeamClosed
+		}
 		if it.State == SnapshotDeleted {
 			if purgeAfter == nil {
 				// 0050's CHECK pairs them: a fault, not a deleted number.

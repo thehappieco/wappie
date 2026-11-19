@@ -24,7 +24,9 @@ import (
 // app.tenant_id), its stops of Wappie's own as the acknowledgement names
 // them: an operator's open stop of its selector; an apply_failed one, as
 // local_rule; its creator's local account disabled here
-// (creator_disabled_here); and, before enforce, its creator's local
+// (creator_disabled_here: by the operator, users.disabled_by; a disable
+// the contract applied is the platform's own, and the belt reports it as
+// revoked from the stored document); and, before enforce, its creator's local
 // membership removed or disabled, or a local role that is not owner or
 // admin, or no local account at all (local_rule). Token auth (tokenLiveSQL)
 // refuses a token with any.
@@ -41,7 +43,7 @@ const tokenSuspendedSQL = `
 	UNION
 	SELECT t.id, 'creator_disabled_here' FROM contract_tokens t
 	  JOIN platform_identities pi ON pi.sub = t.created_by
-	  JOIN users u ON u.id = pi.user_id AND u.status = 'disabled'
+	  JOIN users u ON u.id = pi.user_id AND u.status = 'disabled' AND u.disabled_by = 'operator'
 	UNION
 	SELECT t.id, 'local_rule' FROM contract_tokens t
 	 WHERE NOT EXISTS (SELECT 1 FROM platform_identities pi
