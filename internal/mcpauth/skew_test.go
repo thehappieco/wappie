@@ -368,7 +368,9 @@ func TestHealthz401NamesTheClock(t *testing.T) {
 	}
 
 	// Within ten minutes: no second line.
-	failures = h.checkReader(ctx, a, failures)
+	if failures = h.checkReader(ctx, a, failures); failures != 2 {
+		t.Fatalf("second 401: failures %d", failures)
+	}
 	if got := logs.lines(healthz401); len(got) != 1 {
 		t.Fatalf("second 401 logged again: %+v", got)
 	}
