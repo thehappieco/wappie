@@ -294,9 +294,10 @@ WARN at most every 10 minutes, and is never overwritten. Every decision is
 logged as `event=reader_alert cause=<word> outcome=sent|suppressed|failed`.
 
 `whatserverd reader-alert-test` sends the test alert: the subject word
-`test`, never used for a fault, and the alert's body with `test: 1` as its
-first line. It refuses unless `WS_SECURITY_ALERT_EMAIL` and a mail server
-are set, and keeps its own 23 h window in `reader-alerts-test.json`: a
+`test`, never used for a fault, over the real `clock_unknown` alert's body
+(its paragraph and each of its keys, at 0) with `test: 1` as its first
+line, so it shows how a real alert's body arrives. It refuses unless
+`WS_SECURITY_ALERT_EMAIL` and a mail server are set, and keeps its own 23 h window in `reader-alerts-test.json`: a
 second run refuses and prints when the next is allowed. Run it as the
 service user with the service's environment and state directory, for
 example `sudo systemd-run --wait --pipe --collect -p User=wappie -p

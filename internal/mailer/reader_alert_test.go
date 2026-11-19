@@ -3,6 +3,7 @@ package mailer
 import (
 	"bytes"
 	"context"
+	"html/template"
 	"io"
 	"mime"
 	"mime/multipart"
@@ -70,9 +71,6 @@ func TestReaderAlertEmail(t *testing.T) {
 			for i := len(w.keys) - 1; i >= 0; i-- {
 				nums = append(nums, ReaderAlertNum{Key: w.keys[i], Value: int64(i) - 2})
 			}
-			if word == ReaderAlertTest {
-				nums = []ReaderAlertNum{{Key: "test", Value: 1}}
-			}
 			model, err := readerAlertEmail(word, nums, at)
 			if err != nil {
 				t.Fatal(err)
@@ -96,12 +94,6 @@ func TestReaderAlertEmail(t *testing.T) {
 			for i, k := range w.keys {
 				want = append(want, k+": "+itoa(int64(i)-2))
 			}
-			if word == ReaderAlertTest {
-				want = []string{"test: 1"}
-				if lines[0] != "test: 1" {
-					t.Fatalf("the test's first line = %q", lines[0])
-				}
-			}
 			if strings.Join(numbers, "|") != strings.Join(want, "|") {
 				t.Fatalf("numbers = %v, want %v", numbers, want)
 			}
@@ -117,11 +109,53 @@ func TestReaderAlertEmail(t *testing.T) {
 	}
 }
 
+// The test alert is the real clock_unknown alert under the subject word
+// test: test: 1 as its first line, then clock_unknown's paragraph and every
+// one of its keys (at 0) in their order, the time and the footer, in both
+// bodies, and nothing else.
+func TestReaderAlertTestEmail(t *testing.T) {
+	at := time.Date(2026, 11, 19, 12, 34, 56, 0, time.UTC)
+	model, err := readerAlertTestEmail(at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	subject, plain, html := readerAlertParts(t, model)
+	if subject != "Wappie reader alert: test" {
+		t.Fatalf("subject = %q", subject)
+	}
+	real := readerAlertWords[ReaderAlertClockUnknown]
+	want := []string{"test: 1", "", real.text, ""}
+	for _, k := range real.keys {
+		want = append(want, k+": 0")
+	}
+	want = append(want, "time: 2026-11-19T12:34:56Z", "", readerAlertFooter)
+	if got := strings.Split(strings.TrimRight(plain, "\n"), "\n"); strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("plain body:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	// The HTML has the same, test: 1 before the paragraph.
+	last := -1
+	for _, s := range []string{"test: 1", template.HTMLEscapeString(real.text)} {
+		i := strings.Index(html, s)
+		if i < 0 || i < last {
+			t.Fatalf("the HTML lacks %q or has it out of order", s)
+		}
+		last = i
+	}
+	for _, s := range append(want[4:], readerAlertFooter) {
+		if !strings.Contains(html, s) {
+			t.Fatalf("the HTML lacks %q", s)
+		}
+	}
+	if strings.Count(plain, "test: 1") != 1 || strings.Count(html, "test: 1") != 1 {
+		t.Fatal("test: 1 is not there exactly once")
+	}
+}
+
 func itoa(v int64) string { return strconv.FormatInt(v, 10) }
 
-// A word not of the five, a key not on the word's list (whatever it holds),
-// a key given twice, the test word through the fault path and a test alert
-// without its one line are all refused.
+// A word not of the four faults, a key not on the word's list (whatever it
+// holds), a key given twice and the test word, through the alert builder or
+// the fault path, are all refused.
 func TestReaderAlertRefusesWhatIsNotOnTheList(t *testing.T) {
 	at := time.Now()
 	for _, tc := range []struct {
@@ -135,8 +169,8 @@ func TestReaderAlertRefusesWhatIsNotOnTheList(t *testing.T) {
 		{"key of another word", ReaderAlertCapExceeded, []ReaderAlertNum{{Key: "minutes_unknown", Value: 1}}},
 		{"key with text", ReaderAlertClockUnknown, []ReaderAlertNum{{Key: "minutes_unknown\r\nBcc: x@example.test", Value: 1}}},
 		{"key twice", ReaderAlertClockUnknown, []ReaderAlertNum{{Key: "answering", Value: 1}, {Key: "answering", Value: 0}}},
-		{"test without its line", ReaderAlertTest, nil},
-		{"test with another value", ReaderAlertTest, []ReaderAlertNum{{Key: "test", Value: 2}}},
+		{"the test word", ReaderAlertTest, nil},
+		{"the test word with its line", ReaderAlertTest, []ReaderAlertNum{{Key: "test", Value: 1}}},
 	} {
 		if _, err := readerAlertEmail(tc.word, tc.nums, at); err == nil {
 			t.Errorf("%s: built", tc.name)

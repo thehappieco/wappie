@@ -18,9 +18,10 @@ import (
 // What it may carry decides its shape. The reader and the parent are not
 // trusted with the words of a mail sent from Wappie's domain, so nothing in
 // it comes from them as text: the subject is one of five fixed words, the
-// body a fixed paragraph per word, then whole numbers under fixed keys, each
-// word with its own list of keys, then the time. No reader id, no boot id,
-// no code the reader sent, no link.
+// body a fixed paragraph per fault word, then whole numbers under fixed keys,
+// each word with its own list of keys, then the time. No reader id, no boot
+// id, no code the reader sent, no link. The test alert is a fault word's
+// body under its own subject word, with test: 1 first.
 
 // The words a reader clock alert's subject may carry. The first four are
 // faults; ReaderAlertTest is only ever sent by whatserverd
@@ -47,7 +48,8 @@ type readerAlertWord struct {
 	keys []string
 }
 
-// readerAlertWords are the five words. The texts are drafts for the owner.
+// readerAlertWords are the four fault words. The texts are drafts for the
+// owner. The test alert has no entry: it is readerAlertTestBody's.
 var readerAlertWords = map[string]readerAlertWord{
 	ReaderAlertCapExceeded: {
 		text: "The attested Wappie reader's clock helper had to correct the enclave clock by more than its cap allows, so the reader stopped vouching for its clock and refuses the work that needs it. The parent's watchdog restarts the enclave to clear this. The numbers are the corrections and the uncertainty the reader reported.",
@@ -65,11 +67,14 @@ var readerAlertWords = map[string]readerAlertWord{
 		text: "The attested Wappie reader came back from a restart with the same image after it could not vouch for its clock, most likely restarted by the parent's watchdog. A console renewal round follows: content connections must be renewed in the console. If the clock fails again within 24 hours, the watchdog stops restarting the reader, and the cause is then mailed at most once a day.",
 		keys: []string{"minutes_bad_before", "minutes_unanswered", "clock_ok_now", "clock_unc_ms"},
 	},
-	ReaderAlertTest: {
-		text: "This is a test of the Wappie reader clock alerts, sent by whatserverd reader-alert-test. No reader is at fault. A real alert has the subject word cap_exceeded, nsm_kms_disagree, clock_unknown or watchdog_restart, and this shape.",
-		keys: []string{"test"},
-	},
 }
+
+// readerAlertTestBody is the fault word whose body the test alert carries,
+// so that the test shows a real alert's body as it is delivered.
+const readerAlertTestBody = ReaderAlertClockUnknown
+
+// readerAlertTestLine is the test alert's first line.
+const readerAlertTestLine = "test: 1"
 
 // readerAlertFooter ends every reader clock alert.
 const readerAlertFooter = "Times are UTC. This mail names no reader, boot or workspace, and carries no text from the reader."
@@ -89,9 +94,10 @@ func (s Sender) ReaderClockAlert(ctx context.Context, to, word string, nums []Re
 }
 
 // ReaderClockAlertTest sends the test alert to one address: the subject word
-// ReaderAlertTest, and the body every alert has, with test: 1 first.
+// ReaderAlertTest over a real alert's body (readerAlertTestBody's paragraph
+// and its keys, each 0), with test: 1 as its first line.
 func (s Sender) ReaderClockAlertTest(ctx context.Context, to string) error {
-	model, err := readerAlertEmail(ReaderAlertTest, []ReaderAlertNum{{Key: "test", Value: 1}}, time.Now())
+	model, err := readerAlertTestEmail(time.Now())
 	if err != nil {
 		return err
 	}
@@ -110,7 +116,7 @@ func (m readerAlert) subject() string { return "Wappie reader alert: " + m.Word 
 var readerAlertHTML = template.Must(template.New("reader-alert").Parse(`<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>Wappie reader alert: {{.Word}}</title></head>
 <body style="font-family:sans-serif;color:#111">
-{{if .Test}}<pre style="font-size:14px">test: 1</pre>
+{{if .Test}}<pre style="font-size:14px">{{.TestLine}}</pre>
 {{end}}<p>{{.Text}}</p>
 <pre style="font-size:14px">{{range .Body}}{{.}}
 {{end}}time: {{.Time}}</pre>
@@ -120,32 +126,31 @@ var readerAlertHTML = template.Must(template.New("reader-alert").Parse(`<!doctyp
 
 func (m readerAlert) render() (string, string, error) {
 	var plain strings.Builder
-	body := m.Lines
 	if m.test {
-		// The test's one line goes first, before the paragraph.
-		plain.WriteString(m.Lines[0] + "\n\n")
-		body = m.Lines[1:]
+		// The test's line goes first, before the paragraph.
+		plain.WriteString(readerAlertTestLine + "\n\n")
 	}
 	plain.WriteString(m.Text + "\n\n")
-	for _, l := range body {
+	for _, l := range m.Lines {
 		plain.WriteString(l + "\n")
 	}
 	plain.WriteString("time: " + m.Time + "\n\n" + m.Footer + "\n")
 	var html bytes.Buffer
 	err := readerAlertHTML.Execute(&html, struct {
-		Word, Text, Footer, Time string
-		Body                     []string
-		Test                     bool
-	}{m.Word, m.Text, m.Footer, m.Time, body, m.test})
+		Word, Text, Footer, Time, TestLine string
+		Body                               []string
+		Test                               bool
+	}{m.Word, m.Text, m.Footer, m.Time, readerAlertTestLine, m.Lines, m.test})
 	if err != nil {
 		return "", "", err
 	}
 	return plain.String(), html.String(), nil
 }
 
-// readerAlertEmail builds the alert for word with nums at at. Every key must
-// be on the word's list, once; the lines follow the list's order, whatever
-// the order given, and a key not given is left out.
+// readerAlertEmail builds the alert for a fault word with nums at at. Every
+// key must be on the word's list, once; the lines follow the list's order,
+// whatever the order given, and a key not given is left out. The test word
+// is not one: readerAlertTestEmail builds that.
 func readerAlertEmail(word string, nums []ReaderAlertNum, at time.Time) (readerAlert, error) {
 	w, ok := readerAlertWords[word]
 	if !ok {
@@ -161,14 +166,28 @@ func readerAlertEmail(word string, nums []ReaderAlertNum, at time.Time) (readerA
 		}
 		values[n.Key] = n.Value
 	}
-	m := readerAlert{Word: word, Text: w.text, Footer: readerAlertFooter, Time: at.UTC().Format(time.RFC3339), test: word == ReaderAlertTest}
+	m := readerAlert{Word: word, Text: w.text, Footer: readerAlertFooter, Time: at.UTC().Format(time.RFC3339)}
 	for _, k := range w.keys {
 		if v, ok := values[k]; ok {
 			m.Lines = append(m.Lines, k+": "+strconv.FormatInt(v, 10))
 		}
 	}
-	if m.test && (len(m.Lines) != 1 || m.Lines[0] != "test: 1") {
-		return readerAlert{}, errors.New("mailer: the test alert carries test: 1")
+	return m, nil
+}
+
+// readerAlertTestEmail builds the test alert at at: readerAlertTestBody's
+// alert with every key at 0, under the subject word ReaderAlertTest, with
+// readerAlertTestLine first.
+func readerAlertTestEmail(at time.Time) (readerAlert, error) {
+	keys := readerAlertWords[readerAlertTestBody].keys
+	nums := make([]ReaderAlertNum, 0, len(keys))
+	for _, k := range keys {
+		nums = append(nums, ReaderAlertNum{Key: k})
 	}
+	m, err := readerAlertEmail(readerAlertTestBody, nums, at)
+	if err != nil {
+		return readerAlert{}, err
+	}
+	m.Word, m.test = ReaderAlertTest, true
 	return m, nil
 }
