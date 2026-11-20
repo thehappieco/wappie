@@ -117,7 +117,9 @@ func grantTakenTx(ctx context.Context, tx pgx.Tx, tenant, user, device uuid.UUID
 // takes its key, its drafts still waiting and, for content and AI, its
 // service account with every permission and grant.
 // Another person's connections, workspace API keys (no connection behind
-// them) and legacy MCP tokens are not touched.
+// them) and legacy MCP tokens are not touched, and nor are platform tokens:
+// a token's grants follow its record's Read, and its identity creates no
+// connection (step 7).
 //
 // The caller holds the tenant transaction and the tenants row lock, and has
 // written user's own permission and grants: 3.2's order, then the

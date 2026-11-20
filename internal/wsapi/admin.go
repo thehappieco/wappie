@@ -10,7 +10,6 @@ import (
 
 	"github.com/google/uuid"
 
-	"whatserver2/internal/access"
 	"whatserver2/internal/membership"
 	"whatserver2/internal/stepup"
 	"whatserver2/internal/store"
@@ -52,7 +51,7 @@ func (s *session) handleDevicesStats(ctx context.Context, f Frame) {
 		}
 		out = append(out, toStat(r))
 	}
-	s.reply(TypeDeviceStats, f.ReqID, DeviceStats{Stats: out})
+	s.replyRead(ctx, TypeDeviceStats, f.ReqID, DeviceStats{Stats: out})
 }
 
 func toStat(r store.DeviceStat) DeviceStat {
@@ -76,6 +75,18 @@ func (s *session) handleDeviceInfo(ctx context.Context, f Frame) {
 		return
 	}
 	tenant := s.tenantID()
+	if s.actor().isToken() {
+		// A full id, checked before any lookup, one answer (F8).
+		tenantUUID, err := uuid.Parse(tenant)
+		if err != nil {
+			s.replyError(f.ReqID, ErrCodeInternal, "bad tenant")
+			return
+		}
+		if _, device, ok := s.tokenResolve(ctx, f, tenantUUID, ref.DeviceID); ok {
+			s.deviceDetail(ctx, f, device)
+		}
+		return
+	}
 	dev, err := s.srv.cfg.Devices.Resolve(ctx, tenant, ref.DeviceID)
 	if err != nil {
 		// Row-level security answers a cross-tenant lookup with "not found",
@@ -117,6 +128,11 @@ func (s *session) handleDeviceInfo(ctx context.Context, f Frame) {
 				Epoch: int(h.Epoch), GrantedAt: h.GrantedAt, GrantedBy: h.GrantedBy,
 			})
 		}
+		if detail.Tokens, err = s.tokenHolders(ctx, tenantUUID, deviceUUID); err != nil {
+			s.log.Error("listing token readers failed", "error", err)
+			s.replyError(f.ReqID, ErrCodeInternal, "could not list who can read this device")
+			return
+		}
 	}
 
 	// Counters for this one device, from the same query the list uses. Cheaper
@@ -156,7 +172,7 @@ func (s *session) handleAPIKeysList(ctx context.Context, f Frame) {
 
 func apiKeyInfo(k store.APIKeyInfo) APIKeyInfo {
 	info := APIKeyInfo{
-		Prefix: k.Prefix, Name: k.Name, Scope: string(k.Scope), ActsAs: k.ActsAs,
+		Prefix: k.Prefix, Name: k.Name, Scope: string(k.Scope), ActsAs: k.ActsAs, Origin: k.Origin,
 		CreatedBy: k.CreatedBy, CreatedAt: k.CreatedAt,
 		DevicesRestricted: k.DevicesRestricted, DeviceIDs: append([]string{}, k.DeviceIDs...),
 	}
@@ -296,7 +312,14 @@ func (s *session) handleAPIKeyCreate(ctx context.Context, f Frame) {
 		return
 	}
 	author := who.userID
-	key, err := s.srv.cfg.Keys.IssueActingAsForDevices(ctx, tenant, name, scope, &author, actsAs, deviceIDs, expiresAt)
+	key, err := s.srv.cfg.Keys.IssueAsked(ctx, tenant, name, scope, &author, actsAs, deviceIDs, expiresAt)
+	if errors.Is(err, store.ErrTokensAreThePlatforms) {
+		// Tokens on, or the keys retired (the plan's 7.3): only an MCP
+		// setup's key. The general credential is the platform's token.
+		s.replyError(f.ReqID, ErrCodeTokensAreThePlatforms, "API tokens are made in The Happie Co's console here; "+
+			"Wappie issues only an MCP setup's key")
+		return
+	}
 	if errors.Is(err, store.ErrInvalidKeyDevices) {
 		s.replyError(f.ReqID, ErrCodeBadRequest, "device_ids must select distinct devices in this workspace")
 		return
@@ -546,6 +569,12 @@ func (s *session) handleGrantRevoke(ctx context.Context, f Frame) {
 			s.replyError(f.ReqID, ErrCodeNotAuthorized, "this needs an active owner or admin of an active workspace")
 			return
 		}
+		// A platform token's identity: no person, and no one's to revoke
+		// here. Its grants follow its record.
+		if errors.Is(err, store.ErrNotFound) {
+			s.replyError(f.ReqID, ErrCodeNotFound, "no such account")
+			return
+		}
 		s.log.Error("revoking a grant failed", "device", dev.ID, "error", err)
 		s.replyError(f.ReqID, ErrCodeInternal, "could not revoke the grant")
 		return
@@ -578,12 +607,17 @@ func (s *session) tellEnded(ctx context.Context, ended []store.EndedConnection) 
 }
 
 // handleGrantsList returns the grants of the account this connection acts
-// as: a person's, or a service account's through the key that acts as it.
+// as: a person's, a service account's through the key that acts as it, or
+// a platform token's identity's (tokenGrants).
 //
 // Ciphertext, freely given: each entry opens only to the account's private
 // key, and the server has never held one.
 func (s *session) handleGrantsList(ctx context.Context, f Frame) {
 	who := s.actor()
+	if who.isToken() {
+		s.tokenGrants(ctx, f)
+		return
+	}
 	if !who.person && !who.service {
 		s.replyError(f.ReqID, ErrCodeNotAuthorized,
 			"this key acts as no account, so it holds no grants; issue one that acts as a service account")
@@ -660,7 +694,50 @@ func (s *session) replyReaders(ctx context.Context, reqID string,
 			Epoch: int(h.Epoch), GrantedAt: h.GrantedAt, GrantedBy: h.GrantedBy,
 		})
 	}
-	s.reply(TypeReaders, reqID, Readers{DeviceID: deviceID, Readers: out})
+	tokens, err := s.tokenHolders(ctx, tenant, device)
+	if err != nil {
+		s.log.Error("listing token readers failed", "error", err)
+		s.replyError(reqID, ErrCodeInternal, "the change was made, but the list could not be read")
+		return
+	}
+	s.reply(TypeReaders, reqID, Readers{DeviceID: deviceID, Readers: out, Tokens: tokens})
+}
+
+// tokenHolders are the platform tokens whose identity holds the number's
+// key, for the readers' lists: apart from the readers (the plan's 5.4, L2).
+func (s *session) tokenHolders(ctx context.Context, tenant, device uuid.UUID) ([]TokenKeyHolder, error) {
+	held, err := s.srv.cfg.Keys2.TokenReaders(ctx, tenant, device)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]TokenKeyHolder, 0, len(held))
+	for _, h := range held {
+		out = append(out, TokenKeyHolder{ID: h.ID.String(), Name: h.Name, Epoch: int(h.Epoch), GrantedAt: h.GrantedAt, GrantedBy: h.GrantedBy})
+	}
+	return out, nil
+}
+
+// deviceDetail is a token's device.info about a number it reads: the
+// number and its counters, never its readers or tokens, which are an
+// administrator's.
+func (s *session) deviceDetail(ctx context.Context, f Frame, device uuid.UUID) {
+	tenant := s.tenantID()
+	dev, err := s.srv.cfg.Devices.Get(ctx, tenant, device.String())
+	if err != nil {
+		s.replyError(f.ReqID, ErrCodeNotAuthorized, tokenNumberRefused)
+		return
+	}
+	detail := DeviceDetail{Device: s.toDeviceInfo(ctx, dev), Epoch: dev.Epoch}
+	if stats, err := s.srv.cfg.Devices.Stats(ctx, tenant); err == nil {
+		for _, st := range stats {
+			if st.DeviceID == dev.ID {
+				detail.Stats = toStat(st)
+				break
+			}
+		}
+	}
+	detail.Stats.DeviceID = dev.ID
+	s.replyRead(ctx, TypeDeviceDetail, f.ReqID, detail)
 }
 
 // toDeviceInfo converts a row for the wire, filling in what only this process
@@ -668,7 +745,7 @@ func (s *session) replyReaders(ctx context.Context, reqID string,
 func (s *session) toDeviceInfo(ctx context.Context, d store.Device) DeviceInfo {
 	info := DeviceFromRow(d)
 	who := s.actor()
-	if tenant, err := uuid.Parse(d.TenantID); err == nil {
+	if tenant, err := uuid.Parse(d.TenantID); err == nil && !who.isToken() {
 		if device, err := uuid.Parse(d.ID); err == nil {
 			if who.person {
 				info.ReaderReceiptMode = string(wa.ModePassive)
@@ -678,23 +755,30 @@ func (s *session) toDeviceInfo(ctx context.Context, d store.Device) DeviceInfo {
 					}
 				}
 			}
-			allowed, err := access.Allows(ctx, access.Actor{Tenant: tenant, User: who.userID, Key: who.keyID, Scope: who.scope, Role: who.role}, device, store.ActionManage, s.srv.cfg.Keys, s.accountStore())
+			allowed, err := s.checker().Probe(ctx, who.accessActor(tenant), device, store.ActionManage)
 			if err != nil {
 				s.log.Warn("could not load device management permission", "device", d.ID, "error", err)
 			} else {
 				info.CanManage = allowed
 			}
-			allowed, err = access.Allows(ctx, access.Actor{Tenant: tenant, User: who.userID, Key: who.keyID, Scope: who.scope, Role: who.role}, device, store.ActionPause, s.srv.cfg.Keys, s.accountStore())
+			allowed, err = s.checker().Probe(ctx, who.accessActor(tenant), device, store.ActionPause)
 			if err != nil {
 				s.log.Warn("could not load the device pause permission", "device", d.ID, "error", err)
 			} else {
 				info.CanPause = allowed
 			}
-			allowed, err = access.Allows(ctx, access.Actor{Tenant: tenant, User: who.userID, Key: who.keyID, Scope: who.scope, Role: who.role}, device, store.ActionSend, s.srv.cfg.Keys, s.accountStore())
+			allowed, err = s.checker().Probe(ctx, who.accessActor(tenant), device, store.ActionSend)
 			if err == nil {
 				info.CanSend = allowed
 			}
 		}
+	}
+	if device, err := uuid.Parse(d.ID); err == nil && who.isToken() {
+		// A token's flags, from its sets as last checked: never counted.
+		live := s.tokenSets()
+		_, info.CanSend = live.Sends[device]
+		_, info.CanManage = live.Manages[device]
+		info.CanPause = info.CanManage
 	}
 	// A terminal device keeps its registry reservation until explicit teardown.
 	// That reservation is not an active WhatsApp connection after phone unlink.

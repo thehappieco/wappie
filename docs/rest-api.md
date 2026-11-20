@@ -25,8 +25,22 @@ and the API process still receives no archive private key.
 
 ## Authentication and workspace isolation
 
-Send a session or API key as `Authorization: Bearer <token>` over HTTPS.
-Tokens are not accepted in URLs. The credential selects the workspace; there
+Send one credential as `Authorization: Bearer <credential>` over HTTPS.
+Credentials are not accepted in URLs. There are three kinds:
+
+- **A session**, for a person who signed in.
+- **A platform token** (`thc_…`), only on an installation connected to The
+  Happie Co while its token mode is on ([the token feed](contract.md#the-token-feed)).
+  Send exactly one `Authorization` header: `Bearer` in any case, one space,
+  and the 64 characters of the token. Wappie does not trim it. Go's own
+  header reader drops leading and trailing spaces and tabs before Wappie
+  sees the value, so a token with them still works over the wire.
+- **An API key**, on a self-hosted installation, and for MCP. While an
+  installation takes the platform's tokens (discovery says
+  `tokens.platform.v1`), it issues only an MCP setup's key
+  ([MCP](mcp.md#keys-on-an-installation-that-takes-the-platforms-tokens)).
+
+The credential selects the workspace; there
 is no workspace query parameter or tenant header override. Every successful
 archive response includes a root `tenant_id`. Clients should pin the installation
 origin and verify this field against their configured workspace on every call.
@@ -48,6 +62,27 @@ The authorization rules are shared with `internal/access`:
   administrator may see/manage a number in the directory without access to its
   messages. Directory presence is not proof that content can be opened.
 - An empty restricted API key whitelist grants access to no devices.
+- A platform token reads a number with an applied Read from its record, a
+  grant to its identity at the number's current epoch, and the
+  workspace's message text switch on. REST never sends or manages, so a
+  token's Send and Manage do nothing here. A token names a number by its
+  full id only. A number or a message that does not exist, another
+  workspace's, and one the token may not read get the same `403
+  not_authorized`, with no id.
+  `GET /v1/devices` lists only the numbers the token reads.
+- With the workspace's attachments switch off, a token still reads the
+  rows that carry an attachment, but each comes with `withheld:
+  "attachments"` and no sealed body, payload, media key, thumbnail or file
+  name. A media row's caption goes with it. A text row's link preview
+  stays. A chat's newest message is withheld the same way
+  (`last_withheld`).
+- At the request's start, every refusal of a token, from the header's
+  shape to the token's state, is the same `401 unauthorized` with the body
+  "credential expired, revoked or invalid", after a fixed wait. The answer
+  checks the token again before it is written: a token no longer live
+  then gets that 401, and one whose access changed gets `403
+  not_authorized` ("workspace access changed; retry the request"), both
+  with no wait.
 
 Suspension of capture for storage and a paused device do not block archive reads.
 A disabled account, revoked session or suspended workspace does block access.
@@ -75,7 +110,7 @@ parameters are rejected. Query strings are limited to 8192 bytes. Only GET
 | `/v1/messages/{uid}` | `{tenant_id, ...SealedMessage}`. An individual stored row, including control rows. |
 | `/v1/messages/{uid}/history` | `{tenant_id, requested_uid, device_id, chat_key, wa_id, versions, deletion?, reactions?, readers?}`. Complete existing history projection for one message thread. |
 | `/v1/devices/{device}/keys?ids=1,2` | `{tenant_id, device_id, archive_tenant_id, keys: [{id, sealed}]}`. Between 1 and 500 IDs, each 1–2147483647. Missing IDs are omitted; duplicates are folded. |
-| `/v1/grants` | `{tenant_id, user_id, grants: [{device_id, archive_tenant_id, label?, epoch, sealed_dsk, fingerprint}]}`. Current-epoch grants of the authenticated person/service account, filtered by current read access and any API key whitelist. `fingerprint` names the number's archive key at that epoch now (lowercase hex SHA-256 of its public key). A client compares it with the key it opened, and a `grant.add` sends the opened key's own fingerprint, never this one ([DS49](decisions.md)). |
+| `/v1/grants` | `{tenant_id, user_id, grants: [{device_id, archive_tenant_id, label?, epoch, sealed_dsk, fingerprint}]}`. Current-epoch grants of the authenticated person/service account, filtered by current read access and any API key whitelist. For a platform token, its hidden identity's grants on the numbers it reads now, `user_id` being that identity; a token with no reading key yet has no identity, so `user_id` is empty and `grants` too. `fingerprint` names the number's archive key at that epoch now (lowercase hex SHA-256 of its public key). A client compares it with the key it opened, and a `grant.add` sends the opened key's own fingerprint, never this one ([DS49](decisions.md)). |
 | `/v1/openapi.json` | Public OpenAPI document; no credential required. |
 
 Response fields use the existing WebSocket DTOs, documented in
@@ -184,6 +219,9 @@ Authenticated handlers return `{code, message}` with these statuses:
 | 403 | `not_authorized` | Current grant/permission, API key restriction or recipient account is insufficient, or access changed while reading. |
 | 404 | `not_found` | The item does not exist in this credential's workspace. Cross-workspace items are indistinguishable from missing items. |
 | 500 | `internal` | Archive or authorization infrastructure could not complete the read. No partial data response is emitted. |
+
+A platform token never gets `404` for a number or a message: it gets `403`,
+so it cannot tell a missing item from one it may not read.
 
 A route the server does not have, anywhere under `/v1/` or `/.well-known/`,
 answers `404` with `{"code":"not_found","message":"no such route"}`, never the

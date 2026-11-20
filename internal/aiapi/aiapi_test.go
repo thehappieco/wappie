@@ -250,7 +250,7 @@ func (h *harness) authorization(t *testing.T, user store.User, requesters string
 		t.Fatal(err)
 	}
 	in := time.Now().Add(20 * time.Minute)
-	key, err := h.keys.IssueActingAsForDevices(ctx, h.tenant.String(), "ai", store.ScopeRead, &user.ID, &service.ID, []uuid.UUID{h.device}, &in)
+	key, err := h.keys.IssueAsked(ctx, h.tenant.String(), store.SetupKeyName+"ai", store.ScopeRead, &user.ID, &service.ID, []uuid.UUID{h.device}, &in)
 	if err != nil {
 		t.Fatal(err)
 	}

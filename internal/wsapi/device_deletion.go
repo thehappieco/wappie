@@ -9,7 +9,6 @@ import (
 	"github.com/google/uuid"
 	"go.mau.fi/whatsmeow/types"
 
-	"whatserver2/internal/access"
 	"whatserver2/internal/membership"
 	"whatserver2/internal/store"
 	"whatserver2/internal/wa"
@@ -119,7 +118,7 @@ func (s *session) handleDeviceDeleteCheck(ctx context.Context, f Frame) {
 	s.reply(TypeDeviceDeleteChecked, f.ReqID, DeviceDeleteChecked{
 		DeviceID: device.String(), Readers: check.Readers, ServiceAccounts: nonNil(check.ServiceAccounts),
 		Assistants: nonNil(check.Assistants), Keys: nonNil(check.Keys), AllNumberKeys: nonNil(check.AllNumberKeys),
-		Bytes: check.Bytes, CanUnlink: check.Session && s.srv.unlinker() != nil,
+		Tokens: nonNil(check.Tokens), Bytes: check.Bytes, CanUnlink: check.Session && s.srv.unlinker() != nil,
 		CheckedAt: check.CheckedAt, RecoverableUntilPreview: check.RecoverableUntilPreview,
 	})
 }
@@ -401,8 +400,7 @@ func (s *Server) viewersOf(ctx context.Context, tenant, device uuid.UUID) []*ses
 	var out []*session
 	for _, sess := range candidates {
 		who := sess.actor()
-		allowed, err := access.Allows(ctx, access.Actor{Tenant: tenant, User: who.userID, Key: who.keyID, Scope: who.scope, Role: who.role},
-			device, store.ActionView, s.cfg.Keys, sess.accountStore())
+		allowed, err := sess.checker().Probe(ctx, who.accessActor(tenant), device, store.ActionView)
 		if err == nil && allowed {
 			out = append(out, sess)
 		}

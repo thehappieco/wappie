@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
@@ -30,6 +31,10 @@ const maxPending = 4096
 
 // ErrNotAvailable reports that the sender no longer has the file.
 var ErrNotAvailable = errors.New("media: the sender's device no longer has this attachment")
+
+// ErrNoMessage is a message that is not there, or not the named number's:
+// one answer for both, since the caller was checked on that number alone.
+var ErrNoMessage = errors.New("media: no such message on this number")
 
 // ErrTooManyPending reports the retry table being full.
 var ErrTooManyPending = errors.New("media: too many retries are already outstanding")
@@ -77,13 +82,19 @@ type RetryClient interface {
 // DeviceClients resolves a device to something that can send a retry receipt.
 type DeviceClients func(ctx context.Context, tenant uuid.UUID, deviceID string) (RetryClient, error)
 
-// Request asks the sender to re-upload one attachment.
+// Request asks the sender to re-upload one attachment, a message of
+// device: the receipt goes out through device's own connection, and the
+// caller was checked on device. A message of another number is no message
+// of this one (ErrNoMessage).
 func (r *Retrier) Request(ctx context.Context, tenant, device, messageUID uuid.UUID,
 	mediaKey []byte) error {
 	if len(mediaKey) != 32 {
 		return errors.New("media: a media key is 32 bytes; open the sealed one first")
 	}
 	row, err := r.Messages.Get(ctx, tenant, messageUID)
+	if errors.Is(err, pgx.ErrNoRows) || err == nil && row.DeviceID != device {
+		return ErrNoMessage
+	}
 	if err != nil {
 		return fmt.Errorf("media: no such message: %w", err)
 	}

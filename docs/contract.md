@@ -408,12 +408,15 @@ a file not loaded yet, or `missing`).
 
 **One leader.** Of every process on one database, only the one that holds
 the advisory lock `contract` runs the background work: the follower, the
-round and the sweep, the snapshot sender and the event sender. A process
-tries the lock while the contract is on and its secret is loaded, every
-30 seconds and at once on a mode notice. The lock is held on a connection
+round and the sweep, the snapshot sender and the event sender, and, while
+the token mode is on, the token feed's four loops ([the token
+feed](#the-token-feed)). A process tries the lock while the contract is on
+and its secret is loaded, every 5 seconds (one `pg_try_advisory_lock`
+each, so a leader's death delays the token feed's revocations by no more)
+and at once on a mode notice. The lock is held on a connection
 of its own, which is checked every 10 seconds: a lost connection ends the
 leader at once, a lock that went quietly within 10 seconds, a link that
-went silent within 20. A leader that lost its lock waits a minute before
+went silent within 20. A leader that lost its lock waits 10 seconds before
 it tries again, so a process that was waiting takes over first. Every
 write the leader makes to the shared state is compare-and-set on what it
 read, so a late commit of a stale leader changes nothing. It logs INFO
@@ -463,6 +466,605 @@ wait of 25 seconds, from the stored cursor.
   seconds, so an answer that comes at once never makes a loop of calls.
 - An answer at sign-in of another generation than the stored one is not
   stored; it wakes the leader, whose next call finds it.
+
+## The token feed
+
+The contract's token part (migration 0053; the design's 3): the
+platform's `thc_` tokens, whose records Wappie follows apart from the
+account documents, under the same generation. It ships off on every
+installation, and a self-hosted one never turns it on.
+
+```
+whatserverd contract tokens on|off|status
+```
+
+As the service user from the server's working directory, like `contract
+mode`: `off` and `status` only touch the database, and `on` also loads the
+secret's files and makes one signed call to the platform.
+
+- **`on`** refuses, exit `3` with "contract tokens on: not ready: …" and
+  nothing changed, unless the contract is on (observe), Wappie holds the
+  platform's generation, the server has a transport and a loaded secret
+  (as `contract mode observe` asks), and one signed `GET
+  /contract/v1/tokens?after=0&wait=0`, sent with the secret's files as
+  `contract check` sends its request, answers with the stored generation:
+  the proof that the platform's token routes are live. It clears
+  `caught_up_at`, so no token is accepted until the leader commits a token
+  page with `more: false`.
+- **`off`** refuses every token at once in every process, since token auth
+  reads the mode in its own query, and the leader stops the token feed's
+  loops within 5 seconds.
+- **`contract mode off`** turns the token mode off in its own transaction,
+  and says so on its second line, `tokens mode: off (with the contract)`,
+  so the way back never refuses. Turning the contract on again leaves
+  tokens off: `contract tokens on` again.
+- `status` prints the `tokens` lines of [contract status](#contract-status).
+
+**The token follower** long-polls `GET /contract/v1/tokens` with a wait of
+25 seconds from its own cursor (`contract_token_state`), and commits each
+signed page as it moves (its `next_after` never behind the cursor; with
+`more`, its last item's seq, past it), in one transaction per page, record
+by record judged in Go first, so a bad record never stalls the revocations
+behind it.
+
+- **No page** (no answer, unverified, a refusal) moves nothing: backoff
+  from 1 second doubled to 5 seconds, never the account feed's minute, a
+  WARN at most once a minute, and after 15 minutes without a page one
+  ERROR ("contract: no token feed page for a long time", class
+  `token_feed_silent`). An early empty page is followed by a pause of the
+  backoff's first second.
+- **A reset**: a signed `gone`, a page or a record of another generation,
+  or a feed rewound (its `head` or `next_after` behind the cursor in the
+  same generation) restarts every feed, the account, token and command
+  feeds, in one transaction, which never widens what Wappie held, and the
+  round subscribes every sub again (WARN "contract: the token feed says the
+  platform's generation changed: every sub is subscribed again and every
+  feed read from 0"). A reset that follows another with no token page
+  committed between waits the backoff first, so a platform that keeps
+  sending a record of another generation never restarts the contract in a
+  loop. And since each also resets the command state (every section and
+  person document due again, the results not delivered dropped), it keeps
+  the command feed's floor: one within a minute of the last reset either
+  feed started waits the minute out, logged at ERROR ("contract: a second
+  reset from the token feed within a minute waits") and recorded
+  `token_reset_loop` for `--check`. While Wappie holds no generation
+  (after a `gone`) the token follower asks nothing, until the account
+  feed's first answer adopts one.
+- **A stale start**: a leader whose first token page follows a stored read
+  over an hour old holds token auth until a page with `more: false`
+  commits (WARN "contract: the token feed was last read over an hour before
+  this leader; token auth holds until it has caught up"): after a restore
+  of Wappie's database, the revocations since the backup apply first.
+- A page whose commit took over a second from its receipt logs WARN
+  "contract: a token page took over a second to commit" and is kept for
+  `--check`.
+- The leader logs INFO "contract: following the token feed" when its token
+  loops start and "contract: no longer following the token feed" when they
+  stop.
+
+**The judge** decides each grant a record brought once, apart from the
+page's commit, at once after a page that brought grants, after each
+account document stored (any process's), and every minute.
+
+**The acknowledgement** (`POST /contract/v1/tokens/applied`) says how far
+Wappie applied the feed, with the grants it refused, the sets of those it
+holds back and the tokens it stops itself, and after a reset what it holds
+narrower than the platform. It goes at once after a page that narrowed
+something and after a reset's pass, otherwise at most once a second and at
+least once a minute, each on a turn of the leader's pace; what does not fit
+one body (1000 entries across its four lists) follows at once, at the same
+`through`. One not accepted backs off from 1 second doubled to 30 seconds.
+A signed `gone` resets every feed, as the token feed's own reset does.
+
+**The usage report** (`POST /contract/v1/tokens/usage`) goes at most once
+a minute, with each token's days of use and its refusals' absolute counts;
+what does not fit one body follows at once.
+
+**The lookups** date what Wappie keeps of a token it does not hold, so it
+keeps it no longer than the token's `created_at` plus 365 days (decision
+0056; [what Wappie keeps of a token](#the-token-feed), below). They are
+the leader's signed GETs of one token:
+
+- **by id** (`GET /contract/v1/tokens/{id}`), for a revocation a bad
+  record brought of a token Wappie holds no selector of, which Wappie's
+  clock dates;
+- **by selector** (`GET /contract/v1/token-selectors/{selector}`), for a
+  stop of a selector Wappie does not hold that no valid record dates.
+  Each is an operator's stop, never a client's token, and is asked once.
+
+They run in the leader while the contract is on, whatever the token mode:
+they only date what Wappie keeps, and a revocation a bad record left while
+tokens were on waits on them after tokens are off. The leader looks for
+those due every minute, each GET on a turn of its pace, and writes each
+answer in a transaction of its own, never during the call. Nothing of an
+answer is applied to a token: no row, perm, pin or identity is made from
+it.
+
+- **A good record** (valid, Wappie's, the token or selector asked for, its
+  reading key's fingerprint its own) dates the token's revocation, its
+  selector's stops and its selector (below) to its `created_at` plus 365
+  days.
+- **A signed `not_found`** never clears a revocation (the design's 3.4,
+  and the kit's SPEC 11.18). By id, the platform answers it for a token
+  past its `created_at` plus 365 days, but also, after a restore of its
+  database, for a token it never named to Wappie, which it may name later
+  unrevoked. So the revocation keeps its date, 365 days after it came,
+  and is not asked again. A later valid record of the token still lowers
+  it, as a good answer would, whether or not it revokes the token. One
+  that does not revoke it never makes a live token. By selector, the
+  platform knows no token of that selector for Wappie: the stop is the
+  operator's own record, kept 365 days after it was made, and is not
+  asked again.
+- **An answer whose record Wappie cannot use**, which the kit refuses for
+  anything but its signature (a record that is not valid, another app's
+  or another token's, a body that does not decode, or one too large to
+  check) or whose fingerprint is not its key's, is asked again 15 minutes
+  later, doubled each time to 24 hours, since the platform answers with
+  the record it stores until that changes. The first logs ERROR
+  "contract: the platform answered a token lookup with a record Wappie
+  cannot use; it is asked again later" (class `token_lookup_invalid`).
+- **No answer** (none, one whose signature fails, any other refusal):
+  asked again 15 minutes later, for as long as the row lasts, with a WARN
+  "contract: a token lookup got no answer" at most once a minute, and
+  INFO "contract: the token lookups answer again" when they do. A
+  platform that never answers leaves each row to its outer bound: a
+  revocation 365 days after it came, a stop 365 days after it was made.
+
+**The operator's own stop.**
+
+```
+whatserverd tokens suspend [-note N] SELECTOR|TOKEN|-
+whatserverd tokens suspend -replay F
+whatserverd tokens lift SELECTOR|TOKEN|-
+whatserverd tokens list
+```
+
+A database write, so it works with the platform down: it stops a token
+by its selector (or the whole token, `-` reading it from stdin, of which
+only the selector is kept), even one Wappie holds no record of yet, at
+once in every process. Neither the feed nor a reset lifts it; it is
+reported to the platform as `suspended {operator}`. Then it appends the
+stop or the lift to **the stop record**, a file outside the database
+(`WS_TOKEN_STOP_RECORD`, by default `/var/lib/wappie/token-stops.jsonl`),
+the only file the commands write. The command takes the record's lock
+before the database write and holds it to the append, so two commands at
+once write their lines in the order of their changes in the database. It
+waits 5 seconds at most for that lock: past them it still makes the stop
+in the database, and says the record lacks it (below). `-replay` applies
+the file's lines again, in order, after a restore of Wappie's database
+(below). A lift of a stop lifted already changes nothing and appends
+nothing ("the operator's stop was lifted already; nothing changed or
+recorded"): its line would carry that lift's time, so it would go sooner
+than 365 days after it was written (below). A lift whose append failed is
+recorded by a `suspend` and a `lift` of the selector, which append two
+new lines; without them a restore brings the stop back, the safe side. A
+lift with no operator's stop to lift appends nothing either, since no
+lift happened. With no record configured
+(`WS_TOKEN_STOP_RECORD` of spaces alone; unset or empty is the default)
+the stop is made all the same, and the command says a restore would lose
+it. Nothing it prints says whether Wappie holds a token of that selector.
+
+A stop the record lacks (the lock not taken, the file not written) is
+recorded by running `tokens suspend` again with the same `-note`: a
+re-stop replaces the note, and its line carries the re-stop's time, which
+the database then holds. The lock's holders are another `tokens suspend`
+or `tokens lift`, from before its database write to its line (that write
+may wait on the database behind a server's hourly retention), and a
+server's hourly trim, for milliseconds.
+
+A stop here is a stopgap. Once the platform answers, have the token
+revoked in the console: a platform revocation comes back through the feed
+after any restore of Wappie's database, and a stop comes back only through
+the stop record.
+
+A line of the record holds only the selector, the time, which is the
+stop's `stopped_at` or its `lifted_at` to the microsecond, and whether it
+is a lift: never the note (`-note`, kept in Wappie's database only), the
+account that ran the command, the token, or Wappie's own `apply_failed`
+stops. A stop's times only go forward: a stop or a lift timed at or
+before the stop's last change (two commands at once, or a clock stepped
+back) is made a microsecond after that change, and its line carries that
+time. So no two changes of one stop share a time, and a replay brings the
+stops back as they stood. Nor is a stop or a lift made at or before the
+mark of what retention let go (below): one timed before it is made just
+after it. Each append replaces the file whole (a temporary file beside
+it, its mode and owner kept, renamed over it, under a lock of the file,
+so two at once lose no line), keeping the lines in their order and a line
+that is no stop's record as it is; a temporary copy that a rewrite killed
+before its rename left goes with the next.
+
+A line goes 365 days after its time, which is when it was written,
+whatever became of its stop: each append drops those lines, and so does
+the hourly maintenance pass, after its retention (below). Decision 0056
+sets this, and requires it never to be less than the reach of the backups
+Wappie may restore (the pilot's snapshots are kept 90 days), so a restore
+of any of them finds every line written since. The trim never creates the
+file, and a trim that fails is done again by the next pass. A line that
+is no stop's record (a hand edit, a damaged disk, a torn last line),
+blank or not, serves no restore: `-replay` refuses the whole file while it
+holds one. It goes with the nearest stop's line before it, at that line's
+365 days. Lines are only added at the end, so that line's time is no later
+than this one's writing, and it goes at most 365 days after it was
+written, as decision 0056 says. One with no stop's line before it goes at
+the next trim. Until it goes, every pass logs an ERROR that counts it
+([the stop record](deployment.md#the-contract)), so that it is mended
+before a restore needs the file.
+
+A line 365 days old goes even while its stop stands. Only the stop of a
+selector Wappie holds outlives 365 days, to that selector's date, its
+token's `created_at` plus 365 days, which its expiry never passes: a stop
+made once its token existed goes by then too. One made before the token's
+`created_at` stands to that date with no line, which loses nothing a
+restore needs: every snapshot one can take is under 90 days old (decision
+0027), so it holds the stop as it stood over 275 days after it was made,
+and whatever changed since has a younger line.
+
+`-replay`, run before the server starts ([restoring with the
+contract](deployment.md#restoring-with-the-contract)), leaves three kinds
+of line, and counts each:
+
+- **A line at or before the mark of what retention let go** ("N lines
+  left, no later than the last stop retention let go"). The mark is the
+  latest time, a stop's or a lift's, of an operator's stop that retention
+  deleted, kept in the database (`contract_token_stops_let_go`), and never
+  past Wappie's clock: retention lets an operator's stop go only once its
+  times are past. Retention moves it in the transaction that deletes the
+  stops, and a stop or a lift is made after it, under its lock. So the
+  restored database holds every such line's stop or lift already, or
+  retention let that stop go before the snapshot, and a replay never
+  brings it back.
+- **A line 365 days old** ("N lines over 365 days old left, their stops
+  let go").
+- **A line no later than what the database holds of its selector's stop**
+  ("N lines left, no later than what the database holds or with nothing
+  to lift"): the same stop, which keeps its note and who made it, or a
+  stop or a lift made since without the record, which is neither rewound
+  nor lifted. A lift with no open stop made before it is left too.
+
+Every other line applies, at its own time, with no note, as made by
+`wappie`: the line keeps neither, and the account that runs the replay
+made none of these stops. A stop made after the snapshot, of a token
+Wappie first saw after it and whose `created_at` plus 365 days passed
+before the restore, comes back as the stop of a selector Wappie does not
+hold: kept to 365 days after it was made at most, as its line, or earlier
+at its token's `created_at` plus 365 days when Wappie learns that date
+from a record of its selector (the token feed, while tokens are on) or
+from the lookup by selector (while the contract is on).
+
+**What Wappie keeps of a token.** The hourly maintenance pass (the plan's
+retention) deletes, on Wappie's clock (what goes at a token's `created_at`
+plus 365 days, and the stops, never before the database's clock either):
+
+- **A token's record**, 30 days after it ends (revoked, or expired by
+  Wappie's clock): the record as received, its name, terms and perms, and
+  the grant instances it keeps off (`contract_token_removed`, which keeps
+  no giver). The 30 days count from the earlier of the revocation's and
+  the expiry's own times, never later than Wappie's clock, so an end
+  Wappie learns of late (a restore's re-read of the feed, a turn-on after
+  a time off, an expiry shortened after the token ended) goes at the next
+  pass. A token a reset's pass finds unlisted loses all of this at that
+  pass: an unlisting carries no time, so a restore that runs the pass
+  again would start its 30 days again. Its hidden identity (`users`,
+  `user_logins`) goes at its end. With its record, at that pass and every
+  pass after, sent or not, goes what the acknowledgement and the usage
+  report hold of it: its refusals (item, perm and code), the items its
+  held entries keep off (an entry that then says nothing goes; one still
+  told revoked, expiring earlier or with a pinned key stays, as its
+  security record), its usage refusals on a number, and its days of use
+  not yet reported. Its refusals as a token (presented revoked or
+  expired), which name no item, keep their own rule for now (below).
+  No process counts uses yet; the change that does makes these go at the
+  forget too, as the platform ruled on 2026-11-08.
+- **Its security record**, used only to keep it refused, at its
+  `created_at` plus 365 days, when it would have expired anyway and its
+  records have left the platform's feed: its selector and hash, its pinned
+  reading key, its revocation and end (`contract_token_sticky`), its
+  creator, workspace, times and versions. Whatever of its record is still
+  there goes then too, as for a 365-day token that just expired, and so
+  does what the acknowledgement and the usage report still hold of it,
+  sent or not.
+- **A token Wappie never held** (a record of a workspace it does not hold,
+  or a bad record of an unknown token): only a revocation is kept, until a
+  valid record's `created_at` plus 365 days (a `created_at` ahead of the
+  clock counts as now), and none once that has passed. A bad record's
+  times are never taken: its revocation is kept 365 days from when it
+  came only until Wappie learns the token's own date, from a valid record
+  of it, revoked or not, or from the lookup by id (above). A platform
+  that answers `not_found`, answers with a record Wappie cannot use, or
+  never answers, leaves it at 365 days from when it came, unless such a
+  valid record comes later: a `not_found` never clears a revocation.
+  Its selector, when that valid record names one no token here holds, is
+  kept with the record's `created_at` plus 365 days
+  (`contract_token_dates`), to that date: it dates a stop of that
+  selector (below). A refusal of a bad record's grants goes 30 days after
+  the earlier of its queuing and the token's end, when Wappie keeps it,
+  sent or not.
+- **A workspace's row deleted:** its token rows go with it; their grant
+  instances, hidden identities, their items' queue entries, their usage
+  refusals on a number and their days of use (as for a forgotten
+  token's) at the next pass; their pins and selectors at their date.
+- **Wappie's own stops** (the operator's and `apply_failed`): one of a
+  selector Wappie holds goes with that selector, at its token's
+  `created_at` plus 365 days, however old the stop; any other 365 days
+  after it was made (a new `suspend` makes it again), or earlier at the
+  earliest `created_at` plus 365 days of a valid record of its selector
+  (never a bad record's): one that came before the stop (its selector's
+  date, above), one that came since, or the platform's answer to the
+  lookup by selector (above). A signed `not_found` leaves it to 365 days
+  after it was made: the platform knows no token of that selector for
+  Wappie, so it is the operator's own record, under Wappie's rule and not
+  decision 0056's. An operator's stop whose stop or lift is
+  timed ahead of the pass (a clock ahead when it was made) waits for its
+  times to pass, so the mark (above) never passes Wappie's clock, and goes
+  at the first pass after them. Past its date it keeps only what the stop
+  record holds, its selector and times: its note goes, and `tokens list`
+  shows it as made by `wappie`. The operator's lines in the stop record go
+  365 days after their time, whatever became of the stop (above).
+- **Usage rows**, once reported, at the start of the second UTC day after
+  their day, so at most 2 days after they were reported. A refusal count,
+  reported or not, at the start of the 30th UTC day after its day: the
+  platform keeps an app's daily counts of refused uses 30 days from the
+  day of use, so a later report would tell it nothing it keeps. A day of
+  use not yet reported waits for the report, since the platform keeps
+  each app's last day of use with its token: it goes with its token's
+  record (above), or at its selector's date.
+- **The acknowledgement's queues**, 30 days after they were sent; a held
+  entry of a generation a reset left, at the reset; an unsent held entry
+  of a token Wappie keeps nothing of, 30 days after it was queued; a
+  forgotten token's, as its record (above).
+
+## A token's requests
+
+A platform token works on REST, media and the socket's hello, in place of
+a key ([REST](rest-api.md#authentication-and-workspace-isolation)). MCP
+and AI routes never take one.
+
+**One verifier.** A REST or media request is a token's when one of its
+`Authorization` values holds `thc_` in any case. The one exception is a
+single value of the form `Bearer <text>` whose text is a well-formed
+session or key: that request keeps the session's or the key's path. A
+hello is a token's when its `api_key` or its `session` holds `thc_` and
+is neither a well-formed session nor a well-formed key. A token sent
+beside a session is refused. The token's text comes only from the kit's
+reading of the header. It is never trimmed, and never tried as a session
+or a key. At the request's start, every refusal, from the header's shape
+to the token's state, is the same answer: REST's and media's 401, after a
+fixed 250 ms wait, and the hello's one refusal. A REST answer checks the
+token once more before it is written: a token no longer live then gets
+401, and one whose version changed gets 403 `not_authorized` ("workspace
+access changed; retry the request"), both with no wait.
+Logs name the selector alone, never the token.
+
+**A live token**, read in one statement on every request and never from a
+cache:
+
+- not revoked, expired or unlisted, here or in what Wappie keeps of it;
+- the token mode on and caught up, and the contract not off, so `contract
+  tokens off` and `contract mode off` refuse every token at once in every
+  process;
+- no stop of Wappie's own: an operator's, `apply_failed`,
+  `creator_disabled_here` (the creator's local account is disabled), or
+  `local_rule` (the creator is not an active owner or admin of the
+  workspace here; a personal workspace's person is its owner). These two
+  lift when their rule does, and the acknowledgement reports them in
+  `suspended`;
+- the belt: the creator's stored account document still lists the
+  workspace, and its `disabled_at` and `credentials_revoked_at` are not
+  after the token's `created_at`, by the platform's times with no margin.
+  It holds at observe, and stops tokens only;
+- the workspace active.
+
+**What each act needs**, on a number of the token's workspace, not
+deleted, named by its full id, while the stored workspace document does
+not say closed (`workspace_closed`, at observe too):
+
+| Act | Needs |
+|---|---|
+| read, and any view of a number | an applied Read, a grant to the token's identity at the number's current epoch, and the text switch on; the attachments switch too to fetch an attachment |
+| send | an applied Send, and a token feed under an hour old |
+| manage, pause and resume | an applied Manage, and a token feed under an hour old |
+
+A refused act counts in the usage report with its code: `no_permission`,
+`no_grant`, `switch_off`, `stale_feed` or `workspace_closed`. It counts
+only on a number of the token's workspace, so a made-up id adds nothing.
+
+**The switches** are read per request from the workspace's own columns
+(`tenants.mcp_text`, `tenants.mcp_media`), else `WS_MCP_WORKSPACE_DEFAULT`,
+and never on for a workspace in `WS_MCP_DENY_TENANTS`. Tokens never use
+MCP's own switches. A change applies to the next request, and to an open
+socket within a second.
+
+- Text off refuses every Read, metadata included.
+- Attachments off refuses an attachment's fetch, `media.retry` and
+  `media.expired`. Rows that carry an attachment still come, with
+  `withheld: "attachments"` and no sealed body, payload, media key,
+  thumbnail or file name. A media row's caption goes with it; a text
+  row's link preview stays. An upload is a send, which the switch never
+  refuses.
+
+**Numbers.** A token never gets the prefix lookup. A number that does
+not exist, another workspace's, and one it may not use get one answer,
+with no id. Listings show only the numbers it reads, so a token with
+only Send or Manage lists nothing and works by the number's id, which the
+console shows. The reply to its act on a number it does not read carries
+only `{device_id, ok}` and the field the act changed.
+
+**Frames a token never sends**: pairing in every form, calls,
+`users.list`, `reader.mode`, `reproject.list` and `reproject.apply`
+(reprojection reseals a protobuf the caller supplies), moving, deleting
+and recovering numbers, `device.notice.seen`, `apikeys.*`, `grant.*` and
+the grant page's frames. Each answers `not_authorized`, and `welcome`'s
+features leave them out.
+
+**An open socket** checks its token every second and before each write.
+A failed check or a changed version closes it, and queued frames are not
+written. The belt, an expiry, a revocation and a stop fail the check. A
+narrowing that leaves the version alone (a switch, a key rotation, the
+workspace closed, or a stale feed for send and manage) empties the
+token's sets, so the next frame for those numbers is refused.
+
+## Wappie's own keys under tokens
+
+While the token mode is on, or once `whatserverd tokens retire-keys
+-apply` has run (a `key_retirements` row, which stays), Wappie issues no
+general key. Discovery then lists `tokens.platform.v1`.
+
+- `apikeys.create` issues only an MCP setup's key (read, chosen numbers,
+  at most 30 minutes, named "MCP · …", acting as no account or as a fresh
+  provisional one). Any other shape is refused `tokens_are_the_platforms`.
+- `whatserverd key` and `bootstrap` refuse. Their `-self-hosted` flag only
+  asserts that the installation is off the platform (the contract off,
+  tokens off, no retirement), and refuses otherwise. It never lets a key
+  through (the platform's answer W46, Q2).
+- A standing service account's invitation is refused `409
+  tokens_are_the_platforms`, issued or redeemed.
+- A setup's key works on REST, media and the hello only once a connection
+  names it. The one exception is a key acting as a fresh provisional
+  account the same person invited, which no connection names yet: a
+  content or AI renewal's new key, which the reader uses before the
+  renewal is recorded. This exception is pending the owner's yes
+  ([decisions](decisions.md#platform-tokens-in-wappie-step-7)).
+
+```
+whatserverd tokens retire-keys -dry-run|-apply -confirm N
+```
+
+It refuses unless the contract is on and tokens are on. `-dry-run` prints,
+per workspace, every live key (prefix, revoke or keep, class, origin,
+scope, name, the service it acts as, its creator, its last use) and every
+standing service account (remove, or keep and why), and writes nothing.
+`-apply -confirm N` revokes the keys of class `rest` and `cli`, and those
+in an MCP shape that no consent issued. It removes each standing service
+account a retired key acted as, where every number it holds a key of
+keeps another holder who is human. Then it records the run. `N` must be the dry run's count of keys
+to revoke, or nothing is written. A connection's key, a setup in flight
+and an old local MCP token are spared. Run again, it revokes nothing, and
+removes a service kept before that now has a human holder. The apply
+holds the modes and every workspace's row until it commits. The token
+feed, the account feed, the settings feed, the `contract mode` and
+`contract tokens` switches, and captures wait for it, so run it while the
+contract's feeds are quiet ([the runbook](deployment.md#retiring-wappies-keys)).
+
+## The grant page
+
+An owner or admin gives a platform token the key of a number on Wappie's
+own grant page. Three socket frames serve it. Each needs a person's
+session with the owner or admin role, and a token's socket is refused
+them.
+
+- **`token.waiting {device_ids}`** lists, per number, the tokens that wait
+  for its key: live, with a reading key Wappie pinned and never saw
+  change, an applied Read there, and no grant at the number's current
+  epoch. With no `device_ids` it lists every number of the workspace. A
+  number with no archive key has nothing to seal, so no token waits
+  there. The Numbers screen's "Tokens aguardando a chave" draws from it.
+
+  The snapshot marks more tokens `waiting` than this lists. The snapshot
+  follows the spec: `waiting` is an applied Read without a grant at the
+  number's current epoch, whatever keeps the grant away. `token.waiting`
+  lists only what a person can seal now. So the snapshot also marks
+  `waiting` a token that `token.waiting` leaves out:
+  - a token Wappie stops on its own (an operator's stop, `apply_failed`,
+    `local_rule`, `creator_disabled_here`), or any token while the
+    workspace is not active. It is not live, and `token.grant` refuses it
+    `token_not_live`.
+  - a token with no reading key yet, or whose record brought another
+    reading key than the pin. There is no identity to seal for, or the
+    pin no longer holds.
+  - a token on a number with no archive key (after
+    `reset-archive -keep-devices`, before `device-key`). There is nothing
+    to seal.
+
+  So the console may show a token as waiting that Wappie's Numbers screen
+  does not list. The console shows what the token lacks. The Numbers
+  screen shows what a person can seal here.
+  `TestEveryWaitingTokenWaitsInTheSnapshot` holds the rule: every token
+  `token.waiting` lists is `waiting: true` in the snapshot. A number not
+  linked yet (a pending registration, with no `lid`, `pn` or past
+  connection) is outside the rule. It is no item of the snapshot, so the
+  platform never learns of it, but `token.waiting` would list a token
+  that waits on it. The test pins this too.
+- **`token.grant_context {token_id, device_ids}`** answers what the page
+  draws: the token's name, its pinned `reading_key` and that key's
+  `reading_key_fingerprint` (the kit's), its identity (the user the grant
+  is sealed for), whether it is live, and per number its archive
+  namespace, its current epoch, the `archive_key_fingerprint` of its
+  archive key at that epoch, the token's Read (`applied`, `waiting`,
+  `refused` or `none`) and whether it holds a grant there. A token with
+  no reading key yet has no identity, and answers `not_found`, as an
+  unknown token and another workspace's token do.
+- **`token.grant {token_id, device_id, epoch, archive_key_fingerprint,
+  sealed_dsk}`** writes the grant, after the person's step-up and their
+  freshness (`RequireWidening`, as `grant.add`). It answers
+  `device.readers`, with the token among `tokens`, never among the
+  readers.
+
+**A signed GET under a minute old.** A grant needs the token's record
+fetched by a signed GET (`GET /contract/v1/tokens/{id}`) less than a
+minute before Wappie writes the grant, on Wappie's clock at the write. So
+the time the step-up and the freshness check take counts. A stamp more
+than 5 s after Wappie's clock (a clock that stepped back) counts as
+stale until the clock catches up, since a later GET never lowers it. The
+GET takes its place in the freshness hook's budget, as a document's GET
+does. It applies what the record narrows, and stamps the time it was
+sent. A signed `not_found` stamps nothing, and the token is not asked
+again for a minute.
+
+- `token.grant_context` asks the platform first for a live token whose
+  last GET is older. With no answer, it says `fresh: false`. The page may
+  still send the grant.
+- `token.grant` asks once when the write finds the record stale. The write
+  checks that after the token is live and its reading key holds, so a
+  refusal for those asks nothing. With no answer, the grant is refused
+  `token_unconfirmed`.
+- Neither asks for a token that is not live here. A token suspended here
+  for a record Wappie could not apply (`apply_failed`) waits for the feed,
+  which lifts it once a later version applies.
+
+**The archive key's fingerprint** (DS49; `grant.add` makes the same
+check). After
+`reset-archive -keep-devices` and `device-key`, a number's new archive key
+takes epoch 1 again. So a grant also names the archive key it was sealed
+for, by its fingerprint: the lowercase hex of the SHA-256 of the key's 32
+raw X25519 public bytes (`store.ArchiveKeyFingerprint`).
+
+- The page MUST compute the fingerprint itself, from the public half of
+  the private key it opened and seals. It compares that with the
+  context's `archive_key_fingerprint`, seals nothing on a mismatch, and
+  sends the one it computed. It never sends the context's value back as
+  its own: the context names the number's key now, so an echo would let
+  through a key the reset deleted, cached before it.
+- The grant write compares the fingerprint with the stored key under the
+  workspace's row, in its own transaction. A grant for another key, or
+  for a number with no key, is refused `conflict` and writes nothing, as
+  `grant.add` is under DS49. The reset deleted every grant, so the
+  token reads nothing (`no_grant`) until someone seals the new key.
+
+`token.grant` is also refused `not_found` (no such token in this
+workspace, or a token with no reading key yet), `token_not_live`,
+`reading_key_changed` (a record brought another reading key than the
+pin), `token_no_read` (no applied Read on the number), `conflict`
+(another epoch), `not_authorized` (the sealer does
+not read the number now), `step_up_required`, and the freshness check's
+`memberships_unconfirmed`. A number deleted or moved out of the
+workspace answers `token_no_read`: the deletion and the move delete the
+token's perms on it in the same write. `not_found` with "this number is
+no longer in this workspace" is kept for a deleted number that still has
+a token's applied Read, which only a row edited by hand leaves.
+
+**With tokens off,** the three frames are still listed in `welcome`'s
+features: they are this build's. `token.waiting` answers an empty list,
+`token.grant_context` answers `live: false` and asks the platform
+nothing, and `token.grant` is refused `token_not_live`. A page draws its
+waiting tokens from `token.waiting`'s answer, not from the features.
+
+**A token's own grants.** A token's `grants.list` and `GET /v1/grants`
+answer its identity's grants at each number's current epoch, on the
+numbers it reads now, with `user_id` its identity. Its client opens each
+with `GrantRow(archive tenant, device, identity, epoch)`. A token with no
+reading key yet has no identity, and holds none: `user_id` is empty. On
+the socket each reply is tagged with its numbers, so one built just
+before the token lost Read on one of them is refused in its place.
 
 ## Observe's comparison
 
@@ -528,6 +1130,7 @@ transaction):
 | a person's sends and group administration (every frame that needs Send but `calls.list`, and `group.create`, `group.participants.update`, `group.leave`, `group.join`) | `RequireFresh` | the person, `Stored`, in the background |
 | `mcp.send` | `RequireFresh` | the consenting person, `Stored`, in the background |
 | `grant.add` | `RequireWidening` | the actor `IfStale`, a person recipient `Always` |
+| `token.grant` | `RequireWidening` | the actor, `IfStale` |
 | `apikeys.create` | `RequireWidening` | the actor, `IfStale` |
 | `permission.raise` | `RequireWidening` | the actor and the recipient, `IfStale`, when a flag goes from false to true |
 | `service.invite`, `service.signup` | `RequireWidening` | the inviting person, `IfStale` |
@@ -617,11 +1220,47 @@ missing snapshot as unknown protection.
   accounts and people never linked to the platform. A deleted number is
   reported as it was live until its purge, its readers, holders and
   `protected` included (platform decision 0044).
-- **Limits.** At most 1000 items, 5000 people on an item and a 1 MiB body,
-  and the kit's validation (labels and hints as the platform's strict
-  intake checks them). A snapshot past them is not sent (ERROR "contract: a
-  workspace's snapshot is not sent: Wappie would not send it"), recorded
-  `local_invalid:<rule>`, and retried with the backoff.
+- **`ordinal` and `tokens`** go on every item only while the token mode
+  is on (`whatserverd contract tokens on`), and never while it is off: the
+  platform decodes strictly, and tokens on says its side takes them.
+  `ordinal` is the number's place in its workspace (`devices.ordinal`,
+  1 to 9999: the lowest free one at its creation, kept across a rename, a
+  deletion and a recovery, freed by its purge; a moved-out number takes a
+  free one in its new workspace; past 9999 none, and the member is left
+  out). The console names an unlabelled number by it. `tokens` lists, in
+  id order, the platform tokens with a permission Wappie applied on the
+  number: `can` the applied ones (never a pending, waiting or refused
+  one), `reads` an applied Read with a grant to the token's identity at
+  the number's current epoch, `waiting` an applied Read without it
+  (more than `token.waiting` lists: see "The grant page"). A
+  token revoked (the belt included, as its usage counts it), expired at
+  the measurement or unlisted by a reset's pass is left out; one Wappie
+  stops on its own (an operator's stop, `apply_failed`, `local_rule`,
+  `creator_disabled_here`) is listed, as the acknowledgement reports it
+  suspended. The belt's stop writes no token row, so no trigger tells the
+  sender: a creator who leaves the workspace changes its members, which
+  makes the snapshot due at once, but a creator's disable or recovery
+  shows when the platform's own revocation of the token arrives (it
+  revokes such tokens itself, platform decision 0053), or at the next
+  snapshot for any other reason, an hour at most. Token auth refuses the
+  token at once either way. An item no token holds, and a deleted one,
+  has `[]`. A token is never a person: never in `people`, `protected` or
+  `other_backups`. About 105 bytes a token: 100 tokens on each of about
+  97 numbers fill the 1 MiB.
+- **Limits.** At most 1000 items, 5000 people on an item, 1000 tokens on
+  an item and a 1 MiB body, and the kit's validation (labels and hints as
+  the platform's strict intake checks them). A snapshot past them is not sent
+  (ERROR "contract: a workspace's snapshot is not sent: Wappie would not
+  send it"), recorded `local_invalid:<rule>`, and retried with the
+  backoff. One past the 1 MiB or an item's 1000 tokens by its tokens alone
+  goes without any item's `tokens` (the spec: absent, the app does not
+  report tokens), its ordinals kept, with one ERROR a run per leader
+  "contract: a workspace's snapshot goes without its tokens: with them it
+  is over a limit" (`reason` `too_large` or `tokens`, never a value;
+  recorded `snapshot_invalid`). The platform allows 100 live tokens a
+  workspace and 1000 numbers a token, more than one snapshot carries, and
+  the people, their protection and the numbers' states never wait for
+  them. The tokens go again once they fit.
 - **`snapshot_seq`** is the greater of the measurement's milliseconds and
   the last one numbered plus one (which may be one whose send failed), or
   the workspace's last section's plus one, stored before the send, so it
@@ -637,9 +1276,14 @@ released for one try); 2 seconds after the first of a run of changes the
 snapshot shows (a number's state, label, identity or deletion, a
 permission, a grant, a membership, a person's status, a new platform link,
 the workspace's status or storage stop: 0051's triggers notify the leader
-at each commit); at once after a document that changes the workspace's
-members or names it first; and 55 minutes after the last accepted one, so
-a snapshot is never an hour old. One sender, in the order they are due, at
+at each commit; with 0053, a number's ordinal, a token's perms and its
+narrowings, but not the belt's stop, above); at once after a document that changes the workspace's
+members or names it first, and, every workspace's, when the token mode
+switches; 2 seconds after the earliest expiry of a token the last
+accepted one lists, since an expiry writes nothing (set in the same write
+as the outcome, so expiries under 2 seconds apart share one snapshot); and
+55 minutes after the last accepted one, so a snapshot is never an hour
+old. One sender, in the order they are due, at
 the leader's pace.
 
 **Outcomes.** `{"accepted": true}` resets its backoff. A signed `not_found`
@@ -647,7 +1291,11 @@ is retried with the backoff for 24 hours, then the workspace's snapshots
 are parked (ERROR "contract: a workspace's snapshot is parked") until a
 document names it again, a restart or a leader's start. A signed
 `invalid_request` parks it at once (a Wappie bug), until a restart or a
-leader's start. No answer, an unverified one or another refusal: 5 seconds
+leader's start; but a refusal of a snapshot measured before a due time
+set since (a document, a restart, a leader's start, a switch of the token
+mode) parks nothing: the snapshot measured after it goes next, and parks
+if it is refused too. So turning tokens off after the platform refused
+the new members unparks every workspace for good. No answer, an unverified one or another refusal: 5 seconds
 doubled with each failure, up to an hour. Each accepted snapshot logs, at
 most hourly per workspace, INFO "contract: snapshot labels": how many of
 its labels fall in each class (named, phone, placeholder, legacy id,
@@ -839,16 +1487,20 @@ seconds doubling to a minute, and so does a park or answers the ledger
 cannot store, before the rows are read again.
 
 **A reset.** A signed `gone` on the command feed, or a page of another
-generation, resets the account and command state in one transaction: the
-feed from 0, the `wseq` memory forgotten, the results not delivered of the
-old generation's commands dropped, every section due afresh; then the
-account long-poll is cut and the round kicked. At most one reset a minute
-starts from the command feed: a second within the minute waits it out,
-logged at ERROR and recorded `command_reset_loop` for `--check` (the
-platform's two feeds on two generations, or a `gone` that lasts, would
-reset everything once a minute). A reset that finds the generation moved
-under it (another came first) resets nothing and starts no wait. A reset
-of the account side cuts the command long-poll the same way.
+generation, resets the account, token and command state in one
+transaction: the feed from 0, the `wseq` memory forgotten, the results not
+delivered of the old generation's commands dropped, every section due
+afresh, and the token feed from 0 with a new pass, as the token feed's own
+reset; then the account and token long-polls are cut and the round
+kicked. At most one reset a minute starts from the command feed and the
+token feed together, since each resets the command state: one within a
+minute of the last either started waits it out, logged at ERROR and
+recorded `command_reset_loop` for `--check` (the platform's feeds on two
+generations, or a `gone` that lasts, would reset everything once a
+minute; the token feed's own records `token_reset_loop`). A reset that
+finds the generation moved under it (another came first) resets nothing
+and starts no wait. A reset of the account side cuts the command long-poll
+the same way.
 
 ### The kinds
 
@@ -925,7 +1577,9 @@ by their document): an admin is `not_authorized` here and 403
 `not_authorized` on Wappie's own screen (the owner's Q58). The socket's
 `grant.revoke`, which changes no flag, reads its actor's role again
 under the workspace's lock and refuses an admin on an owner the same
-way, read fail-closed, with a `not_authorized` frame (DS48). When Read
+way, read fail-closed, with a `not_authorized` frame (DS48). On a
+platform token's identity it answers `not_found`: a token is no person,
+and its grants follow its record. When Read
 goes (the stored
 row had it: a drop of read, a remove, the screen's PUT without Read) or
 no flag is left (a remove, the screen's PUT with every flag false, a
@@ -939,7 +1593,9 @@ account removed with its permissions and grants on every number. Its
 reader is told after the commit as a revoke tells it (best effort; the
 reader's 30-second re-tell is the backstop), and the person consents
 again for the numbers they still read. Another person's connections,
-workspace API keys and legacy MCP tokens keep the number. A change that
+workspace API keys and legacy MCP tokens keep the number, and so do
+platform tokens, whose Read is their record's ([the token
+feed](#the-token-feed)). A change that
 keeps send or manage while Read was already gone (a raise, a drop of the
 other) ends nothing, on the screen as in the acts, and nor does a
 refusal (`last_reader`, an admin on an owner). A connection already live
@@ -1104,7 +1760,15 @@ sealed files; never calls the platform. It prints:
 - each platform workspace: its kind and status, when it was named, the age
   of its last accepted snapshot, its events pending, parked and coalesced,
   and its parks and failing runs;
-- the pending person invitations of each team here.
+- the pending person invitations of each team here;
+- the token part, on lines that each start with `tokens ` (no line the
+  kits read by its prefix): the token mode and since when, the token feed's
+  cursor, `published_through`, last page and catching up, a failing run,
+  the acknowledgement's last `through` accepted, the usage report's last,
+  a reset's pass, the tokens held, unlisted and with a changed reading key,
+  the open operator stops and the live tokens Wappie stopped itself
+  (`apply_failed`; those of a token that ended are left to `tokens list`),
+  and the slowest page commit.
 
 No name, no email, no label, no secret.
 
@@ -1118,7 +1782,8 @@ clean until its bounds pass:
   journal). Its classes: `feed_silent`, `published_through_ahead`,
   `document_invalid`, `kind_changed`, `round_incomplete`, `snapshot_parked`,
   `snapshot_invalid`, `event_parked`, `events_refused`,
-  `event_actor_unknown`, and the settings part's `command_invalid`,
+  `event_actor_unknown`, the token part's `token_feed_silent`,
+  `token_lookup_invalid` and `token_reset_loop`, and the settings part's `command_invalid`,
   `command_stuck`, `command_reset_loop`, `section_invalid`, `section_parked`,
   `result_parked`, `person_invalid`;
 - while the contract is on:
@@ -1136,6 +1801,22 @@ clean until its bounds pass:
   - `workspace X's events have had no verdict for over 60 minutes`, or
     `workspace X has N events pending for over 60 minutes, the oldest
     written at …: they are not delivered`;
+- while the contract and the token mode are both on, each bound counted
+  from the later of its own time and the token mode's switch:
+  - `the token feed was last read …`, past 5 minutes;
+  - `the token feed's published_through is …: tokens' send and manage are
+    refused`, past an hour;
+  - `token auth holds: no token page with more false has committed since
+    the token mode's switch at …`, past 5 minutes;
+  - `the token acknowledgement has failed since …`, past 5 minutes, and
+    `the token usage report has failed since …`, past 15 minutes;
+  - `N tokens unlisted by a reset's pass in the last day: refused here for
+    good`;
+  - `N tokens' reading key changed: their new grants are refused`, and `N
+    tokens stopped here: a record of theirs could not be applied
+    (apply_failed)`, both of live tokens only (one that ended clears them);
+  - `a token page took N ms to commit at … (over a second)`, within the
+    last hour;
 - `the server's last secret load failed at step …`, `the server holds
   current=… other=…, the files are current=… other=…`, `a secret is
   installed but the server has published no load`, and `the server's
@@ -1178,7 +1859,7 @@ accounts (from its first PUT until its DELETE):
 
 | The platform's alert | When | Wappie's bound | Wappie's early warning (`--check`) |
 |---|---|---|---|
-| `contract_feed_silent` | the app has not read its feed (a signed feed request answered 200) for over 10 minutes | the follower long-polls continuously; a leader whose lock goes stops within 20 seconds, and another process tries the lock every 30 seconds; after a failure the feed is asked again within a minute | the feed's last page over 5 minutes ago |
+| `contract_feed_silent` | the app has not read its feed (a signed feed request answered 200) for over 10 minutes | the follower long-polls continuously; a leader whose lock goes stops within 20 seconds, and another process tries the lock every 5 seconds; after a failure the feed is asked again within a minute | the feed's last page over 5 minutes ago |
 | `contract_snapshots_stale` | an open workspace named in a followed account's document over 90 minutes ago, whose snapshot is missing or over 90 minutes old (personal and empty ones included) | every recorded workspace at the leader's start, 2 seconds after a change, at once when first named, and 55 minutes after its last accepted one | no accepted snapshot for 60 minutes |
 
 An orphan subscription's workspaces are never recorded, so never sent a
@@ -1224,11 +1905,46 @@ and `round_incomplete` if that keeps failing), and "contract: a new
 account's document names no personal workspace" (the sign-up is refused
 `503 platform_unavailable`).
 
+The token part's (migration 0053; its own section comes with the release
+that turns it on): "contract: a token record could not be applied; its
+token is stopped here" (class `token_apply_failed`: even its narrowings
+failed, so Wappie stops the token itself, `apply_failed`, reported as
+`suspended {local_rule}`, until a later version applies), "contract: a
+token record brings another reading key than the one pinned; its new
+grants are refused" (class `token_reading_key_changed`), "contract: the
+token feed's published_through is ahead of the clock; the last trusted one
+is kept", and "contract: a good token record's hash does not decode", which
+Validate rules out (the record is passed over). Each names a token by its
+id, selector and version, never by its record's JSON. The token follower's
+own: "contract: no token feed page for a long time" (class
+`token_feed_silent`) and "contract: a second reset from the token feed
+within a minute waits" (class `token_reset_loop`). The lookups' (above): "contract: the platform
+answered a token lookup with a record Wappie cannot use; it is asked again
+later" (class `token_lookup_invalid`), once for each lookup, with its kind
+(`id` or `selector`), never its token or selector; and WARN "contract: a
+token lookup got no answer", INFO "contract: the token lookups answer
+again".
+
 **Lock order.** Every transaction that touches several of the contract's
 rows takes them in one order: `contract_state`, then `contract_accounts`
 by sub and `contract_workspaces` by id, then the workspace (`FOR KEY
 SHARE`, behind a purge's `FOR UPDATE`), then its `item_events` rows in
-`seq` order, with a retry on a deadlock.
+`seq` order, with a retry on a deadlock. The token part's writers take
+`contract_token_state` after `contract_state` (a token commit never takes
+`contract_state`), then the workspace rows, then the tokens by id and their
+perms, workspace by workspace (decision DB25). So a token page waits for a
+write that holds one of its workspaces (a number's deletion or move-out, a
+grant, permission or member change), and its narrowings land when that
+write ends: a move-out's statements may run for up to 120 seconds. The
+stops come after the tokens: a stop or a lift takes its token's row, then
+the mark of what retention let go (`contract_token_stops_let_go`, shared),
+then its stop; retention takes the mark after every workspace's token
+rows and before the stops. A command takes the stop record's file lock
+before any of them. The selectors' dates (`contract_token_dates`) come
+after the stops. The lookups write after their calls, never during them,
+in a transaction of their own that takes no workspace or token row: the
+token's sticky row, then its selector's stops, then its selector's date,
+in the applier's order.
 
 ## What enforce adds
 
@@ -1269,11 +1985,23 @@ Each value below is the code's, and `TestContractDocsMatchTheCode` and
 | orphan | 15 minutes | a subscription of a sub Wappie does not hold, before the sweep |
 | sweep | 5 minutes | how often the sweep runs |
 | round | 1 minute | how often a round that is done is asked again |
-| leader retry | 30 seconds | how often a process that does not lead tries the lock |
+| leader retry | 5 seconds | how often a process that does not lead tries the lock |
 | heartbeat | 10 seconds | how often the lock's connection is checked |
 | long-poll | 25 seconds | the feed's wait |
 | feed backoff | 2 seconds to 1 minute | after a feed call that got no page, or a round that left subs |
-| feed silent | 15 minutes | without a page, before the follower's ERROR |
+| feed silent | 15 minutes | without a page, before the follower's ERROR, the token follower's likewise |
+| token long-poll | 25 seconds | the token feed's wait |
+| token backoff | 1 second to 5 seconds | after a token feed call that got no page |
+| token stale start | 1 hour | a stored token read this old at a leader's first page holds token auth until it has caught up |
+| token commit | 1 second | a token page's commit from its receipt, past which it is recorded |
+| judge | 1 minute | the token judge's pass when nothing wakes it |
+| ack spacing | 1 second | the least between two acknowledgements, but after a narrowing or a reset's pass, and for what did not fit the one before |
+| ack every | 1 minute | the most between two acknowledgements while the token feed runs |
+| ack backoff | 1 second to 30 seconds | after an acknowledgement that was not accepted |
+| usage | 1 minute | the least between two usage reports |
+| lookup | 1 minute | how often the leader looks for lookups due |
+| lookup retry | 15 minutes | after a lookup that got no answer |
+| lookup backoff | 15 minutes to 24 hours | after a signed answer whose record Wappie cannot use, doubled each time |
 | warn | 1 minute | the follower's and the senders' WARN for a run of failures, at most once |
 | round failing | 15 minutes | the round's PUTs failing, before its ERROR |
 | debounce | 2 seconds | a snapshot after the first change of a run |
@@ -1297,7 +2025,7 @@ Each value below is the code's, and `TestContractDocsMatchTheCode` and
 | check events | 1 hour | `--check`: a queue with no verdict, or events pending |
 | command long-poll | 25 seconds | the command feed's wait |
 | command backoff | 2 seconds to 20 seconds | after a command feed call that got no page |
-| reset floor | 1 minute | between two resets the command feed starts |
+| reset floor | 1 minute | between two resets the command feed or the token feed starts |
 | section debounce | 2 seconds | a numbers section after the first change of a run |
 | connection debounce | 30 seconds | a numbers section after a connection that only flipped between online and offline |
 | section | 55 minutes | the next numbers section after one accepted |
@@ -1319,3 +2047,10 @@ Each value below is the code's, and `TestContractDocsMatchTheCode` and
 | start bound | 15 seconds | a console resume's or sync now's start, before it is cut |
 | failed start wait | 1 minute | after a console sync now's start of a number failed, before this process starts that number for a sync now again |
 | check person | 1 hour | `--check`: a person's last accepted document |
+| check token feed | 5 minutes | `--check`: the token feed's last page |
+| check token published | 1 hour | `--check`: the token feed's `published_through` |
+| check token held | 5 minutes | `--check`: token auth held since the token mode's switch |
+| check acks | 5 minutes | `--check`: the acknowledgement failing |
+| check usage | 15 minutes | `--check`: the usage report failing |
+| check token commit | 1 hour | `--check`: how far back a slow token commit is told |
+| stop record lock | 5 seconds | `tokens suspend` and `tokens lift`: the wait for the stop record's lock |

@@ -355,7 +355,8 @@ func TestConnectionsWithoutReadSweepLocksNothing(t *testing.T) {
 //   - orphan, a key and no grant to anyone (wsctl pair -orphan, or
 //     device-key with no account): Orphan; and so is one whose only grants
 //     left are connections' accounts' copies, sealed to keys that live
-//     only in readers;
+//     only in readers, or a platform token's identity's (step 7), sealed
+//     to a key its app holds;
 //   - every number of a workspace an older binary reset with its numbers
 //     kept, its connections left live: Keyless;
 //   - a workspace this binary reset with its numbers kept: the reset ended
@@ -384,8 +385,19 @@ func TestConnectionsWithoutReadSweepNobodyReads(t *testing.T) {
 		if _, err := tx.Exec(ctx, `UPDATE devices SET current_epoch = 0 WHERE id = $1`, nKeyless); err != nil {
 			return err
 		}
-		// A key nobody holds.
+		// A key no person holds: a token's identity keeps a copy, and it
+		// never counts.
 		if _, err := tx.Exec(ctx, `DELETE FROM device_key_grants WHERE device_id = $1`, nOrphan); err != nil {
+			return err
+		}
+		var identity uuid.UUID
+		if err := tx.QueryRow(ctx, `INSERT INTO users (tenant_id, email, public_key, role, token_identity)
+			VALUES ($1, 't-' || gen_random_uuid()::text || '@token.invalid', decode(repeat('cd', 32), 'hex'), 'service', true)
+			RETURNING id`, w.tenant).Scan(&identity); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO device_key_grants (tenant_id, device_id, user_id, epoch, sealed_dsk)
+			SELECT $1, id, $3, current_epoch, '\x01' FROM devices WHERE id = $2`, w.tenant, nOrphan, identity); err != nil {
 			return err
 		}
 		// A key no person holds: only the connection's account keeps its

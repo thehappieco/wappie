@@ -49,7 +49,7 @@ func ValidArchiveKeyFingerprint(s string) bool {
 var ErrArchiveKeyChanged = errors.New("store: the number's archive key changed")
 
 // archiveKeyIsTx is every grant write's check (PutGrant, and step 7's
-// token grant): device's archive key at epoch, not retired, has the
+// PutTokenGrant): device's archive key at epoch, not retired, has the
 // fingerprint fp. Another key is ErrArchiveKeyChanged. No key at all is
 // both ErrArchiveKeyChanged and ErrNoArchiveKey, so either test finds it.
 // A number this workspace no longer sees (moved to Personal, or deleted)

@@ -203,5 +203,12 @@ func (h *Handler) scan(q *request) {
 		}
 		out.Messages = append(out.Messages, ScanMessage{SealedMessage: wsapi.SealedMessageFromRow(row), OrderTS: at})
 	}
-	q.finish(out)
+	q.finish(&out)
+}
+
+// WithholdAttachments withholds each message of the page.
+func (p *ScanPage) WithholdAttachments() {
+	for i := range p.Messages {
+		p.Messages[i].WithholdAttachments()
+	}
 }

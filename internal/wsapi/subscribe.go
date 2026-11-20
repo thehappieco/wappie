@@ -58,11 +58,25 @@ func (s *session) handleSubscribe(ctx context.Context, f Frame) {
 	}
 	if len(req.Devices) > 0 {
 		filter.Devices = make(map[uuid.UUID]struct{}, len(req.Devices))
+		token := s.actor().isToken()
 		for _, d := range req.Devices {
 			id, err := uuid.Parse(d)
+			if token && (err != nil || id.String() != d) {
+				s.replyError(f.ReqID, ErrCodeBadRequest, "devices must be full ids")
+				return
+			}
 			if err != nil {
 				s.replyError(f.ReqID, ErrCodeBadRequest, fmt.Sprintf("device %q is not an id", d))
 				return
+			}
+			if token {
+				// Each number it names is checked, and counted, as an act
+				// on it.
+				if !s.authorizeToken(ctx, f, id, store.TokenNeed{Action: store.ActionRead}) {
+					return
+				}
+				filter.Devices[id] = struct{}{}
+				continue
 			}
 			filter.Devices[id] = struct{}{}
 			if allowed != nil {
@@ -480,7 +494,7 @@ func (s *session) handleKeysGet(ctx context.Context, f Frame) {
 		s.replyError(f.ReqID, ErrCodeNotFound, "no such device")
 		return
 	}
-	s.reply(TypeKeys, f.ReqID, Keys{ArchiveTenantID: archiveTenant.String(), DeviceID: device.String(), Keys: out})
+	s.replyRead(ctx, TypeKeys, f.ReqID, Keys{ArchiveTenantID: archiveTenant.String(), DeviceID: device.String(), Keys: out})
 }
 
 // chatListLimit is how many conversations one listing carries.
@@ -518,7 +532,7 @@ func (s *session) handleChatsList(ctx context.Context, f Frame) {
 	for _, c := range rows {
 		out = append(out, ChatFromRow(c))
 	}
-	s.reply(TypeChats, f.ReqID, Chats{DeviceID: device.String(), Chats: out})
+	s.replyRead(ctx, TypeChats, f.ReqID, Chats{DeviceID: device.String(), Chats: out})
 }
 
 // lastUID renders the preview row's identity, and nothing when there is none.
@@ -587,7 +601,7 @@ func (s *session) handleChatPage(ctx context.Context, f Frame) {
 		at := next.TS
 		page.NextTS, page.NextSeq = &at, next.Seq
 	}
-	s.reply(TypePage, f.ReqID, page)
+	s.replyRead(ctx, TypePage, f.ReqID, page)
 }
 
 // deviceNotFoundHint explains a device lookup failure in terms of what this
@@ -627,6 +641,11 @@ func (s *session) resolveDevice(ctx context.Context, f Frame, deviceID string) (
 		s.replyError(f.ReqID, ErrCodeBadRequest, "device_id is required")
 		return uuid.Nil, uuid.Nil, false
 	}
+	if s.actor().isToken() {
+		// A full id, checked before any lookup: no prefix, no hint, no
+		// ambiguity reply, one answer for every refusal.
+		return s.tokenResolve(ctx, f, tenant, deviceID)
+	}
 	// A unique prefix is accepted, because the listing shows a short form and
 	// an identifier you cannot type back is a trap.
 	dev, err := s.srv.cfg.Devices.Resolve(ctx, tenant.String(), deviceID)
@@ -657,8 +676,10 @@ func (s *session) resolveDevice(ctx context.Context, f Frame, deviceID string) (
 	// it connects the number. A person needs Read, as the console's
 	// item.sync_now (the owner's "readers", the platform's answer 4: DS13);
 	// a key, and a service account through one, keeps Manage, with full
-	// scope. On a paused one it resumes it, by role (frameAction);
-	// handleDeviceStart checks that again on the row it lifts the pause on.
+	// scope; a platform token was judged above by its rules (tokenResolve),
+	// its manage permission whether the number is paused or not. On a
+	// paused one it resumes it, by role (frameAction); handleDeviceStart
+	// checks that again on the row it lifts the pause on.
 	if f.Type == TypeDeviceStart && !dev.Paused {
 		action = store.ActionManage
 		if s.actor().person {

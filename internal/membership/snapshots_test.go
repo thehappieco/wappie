@@ -546,18 +546,35 @@ func fromWire(t *testing.T, s kc.Snapshot) (store.ContractSnapshot, bool) {
 		for _, p := range it.Protected {
 			item.Protected = append(item.Protected, uuid.MustParse(p))
 		}
+		if it.Ordinal != 0 {
+			o := int(it.Ordinal)
+			item.Ordinal = &o
+		}
+		if it.Tokens != nil {
+			item.Tokens = []store.ContractSnapshotToken{}
+			for _, tok := range it.Tokens {
+				id, err := uuid.Parse(tok.ID)
+				if err != nil || slices.Contains(tok.Can, kc.CanAct) {
+					return out, false
+				}
+				item.Tokens = append(item.Tokens, store.ContractSnapshotToken{ID: id, Read: slices.Contains(tok.Can, kc.CanRead),
+					Send: slices.Contains(tok.Can, kc.CanSend), Manage: slices.Contains(tok.Can, kc.CanManage),
+					Reads: tok.Reads, Waiting: tok.Waiting})
+			}
+		}
 		out.Items = append(out.Items, item)
 	}
 	return out, true
 }
 
-// TB2's snapshot part: every snapshot of wire.json and wire-item-ids.json
-// through Wappie's own check before a send, which takes exactly the valid
-// ones; and each valid one Wappie's read model can hold, through Wappie's
-// own encoder, comes back as the vector.
+// TB2's snapshot part: every snapshot of wire.json, wire-item-ids.json and
+// wire-snapshot-tokens.json (step 7's ordinal and tokens, the plan's 10.1)
+// through Wappie's own decoding and check before a send, which take
+// exactly the valid ones; and each valid one Wappie's read model can hold,
+// through Wappie's own encoder, comes back as the vector.
 func TestSnapshotWireVectors(t *testing.T) {
-	trips := 0
-	for _, file := range []string{"wire.json", "wire-item-ids.json"} {
+	trips, tokens := 0, 0
+	for _, file := range []string{"wire.json", "wire-item-ids.json", "wire-snapshot-tokens.json"} {
 		var w wireVectors
 		readVectors(t, file, &w)
 		if len(w.Snapshots) == 0 {
@@ -565,15 +582,16 @@ func TestSnapshotWireVectors(t *testing.T) {
 		}
 		for _, c := range w.Snapshots {
 			var s kc.Snapshot
-			if err := json.Unmarshal(c.Value, &s); err != nil {
-				t.Fatalf("%s: %s: %v", file, c.Name, err)
-			}
-			if got := checkSnapshot(s) == ""; got != c.Valid {
-				t.Errorf("%s: %s: Wappie would send it %v, valid %v (%q)", file, c.Name, got, c.Valid, checkSnapshot(s))
+			decoded := json.Unmarshal(c.Value, &s) == nil
+			if got := decoded && checkSnapshot(s) == ""; got != c.Valid {
+				t.Errorf("%s: %s: Wappie would send it %v, valid %v (decoded %v, %q)", file, c.Name, got, c.Valid, decoded, checkSnapshot(s))
 			}
 			read, ok := fromWire(t, s)
 			if !c.Valid || !ok {
 				continue
+			}
+			if file == "wire-snapshot-tokens.json" {
+				tokens++
 			}
 			got, err := json.Marshal(SnapshotOf(read, s.SnapshotSeq))
 			if err != nil {
@@ -592,8 +610,8 @@ func TestSnapshotWireVectors(t *testing.T) {
 			trips++
 		}
 	}
-	if trips < 3 {
-		t.Fatalf("only %d vectors went through the encoder", trips)
+	if trips < 3 || tokens < 6 {
+		t.Fatalf("only %d vectors went through the encoder, %d of them with ordinals or tokens", trips, tokens)
 	}
 	// Beyond README 8's limits, and the call's.
 	many := kc.Snapshot{V: 1, SnapshotSeq: 1, Items: make([]kc.Item, kc.MaxItems+1)}
@@ -1246,7 +1264,7 @@ func TestSnapshotBeforeTheRenameIsSentAgain(t *testing.T) {
 func (w *snapshotWorld) snapshotSender(t *testing.T) *snapshotSender {
 	t.Helper()
 	return &snapshotSender{l: w.leader(w.members, &membershiptest.Logs{}, lockKey(t)), notices: newNotices(),
-		logged: map[uuid.UUID]time.Time{}}
+		logged: map[uuid.UUID]time.Time{}, bare: map[uuid.UUID]bool{}}
 }
 
 // waiter waits for a backend to wait on the lock pid holds, and returns

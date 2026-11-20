@@ -348,7 +348,7 @@ func TestProvisionalServiceMembershipExpires(t *testing.T) {
 	f := newContentFixture(t)
 	ctx := context.Background()
 	c := f.prepareContent(ctx, t, f.owner)
-	if _, err := access.Authenticate(ctx, c.key, f.keys, f.users); err != nil {
+	if _, err := (&access.Checker{Keys: f.keys, Users: f.users}).Authenticate(ctx, c.key); err != nil {
 		t.Fatalf("the key was refused inside the window: %v", err)
 	}
 	f.inTenant(ctx, t, func(tx pgx.Tx) error {
@@ -358,7 +358,7 @@ func TestProvisionalServiceMembershipExpires(t *testing.T) {
 	if _, err := f.users.Get(ctx, f.tenant, c.service); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("an expired membership was found: %v", err)
 	}
-	if _, err := access.Authenticate(ctx, c.key, f.keys, f.users); !errors.Is(err, store.ErrInvalidKey) {
+	if _, err := (&access.Checker{Keys: f.keys, Users: f.users}).Authenticate(ctx, c.key); !errors.Is(err, store.ErrInvalidKey) {
 		t.Fatalf("a key acting as an expired account authenticated: %v", err)
 	}
 	// A consent is refused too.
@@ -906,43 +906,11 @@ func TestMigration0042DownStep(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// 0052 (the settings) and 0051 (the contract) come down first, then
-	// 0050 (deleted numbers), 0049 (the end of the sign-in's rollback
-	// window, its ledger row only), 0048 (platform sign-in) and 0047 (fewer
-	// steps).
-	if _, err := f.pool.Exec(ctx, downStep(t, 52)); err != nil {
-		t.Fatalf("0052 down-step: %v", err)
-	}
-	if _, err := f.pool.Exec(ctx, downStep(t, 51)); err != nil {
-		t.Fatalf("0051 down-step: %v", err)
-	}
-	if _, err := f.pool.Exec(ctx, downStep(t, 50)); err != nil {
-		t.Fatalf("0050 down-step: %v", err)
-	}
-	if _, err := f.pool.Exec(ctx, downStep(t, 49)); err != nil {
-		t.Fatalf("0049 down-step: %v", err)
-	}
-	if _, err := f.pool.Exec(ctx, downStep(t, 48)); err != nil {
-		t.Fatalf("0048 down-step: %v", err)
-	}
-	if _, err := f.pool.Exec(ctx, downStep(t, 47)); err != nil {
-		t.Fatalf("0047 down-step: %v", err)
-	}
-	if _, err := f.pool.Exec(ctx, downStep(t, 46)); err != nil {
-		t.Fatalf("0046 down-step: %v", err)
-	}
-	if _, err := f.pool.Exec(ctx, downStep(t, 45)); err != nil {
-		t.Fatalf("0045 down-step: %v", err)
-	}
-	if _, err := f.pool.Exec(ctx, downStep(t, 44)); err != nil {
-		t.Fatalf("0044 down-step: %v", err)
-	}
-	if _, err := f.pool.Exec(ctx, downStep(t, 43)); err != nil {
-		t.Fatalf("0043 down-step: %v", err)
-	}
-	if _, err := f.pool.Exec(ctx, downStep(t, 42)); err != nil {
-		t.Fatalf("down-step: %v", err)
-	}
+	// 0053 (the tokens), 0052 (the settings) and 0051 (the contract) come
+	// down first, then 0050 (deleted numbers), 0049 (the end of the
+	// sign-in's rollback window, its ledger row only), 0048 (platform
+	// sign-in) and 0047 (fewer steps).
+	downAbove(t, f.pool, 41)
 	var version int
 	if err := f.pool.QueryRow(ctx, `SELECT max(version) FROM schema_migrations`).Scan(&version); err != nil || version != 41 {
 		t.Fatalf("ledger at %d %v", version, err)
@@ -1033,43 +1001,11 @@ func TestMigration0042DownStepDropsProvisionalInvites(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// 0052 (the settings) and 0051 (the contract) come down first, then
-	// 0050 (deleted numbers), 0049 (the end of the sign-in's rollback
-	// window, its ledger row only), 0048 (platform sign-in) and 0047 (fewer
-	// steps).
-	if _, err := f.pool.Exec(ctx, downStep(t, 52)); err != nil {
-		t.Fatalf("0052 down-step: %v", err)
-	}
-	if _, err := f.pool.Exec(ctx, downStep(t, 51)); err != nil {
-		t.Fatalf("0051 down-step: %v", err)
-	}
-	if _, err := f.pool.Exec(ctx, downStep(t, 50)); err != nil {
-		t.Fatalf("0050 down-step: %v", err)
-	}
-	if _, err := f.pool.Exec(ctx, downStep(t, 49)); err != nil {
-		t.Fatalf("0049 down-step: %v", err)
-	}
-	if _, err := f.pool.Exec(ctx, downStep(t, 48)); err != nil {
-		t.Fatalf("0048 down-step: %v", err)
-	}
-	if _, err := f.pool.Exec(ctx, downStep(t, 47)); err != nil {
-		t.Fatalf("0047 down-step: %v", err)
-	}
-	if _, err := f.pool.Exec(ctx, downStep(t, 46)); err != nil {
-		t.Fatalf("0046 down-step: %v", err)
-	}
-	if _, err := f.pool.Exec(ctx, downStep(t, 45)); err != nil {
-		t.Fatalf("0045 down-step: %v", err)
-	}
-	if _, err := f.pool.Exec(ctx, downStep(t, 44)); err != nil {
-		t.Fatalf("0044 down-step: %v", err)
-	}
-	if _, err := f.pool.Exec(ctx, downStep(t, 43)); err != nil {
-		t.Fatalf("0043 down-step: %v", err)
-	}
-	if _, err := f.pool.Exec(ctx, downStep(t, 42)); err != nil {
-		t.Fatalf("down-step: %v", err)
-	}
+	// 0053 (the tokens), 0052 (the settings) and 0051 (the contract) come
+	// down first, then 0050 (deleted numbers), 0049 (the end of the
+	// sign-in's rollback window, its ledger row only), 0048 (platform
+	// sign-in) and 0047 (fewer steps).
+	downAbove(t, f.pool, 41)
 	// Usable is what redemption asks of an invitation.
 	usable := func(id uuid.UUID) (present, open bool) {
 		t.Helper()

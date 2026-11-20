@@ -1,12 +1,19 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http/httptest"
 	"slices"
+	"sync"
 	"testing"
+	"time"
 
 	"whatserver2/internal/authapi"
+	"whatserver2/internal/migrate"
+	"whatserver2/internal/pgtest"
+	"whatserver2/internal/store"
 )
 
 func TestDiscoveryDescribesProtocolWithoutWorkspaceData(t *testing.T) {
@@ -237,7 +244,7 @@ func TestDiscoveryAdvertisesPlatformLogin(t *testing.T) {
 	read := func(t *testing.T, p *authapi.PlatformDiscovery) doc {
 		t.Helper()
 		w := httptest.NewRecorder()
-		discoveryWith(mcpEndpoints{}, p)(w, httptest.NewRequest("GET", "/.well-known/wappie", nil))
+		discoveryWith(mcpEndpoints{}, p, nil)(w, httptest.NewRequest("GET", "/.well-known/wappie", nil))
 		var d doc
 		if err := json.Unmarshal(w.Body.Bytes(), &d); err != nil {
 			t.Fatal(err)
@@ -271,5 +278,152 @@ func TestDiscoveryAdvertisesPlatformLogin(t *testing.T) {
 		ConsoleOrigin: "https://console.thehappie.co"})
 	if d.PlatformLogin == nil || d.PlatformLogin.ConsoleOrigin != "https://console.thehappie.co" {
 		t.Fatalf("console origin: %+v", d.PlatformLogin)
+	}
+}
+
+// TestDiscoveryAdvertisesPlatformTokens (step 7's plan, 7.4 and 10.7):
+// tokens.platform.v1 follows the narrowing (tokens on, or the keys
+// retired) per request, within the 5-second cache and with no restart;
+// both discovery routes answer alike, and a capability list served before
+// is never changed by one served after.
+func TestDiscoveryAdvertisesPlatformTokens(t *testing.T) {
+	pool := pgtest.Fresh(t, migrate.Run)
+	keys := store.NewAPIKeys(pool)
+	now := time.Now()
+	reads := 0
+	tokens := &platformTokens{read: func(ctx context.Context) (bool, error) {
+		reads++
+		return keys.KeysNarrowed(ctx)
+	}, now: func() time.Time { return now }}
+	handler := discoveryWith(mcpEndpoints{}, nil, tokens)
+	advertised := func(path string) []string {
+		t.Helper()
+		w := httptest.NewRecorder()
+		handler(w, httptest.NewRequest("GET", path, nil))
+		var d struct {
+			Capabilities []string `json:"capabilities"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &d); err != nil {
+			t.Fatal(err)
+		}
+		return d.Capabilities
+	}
+	says := func(state string, want bool) {
+		t.Helper()
+		for _, path := range []string{"/v1/discovery", "/.well-known/wappie"} {
+			if got := slices.Contains(advertised(path), "tokens.platform.v1"); got != want {
+				t.Fatalf("%s, %s: tokens.platform.v1 %t, want %t", state, path, got, want)
+			}
+		}
+	}
+	before := advertised("/v1/discovery")
+	says("tokens off", false)
+	execSQL(t, pool, `UPDATE contract_token_state SET mode = 'on'`)
+	now = now.Add(platformTokensFor - time.Millisecond)
+	says("tokens on, within the cache", false)
+	now = now.Add(time.Millisecond)
+	says("tokens on, past the cache", true)
+	execSQL(t, pool, `UPDATE contract_token_state SET mode = 'off'`)
+	now = now.Add(platformTokensFor)
+	says("tokens off again", false)
+	execSQL(t, pool, `INSERT INTO key_retirements (revoked, services_removed, services_kept, report, by) VALUES (0, 0, 0, '{}', 'root')`)
+	now = now.Add(platformTokensFor)
+	says("after a retirement", true)
+	if reads != 4 {
+		t.Fatalf("%d reads of the narrowing, want one per cache period: 4", reads)
+	}
+	if slices.Contains(before, "tokens.platform.v1") || !slices.Equal(before, advertised("/v1/discovery")[:len(before)]) {
+		t.Fatalf("the list served before changed: %v", before)
+	}
+	// A failed read keeps the last answer, for a cache period: the two
+	// routes' requests read once.
+	failed := 0
+	tokens.read = func(context.Context) (bool, error) { failed++; return false, errors.New("down") }
+	now = now.Add(platformTokensFor)
+	says("a failed read", true)
+	if failed != 1 {
+		t.Fatalf("%d reads after a failed one, want 1 per cache period", failed)
+	}
+}
+
+// TestDiscoveryNeverWaitsOnASlowRead (the plan's 7.4): discovery answers
+// without signing in, so a slow database never holds its requests. One
+// request reads, bounded by platformTokensRead and not cut by its client
+// leaving; the others answer the last answer at once, and wait only for
+// the very first read. A read that runs out of time keeps the last answer
+// for a cache period.
+func TestDiscoveryNeverWaitsOnASlowRead(t *testing.T) {
+	now := time.Now()
+	var mu sync.Mutex
+	reads := 0
+	entered := make(chan struct{}, 4)
+	release := make(chan bool)
+	// The first read has time to spare, so a loaded machine never cuts it
+	// before the test releases it; the slow one below gets 300 ms.
+	tokens := &platformTokens{now: func() time.Time { mu.Lock(); defer mu.Unlock(); return now }, readFor: 10 * time.Second}
+	tokens.read = func(ctx context.Context) (bool, error) {
+		mu.Lock()
+		reads++
+		mu.Unlock()
+		if _, ok := ctx.Deadline(); !ok {
+			t.Error("a read with no deadline")
+		}
+		entered <- struct{}{}
+		select {
+		case on := <-release:
+			return on, nil
+		case <-ctx.Done():
+			return false, ctx.Err()
+		}
+	}
+	advance := func() { mu.Lock(); now = now.Add(platformTokensFor); mu.Unlock() }
+	on := func(ctx context.Context) <-chan bool {
+		got := make(chan bool, 1)
+		go func() { got <- tokens.On(ctx) }()
+		return got
+	}
+	answer := func(name string, got <-chan bool, want bool) {
+		t.Helper()
+		select {
+		case v := <-got:
+			if v != want {
+				t.Fatalf("%s: %t, want %t", name, v, want)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("%s: no answer", name)
+		}
+	}
+
+	// The first read: a second request waits for it, and a first one
+	// whose client leaves does not cut it.
+	leaving, leave := context.WithCancel(context.Background())
+	first := on(leaving)
+	<-entered
+	waiter := on(context.Background())
+	leave()
+	select {
+	case <-waiter:
+		t.Fatal("a request answered before the first read ended")
+	case <-time.After(50 * time.Millisecond):
+	}
+	release <- true
+	answer("the first read", first, true)
+	answer("a request waiting on it", waiter, true)
+
+	// A slow read: the others answer the last answer at once, with no
+	// read of their own.
+	tokens.readFor = 300 * time.Millisecond
+	advance()
+	slow := on(context.Background())
+	<-entered
+	answer("a request beside a slow read", on(context.Background()), true)
+	answer("another", on(context.Background()), true)
+	// It runs out of its time, and the last answer stands.
+	answer("the slow read", slow, true)
+	answer("just after", on(context.Background()), true)
+	mu.Lock()
+	defer mu.Unlock()
+	if reads != 2 {
+		t.Fatalf("%d reads, want 2: one per cache period, a failed one included", reads)
 	}
 }

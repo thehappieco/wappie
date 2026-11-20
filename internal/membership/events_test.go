@@ -352,23 +352,14 @@ func TestEventGoldenFiles(t *testing.T) {
 		t.Fatalf("the queue: %+v %v", batch, err)
 	}
 	at := kc.T(time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC))
-	var all []kc.Event
-	for i, e := range batch.Events {
-		ev := EventOf(ws, e)
-		if err := ev.Validate(); err != nil {
-			t.Errorf("%s: %v", rows[i].kind, err)
-		}
-		if ev.EventID != rows[i].id.String() || !ev.OccurredAt.Equal(e.OccurredAt) || e.OccurredAt.Nanosecond()%1000 != 0 {
-			t.Errorf("%s: event %s at %v, the row %s at %v", rows[i].kind, ev.EventID, ev.OccurredAt, rows[i].id, e.OccurredAt)
-		}
-		ev.OccurredAt = at
-		all = append(all, ev)
+	golden := func(name string, ev kc.Event) {
+		t.Helper()
 		got, err := json.MarshalIndent(ev, "", "  ")
 		if err != nil {
 			t.Fatal(err)
 		}
 		got = append(got, '\n')
-		golden := filepath.Join("testdata", "events", rows[i].kind+".json")
+		golden := filepath.Join("testdata", "events", name+".json")
 		if *updateGolden {
 			if err := os.MkdirAll(filepath.Dir(golden), 0o750); err != nil {
 				t.Fatal(err)
@@ -382,11 +373,47 @@ func TestEventGoldenFiles(t *testing.T) {
 			t.Fatalf("%v (run with -update to create it)", err)
 		}
 		if !bytes.Equal(got, want) {
-			t.Errorf("%s differs from %s:\n%s", rows[i].kind, golden, got)
+			t.Errorf("%s differs from %s:\n%s", name, golden, got)
 		}
+	}
+	var all []kc.Event
+	for i, e := range batch.Events {
+		ev := EventOf(ws, e)
+		if err := ev.Validate(); err != nil {
+			t.Errorf("%s: %v", rows[i].kind, err)
+		}
+		if ev.EventID != rows[i].id.String() || !ev.OccurredAt.Equal(e.OccurredAt) || e.OccurredAt.Nanosecond()%1000 != 0 {
+			t.Errorf("%s: event %s at %v, the row %s at %v", rows[i].kind, ev.EventID, ev.OccurredAt, rows[i].id, e.OccurredAt)
+		}
+		ev.OccurredAt = at
+		all = append(all, ev)
+		golden(rows[i].kind, ev)
 	}
 	if err := (kc.Events{Events: all}).Validate(); err != nil {
 		t.Fatalf("the batch: %v", err)
+	}
+
+	// The token mode on (step 7's plan, 6.3): the same rows, read again,
+	// render as before, but the pause, which goes with its stop, as its
+	// golden file's gate-on twin. Off again, as before.
+	for _, mode := range []string{store.TokensOn, store.TokensOff} {
+		w.exec(ctx, t, `UPDATE contract_token_state SET mode = $1`, mode)
+		batch, err := w.contract.EventBatch(ctx, ws, kc.MaxEvents)
+		if err != nil || len(batch.Events) != len(rows) {
+			t.Fatalf("the queue with tokens %s: %+v %v", mode, batch, err)
+		}
+		for i, e := range batch.Events {
+			ev := EventOf(ws, e)
+			if err := ev.Validate(); err != nil {
+				t.Errorf("%s with tokens %s: %v", rows[i].kind, mode, err)
+			}
+			ev.OccurredAt = at
+			name := rows[i].kind
+			if mode == store.TokensOn && name == "sync_paused" {
+				name = "sync_paused-tokens"
+			}
+			golden(name, ev)
+		}
 	}
 
 	// More readers than an event carries.
@@ -422,8 +449,12 @@ func eventFromWire(ev kc.Event) (store.ContractEvent, bool) {
 	if kind == "" || err != nil || ierr != nil || ev.Item.Kind != kc.ItemNumber || (ev.To != nil && *ev.To != kc.MovedToPersonal) {
 		return store.ContractEvent{}, false
 	}
+	if ev.Stop != "" && ev.Stop != kc.StopPause {
+		// A number's capture stops; it is never turned off.
+		return store.ContractEvent{}, false
+	}
 	e := store.ContractEvent{EventID: id, Type: kind, ItemID: item, OccurredAt: ev.OccurredAt.Time, ActorKind: ev.ActorKind,
-		Label: ev.Item.Label, Hint: ev.Item.Hint, Cause: ev.Cause}
+		Label: ev.Item.Label, Hint: ev.Item.Hint, Cause: ev.Cause, TokenMode: ev.Stop != ""}
 	if ev.Actor != nil {
 		e.ActorSub = ptr(uuid.MustParse(*ev.Actor))
 	}
@@ -446,48 +477,61 @@ func eventFromWire(ev kc.Event) (store.ContractEvent, bool) {
 	return e, true
 }
 
-// TB2's event part: every event of wire.json through Wappie's own check
-// before a send (the kit's Validate), which takes exactly the valid ones;
-// and each valid one, a number's, through Wappie's own encoder comes back
-// as the vector.
+// TB2's event part: every event of wire.json and wire-events-stop.json
+// (step 7's stop, the plan's 10.1) through Wappie's own check before a
+// send (the kit's Validate), which takes exactly the valid ones; and each
+// valid one, a number's, through Wappie's own encoder comes back as the
+// vector: with its stop only while the token mode is on.
 func TestEventWireVectors(t *testing.T) {
-	var v wireVectors
-	readVectors(t, "wire.json", &v)
-	if len(v.Events) == 0 {
-		t.Fatal("wire.json: no events")
+	trips, stops := 0, 0
+	for _, file := range []string{"wire.json", "wire-events-stop.json"} {
+		var v wireVectors
+		readVectors(t, file, &v)
+		if len(v.Events) == 0 {
+			t.Fatalf("%s: no events", file)
+		}
+		for _, c := range v.Events {
+			var ev kc.Event
+			decoded := json.Unmarshal(c.Value, &ev) == nil
+			if got := decoded && ev.Validate() == nil; got != c.Valid {
+				t.Errorf("%s: %s: Wappie would send it %v, valid %v", file, c.Name, got, c.Valid)
+			}
+			if !c.Valid {
+				continue
+			}
+			e, ok := eventFromWire(ev)
+			if !ok {
+				continue
+			}
+			if e.TokenMode {
+				stops++
+			}
+			trips++
+			eventRoundTrip(t, file+": "+c.Name, ev, e, c.Value)
+		}
 	}
-	trips := 0
-	for _, c := range v.Events {
-		var ev kc.Event
-		decoded := json.Unmarshal(c.Value, &ev) == nil
-		if got := decoded && ev.Validate() == nil; got != c.Valid {
-			t.Errorf("%s: Wappie would send it %v, valid %v", c.Name, got, c.Valid)
-		}
-		if !c.Valid {
-			continue
-		}
-		e, ok := eventFromWire(ev)
-		if !ok {
-			continue
-		}
-		got, err := json.Marshal(EventOf(uuid.MustParse(ev.WorkspaceID), e))
-		if err != nil {
-			t.Fatal(err)
-		}
-		var a, b any
-		if err := json.Unmarshal(got, &a); err != nil {
-			t.Fatal(err)
-		}
-		if err := json.Unmarshal(c.Value, &b); err != nil {
-			t.Fatal(err)
-		}
-		if !reflect.DeepEqual(a, b) {
-			t.Errorf("%s: Wappie's encoder gives\n%s\nwant\n%s", c.Name, got, c.Value)
-		}
-		trips++
+	if trips < 8 || stops < 2 {
+		t.Fatalf("only %d vectors went through the encoder, %d with a stop", trips, stops)
 	}
-	if trips < 8 {
-		t.Fatalf("only %d vectors went through the encoder", trips)
+}
+
+// eventRoundTrip checks that Wappie's encoder gives back want, the vector
+// of ev, from e, the queue's event it renders from.
+func eventRoundTrip(t *testing.T, name string, ev kc.Event, e store.ContractEvent, want json.RawMessage) {
+	t.Helper()
+	got, err := json.Marshal(EventOf(uuid.MustParse(ev.WorkspaceID), e))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var a, b any
+	if err := json.Unmarshal(got, &a); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(want, &b); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(a, b) {
+		t.Errorf("%s: Wappie's encoder gives\n%s\nwant\n%s", name, got, want)
 	}
 }
 

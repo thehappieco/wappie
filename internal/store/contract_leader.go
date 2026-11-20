@@ -66,7 +66,8 @@ const (
 	ContractErrorRoundIncomplete = "round_incomplete"
 	// ContractErrorSnapshotParked: a workspace's snapshot parked, after a
 	// day of not_found or on an invalid_request; ContractErrorSnapshotInvalid:
-	// one Wappie would not send (over README 8's limits, or not valid).
+	// one Wappie would not send (over README 8's limits, or not valid), or
+	// sends without its tokens (over a limit by them alone).
 	ContractErrorSnapshotParked  = "snapshot_parked"
 	ContractErrorSnapshotInvalid = "snapshot_invalid"
 	// ContractErrorEventParked: an event parked (conflict, invalid_request,
@@ -116,8 +117,7 @@ func (c *Contract) CommitPage(ctx context.Context, p ContractPage) (ContractPage
 				return nil
 			}
 			if state.Generation == nil {
-				if _, err := tx.Exec(ctx, `UPDATE contract_state SET generation = $1, generation_confirmed = $2,
-					updated_at = clock_timestamp() WHERE generation IS NULL`, p.Generation, p.Confirmed); err != nil {
+				if err := adoptGenerationTx(ctx, tx, p.Generation, p.Confirmed); err != nil {
 					return err
 				}
 				g := p.Generation
@@ -211,9 +211,10 @@ func sameGeneration(a, b *uuid.UUID) bool {
 // its status, and a snapshot and event queue due now, with no accepted
 // snapshot (the platform may hold none of this generation), nothing
 // parked and no not_found run, and every workspace's events parked
-// not_found are sent again (the plan's 4.7 and 4.11). The command feed
-// resets in the same transaction (restartCommandsTx). It reports whether
-// it restarted: false when the state moved since it was read.
+// not_found are sent again (the plan's 4.7 and 4.11). The token feed and
+// the command feed reset with it, in the same transaction (restartTokensTx,
+// restartCommandsTx). It reports whether it restarted: false when the state
+// moved since it was read.
 func (c *Contract) Restart(ctx context.Context, seenGeneration *uuid.UUID, seenCursor int64, gen *uuid.UUID, confirmed bool) (bool, error) {
 	done := false
 	err := retryDeadlock(ctx, func() error {
@@ -226,50 +227,7 @@ func (c *Contract) Restart(ctx context.Context, seenGeneration *uuid.UUID, seenC
 			if state.FeedCursor != seenCursor || !sameGeneration(state.Generation, seenGeneration) {
 				return nil
 			}
-			if _, err := tx.Exec(ctx, `UPDATE contract_state SET generation = $1::uuid, generation_confirmed = $2 AND $1::uuid IS NOT NULL,
-				feed_cursor = 0, published_through = NULL, round_generation = NULL, updated_at = clock_timestamp()`,
-				gen, confirmed); err != nil {
-				return err
-			}
-			if _, err := tx.Exec(ctx, `UPDATE contract_accounts SET generation = NULL, version = NULL, fresh_at = NULL
-				WHERE version IS NOT NULL OR fresh_at IS NOT NULL`); err != nil {
-				return err
-			}
-			// In id order (DB23), as every writer of these rows.
-			if _, err := tx.Exec(ctx, `SELECT 1 FROM contract_workspaces ORDER BY workspace_id FOR UPDATE`); err != nil {
-				return err
-			}
-			rows, err := tx.Query(ctx, `UPDATE contract_workspaces w SET wversion = 0,
-				snapshot_due_at = clock_timestamp(), snapshot_tries = 0, snapshot_ok_at = NULL,
-				events_due_at = CASE WHEN events_due_at IS NULL THEN NULL ELSE clock_timestamp() END, events_tries = 0,
-				events_not_found_since = NULL, not_found_since = NULL, parked_at = NULL
-				FROM (SELECT c.workspace_id, c.events_not_found_since IS NOT NULL AS refused FROM contract_workspaces c) was
-				WHERE w.workspace_id = was.workspace_id
-				RETURNING w.workspace_id, was.refused`)
-			if err != nil {
-				return err
-			}
-			var refused []uuid.UUID
-			err = forEachRow(rows, func(row pgx.Rows) error {
-				var id uuid.UUID
-				var nf bool
-				if err := row.Scan(&id, &nf); err != nil {
-					return err
-				}
-				if nf {
-					refused = append(refused, id)
-				}
-				return nil
-			})
-			if err != nil {
-				return err
-			}
-			// Rows are parked not_found only in a not_found run, which this
-			// ends: in id order, after the records (DB23).
-			if err := releaseWorkspacesTx(ctx, tx, refused); err != nil {
-				return err
-			}
-			if err := restartCommandsTx(ctx, tx, gen); err != nil {
+			if err := restartTx(ctx, tx, gen, confirmed); err != nil {
 				return err
 			}
 			done = true
@@ -277,6 +235,96 @@ func (c *Contract) Restart(ctx context.Context, seenGeneration *uuid.UUID, seenC
 		})
 	})
 	return done, err
+}
+
+// RestartFromTokens is Restart for the token follower, which saw the reset
+// first (a signed gone, a page or record of another generation, a rewound
+// feed): by compare-and-set on the generation alone, since it does not know
+// the account feed's cursor, with the same locks in the same order (DB25).
+// It wakes every contract loop with "generation", so the account and
+// command feeds' long-polls are cut and the round runs. One generation
+// resets every feed: restartTx resets the account, token and command
+// feeds alike, whichever saw the reset first.
+func (c *Contract) RestartFromTokens(ctx context.Context, seenGeneration uuid.UUID, gen *uuid.UUID, confirmed bool) (bool, error) {
+	done := false
+	err := retryDeadlock(ctx, func() error {
+		done = false
+		return pg.InTx(ctx, c.pool, func(tx pgx.Tx) error {
+			state, err := lockStateTx(ctx, tx)
+			if err != nil {
+				return err
+			}
+			if state.Generation == nil || *state.Generation != seenGeneration {
+				return nil
+			}
+			if err := restartTx(ctx, tx, gen, confirmed); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(ctx, `SELECT pg_notify($1, 'generation')`, ContractModeChannel); err != nil {
+				return err
+			}
+			done = true
+			return nil
+		})
+	})
+	return done, err
+}
+
+// restartTx is a restart's writes, in tx, which holds contract_state's lock:
+// contract_token_state's next (DB25 step 2), before DB23's workspace rows,
+// then the tokens' rows, and the command feed's last (restartCommandsTx:
+// contract_settings_state after the records).
+func restartTx(ctx context.Context, tx pgx.Tx, gen *uuid.UUID, confirmed bool) error {
+	if _, err := tx.Exec(ctx, `SELECT 1 FROM contract_token_state FOR UPDATE`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE contract_state SET generation = $1::uuid, generation_confirmed = $2 AND $1::uuid IS NOT NULL,
+		feed_cursor = 0, published_through = NULL, round_generation = NULL, updated_at = clock_timestamp()`,
+		gen, confirmed); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE contract_accounts SET generation = NULL, version = NULL, fresh_at = NULL
+		WHERE version IS NOT NULL OR fresh_at IS NOT NULL`); err != nil {
+		return err
+	}
+	// In id order (DB23), as every writer of these rows.
+	if _, err := tx.Exec(ctx, `SELECT 1 FROM contract_workspaces ORDER BY workspace_id FOR UPDATE`); err != nil {
+		return err
+	}
+	rows, err := tx.Query(ctx, `UPDATE contract_workspaces w SET wversion = 0,
+		snapshot_due_at = clock_timestamp(), snapshot_tries = 0, snapshot_ok_at = NULL,
+		events_due_at = CASE WHEN events_due_at IS NULL THEN NULL ELSE clock_timestamp() END, events_tries = 0,
+		events_not_found_since = NULL, not_found_since = NULL, parked_at = NULL
+		FROM (SELECT c.workspace_id, c.events_not_found_since IS NOT NULL AS refused FROM contract_workspaces c) was
+		WHERE w.workspace_id = was.workspace_id
+		RETURNING w.workspace_id, was.refused`)
+	if err != nil {
+		return err
+	}
+	var refused []uuid.UUID
+	err = forEachRow(rows, func(row pgx.Rows) error {
+		var id uuid.UUID
+		var nf bool
+		if err := row.Scan(&id, &nf); err != nil {
+			return err
+		}
+		if nf {
+			refused = append(refused, id)
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	// Rows are parked not_found only in a not_found run, which this
+	// ends: in id order, after the records (DB23).
+	if err := releaseWorkspacesTx(ctx, tx, refused); err != nil {
+		return err
+	}
+	if err := restartTokensTx(ctx, tx, gen); err != nil {
+		return err
+	}
+	return restartCommandsTx(ctx, tx, gen)
 }
 
 // Recovered makes due now the snapshot and the event queue of every
@@ -344,6 +392,11 @@ type ContractModeChange struct {
 	ToSend, HeldBack int64
 	// SettingsOff: a switch to off turned the settings part off with it.
 	SettingsOff bool
+	// TokensOff: a switch to off turned the token mode off with it, in its
+	// transaction (step 7's plan, section 8): tokens are refused whenever
+	// the contract is off, and turning the contract on again leaves them
+	// off.
+	TokensOff bool
 }
 
 // ErrContractMode is a mode Wappie does not know.
@@ -353,8 +406,11 @@ var ErrContractMode = errors.New("store: the contract's mode is off or observe")
 // and wakes every process's contract loop. To observe: events_from is set
 // the first time only, the off period that ends now joins events_off, and
 // the round is due again (round_generation unset). To off: the period
-// starts (events_paused_at). It waits for a sign-up in flight, which reads
-// the state FOR SHARE, so the round that follows subscribes that account.
+// starts (events_paused_at), and the token mode and the settings mode go
+// off with it (contract_token_state, DB25 step 2, then
+// contract_settings_state), so a switch to off never refuses.
+// It waits for a sign-up in flight, which reads the state FOR SHARE, so
+// the round that follows subscribes that account.
 func (c *Contract) SetMode(ctx context.Context, mode string) (ContractModeChange, error) {
 	if mode != ContractOff && mode != ContractObserve {
 		return ContractModeChange{}, ErrContractMode
@@ -382,6 +438,9 @@ func (c *Contract) SetMode(ctx context.Context, mode string) (ContractModeChange
 			_, err = tx.Exec(ctx, `UPDATE contract_state SET mode = $1, mode_changed_at = clock_timestamp(),
 				events_paused_at = CASE WHEN events_from IS NULL THEN NULL ELSE clock_timestamp() END,
 				updated_at = clock_timestamp()`, mode)
+			if err == nil {
+				out.TokensOff, err = tokensOffTx(ctx, tx)
+			}
 			if err == nil {
 				out.SettingsOff, err = settingsOffTx(ctx, tx)
 			}

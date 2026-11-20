@@ -399,7 +399,7 @@ func TestSectionSeqKeepsSnapshotOutcome(t *testing.T) {
 			t.Fatal(err)
 		}
 		n := w.numbers(ctx, t, c)
-		rec, err := c.SnapshotSent(ctx, w.tenant, seq, measured, outcome, "transport", snapshotTimes)
+		rec, err := c.SnapshotSent(ctx, w.tenant, seq, measured, nil, outcome, "transport", snapshotTimes)
 		if err != nil || !rec.Recorded {
 			t.Fatalf("the snapshot's outcome %d after a section at %d: %+v %v", outcome, n.Seq, rec, err)
 		}

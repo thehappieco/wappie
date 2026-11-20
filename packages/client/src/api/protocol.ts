@@ -121,7 +121,9 @@ export const TypePong = 'pong'
 
 /**
  * Hello authenticates the connection. Exactly one credential is expected: an
- * API key for a program, a session for a person who signed in.
+ * API key for a program, a session for a person who signed in. On an
+ * installation connected to The Happie Co with its tokens on, a program
+ * sends a platform token (thc_, 64 characters, as it is) in api_key.
  */
 export interface Hello {
   api_key?: string
@@ -533,6 +535,8 @@ export interface APIKeyInfo {
   created_at: string
   last_used_at?: string
   revoked_at?: string
+  /** How the key was issued; absent on older installations. */
+  origin?: 'rest' | 'cli' | 'mcp_setup' | 'legacy_mcp'
 }
 
 export interface APIKeys {

@@ -152,7 +152,7 @@ func (w *world) lockHolder(t *testing.T, name string) int32 {
 // literals (the plan's 18): a test that reads a constant cannot pin it.
 func TestLeaderBounds(t *testing.T) {
 	for name, c := range map[string]struct{ got, want time.Duration }{
-		"a non-leader's retry":      {leaderRetry, 30 * time.Second},
+		"a non-leader's retry":      {leaderRetry, 5 * time.Second},
 		"the lock's heartbeat":      {pg.HoldHeartbeat, 10 * time.Second},
 		"the mode's check":          {modeCheck, 5 * time.Second},
 		"the sign-ins' mode cache":  {stateFor, 5 * time.Second},
@@ -164,6 +164,17 @@ func TestLeaderBounds(t *testing.T) {
 		"an orphan's age":           {OrphanAfter, 15 * time.Minute},
 		"a done round's next pass":  {roundEvery, time.Minute},
 		"the long-poll, in seconds": {time.Duration((&Leader{}).wait()) * time.Second, 25 * time.Second},
+		// The token part's (step 7's plan, 4.3 to 4.5).
+		"the token feed's first pause":   {tokenBackoffMin, time.Second},
+		"the token feed's longest pause": {tokenBackoffMax, 5 * time.Second},
+		"a stale start's stored read":    {tokenStaleAfter, time.Hour},
+		"a slow token commit":            {tokenCommitSlow, time.Second},
+		"the acks' spacing":              {ackSpacing, time.Second},
+		"the acks' longest wait":         {ackEvery, time.Minute},
+		"an ack's first backoff":         {ackBackoffMin, time.Second},
+		"an ack's longest backoff":       {ackBackoffMax, 30 * time.Second},
+		"the usage reports' spacing":     {usageEvery, time.Minute},
+		"the judge's idle pass":          {judgeEvery, time.Minute},
 	} {
 		if c.got != c.want {
 			t.Errorf("%s: %v, want %v", name, c.got, c.want)

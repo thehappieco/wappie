@@ -71,6 +71,14 @@ type ServiceAccountRef struct {
 	Name string    `json:"name"`
 }
 
+// TokenRef is a platform token that holds a perm or a key grant on the
+// number (kind token): its id and name, which the console's API keys page
+// revokes by.
+type TokenRef struct {
+	ID   uuid.UUID `json:"id"`
+	Name string    `json:"name"`
+}
+
 // AssistantRef is a live assistant connection or AI authorization whose key
 // names the number. Kind is "assistant" or "ai".
 type AssistantRef struct {
@@ -104,7 +112,10 @@ type DeletionCheck struct {
 	Assistants      []AssistantRef
 	Keys            []RestrictedKeyRef
 	AllNumberKeys   []AllNumberKey
-	Bytes           int64
+	// Tokens are the platform tokens that hold the number: a deletion takes
+	// it off them.
+	Tokens []TokenRef
+	Bytes  int64
 	// Session is a WhatsApp session for the number in the session store,
 	// so the deletion has something to log out.
 	Session bool
@@ -408,6 +419,14 @@ func (d *Devices) DeleteCheck(ctx context.Context, tenant, actor, device uuid.UU
 		if out.ServiceAccounts, err = serviceReadersTx(ctx, tx, tenant, device); err != nil {
 			return err
 		}
+		tokens, err := tokensOnNumberTx(ctx, tx, tenant, device)
+		if err != nil {
+			return err
+		}
+		out.Tokens = []TokenRef{}
+		for _, a := range tokens {
+			out.Tokens = append(out.Tokens, TokenRef{ID: uuid.MustParse(a.TokenID), Name: a.Name})
+		}
 		rows, err := tx.Query(ctx, `SELECT c.id, c.client_name, coalesce(nullif(u.name, ''), u.email, h.email, ''), c.kind
 			FROM mcp_connections c
 			JOIN api_key_devices x ON x.api_key_id = c.api_key_id AND x.device_id = $2
@@ -582,6 +601,17 @@ func (d *Devices) Quarantine(ctx context.Context, tenant, actor, device uuid.UUI
 				if !slices.Contains(endedKeys, k.id) {
 					out.KeysNarrowed = append(out.KeysNarrowed, k.key)
 				}
+			}
+
+			// (e2) Off every platform token (the plan's 5.6): its perms on
+			// the number go, each instance kept off for good (item_deleted),
+			// and the token identities' grants on it, in this write, under
+			// the workspace's row (DB25 steps 3, 5 and 6). No token row is
+			// touched: the perms' NOTIFY and the deleted number's refusal
+			// close what it no longer allows, and a recovery gives nothing
+			// back.
+			if err := dropNumberTokensTx(ctx, tx, device, "item_deleted"); err != nil {
+				return err
 			}
 
 			// (f) Its downloads in flight go back to the queue, while the

@@ -558,6 +558,17 @@ func (k *Keys) RevokeGrantEnded(ctx context.Context, tenant, actor, device, user
 		if err != nil {
 			return err
 		}
+		// A platform token's identity is no one's to revoke here, and never a
+		// person: its grants follow its record, and the console's API keys
+		// page revokes it. So it is refused before the owner check and
+		// before anything DS48 ends or takes.
+		var identity bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM users WHERE id = $1 AND token_identity)`, user).Scan(&identity); err != nil {
+			return err
+		}
+		if identity {
+			return ErrNotFound
+		}
 		if role != "owner" {
 			owner, err := ownerTargetTx(ctx, tx, tenant, user)
 			if err != nil {

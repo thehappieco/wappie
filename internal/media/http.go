@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+	kc "github.com/thehappieco/kit/contract"
 
 	"whatserver2/internal/access"
 	"whatserver2/internal/blob"
@@ -37,7 +38,29 @@ type Handler struct {
 	// Gate is asked about every API key before the attachment is looked
 	// up; nil lets every key through to the usual checks.
 	Gate MediaGate
-	Log  *slog.Logger
+	// Access authenticates and authorizes every request; nil is a Checker
+	// of Keys and Sessions alone, which refuses every platform token.
+	Access *access.Checker
+	Log    *slog.Logger
+
+	// streamHook, for tests, runs once a token's download has its headers
+	// and its monitor, before the first chunk ("streaming"), and when its
+	// monitor cuts it ("cut").
+	streamHook func(stage string)
+}
+
+func (h *Handler) hook(stage string) {
+	if h.streamHook != nil {
+		h.streamHook(stage)
+	}
+}
+
+// checker is the Checker every request goes through.
+func (h *Handler) checker() *access.Checker {
+	if h.Access != nil {
+		return h.Access
+	}
+	return &access.Checker{Keys: h.Keys, Users: h.Sessions, Log: h.Log}
 }
 
 // BlobReader is the read half of object storage.
@@ -60,7 +83,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		log = slog.Default()
 	}
 
-	actor, ok := authenticateActor(r, h.Keys, h.Sessions)
+	actor, ok := authenticateActor(r, h.checker())
 	tenant := actor.Tenant
 	if !ok {
 		w.Header().Set("WWW-Authenticate", `Bearer realm="whatserver2"`)
@@ -71,6 +94,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	uid, err := uuid.Parse(r.PathValue("uid"))
 	if err != nil {
 		http.Error(w, "not a message id", http.StatusBadRequest)
+		return
+	}
+	if actor.IsToken() {
+		h.serveToken(w, r, actor, uid, log)
 		return
 	}
 
@@ -103,7 +130,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	allowed, err := access.Allows(r.Context(), actor, ref.DeviceID, store.ActionRead, h.Keys, h.Sessions)
+	allowed, err := h.checker().Allows(r.Context(), actor, ref.DeviceID, store.ActionRead)
 	if err != nil || !allowed {
 		http.Error(w, "no such attachment", http.StatusNotFound)
 		return
@@ -162,11 +189,29 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // authenticateActor retains the principal so HTTP checks the same device
 // permissions as WebSocket, including service accounts and key restrictions.
-func authenticateActor(r *http.Request, keys *store.APIKeys, users *store.Users) (access.Actor, bool) {
+//
+// A platform token's request is decided on the raw header first
+// (access.TokenRequest): its text comes only from the kit's reading of the
+// header, so "bearer thc_..." reaches it in any case, and every refusal is
+// this endpoint's one 401, after a fixed wait. The case-sensitive
+// "Bearer " below stays for sessions and keys.
+func authenticateActor(r *http.Request, checker *access.Checker) (access.Actor, bool) {
+	if values := r.Header.Values("Authorization"); access.TokenRequest(values) {
+		text, err := kc.BearerToken(values)
+		var actor access.Actor
+		if err == nil {
+			actor, err = checker.AuthenticateToken(r.Context(), text, checker.Peer(r))
+		}
+		if err != nil {
+			access.Wait(r.Context())
+			return access.Actor{}, false
+		}
+		return actor, true
+	}
 	token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 	if !ok {
 		return access.Actor{}, false
 	}
-	actor, err := access.Authenticate(r.Context(), token, keys, users)
+	actor, err := checker.Authenticate(r.Context(), token)
 	return actor, err == nil
 }

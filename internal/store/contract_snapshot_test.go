@@ -63,7 +63,7 @@ var snapshotTimes = store.ContractSnapshotTimes{Every: 55 * time.Minute, Backoff
 // up to an hour; a not_found keeps its first time and parks after a day;
 // an invalid_request parks at once with no not_found_since, which no
 // document releases; a seq another leader has passed records nothing; and a
-// due time set after the measurement stands.
+// due time set after the measurement stands, and no refusal then parks.
 func TestContractSnapshotOutcomes(t *testing.T) {
 	pool := pgtest.Fresh(t, migrate.Run)
 	ctx := context.Background()
@@ -93,7 +93,7 @@ func TestContractSnapshotOutcomes(t *testing.T) {
 			t.Fatal(err)
 		}
 		measured := dbClock(t, pool, "0") //nolint:contextcheck // the database's clock, read for the test
-		rec, err := c.SnapshotSent(ctx, ws, seq, measured, outcome, class, snapshotTimes)
+		rec, err := c.SnapshotSent(ctx, ws, seq, measured, nil, outcome, class, snapshotTimes)
 		if err != nil || !rec.Recorded {
 			t.Fatalf("outcome %d: %+v %v", outcome, rec, err)
 		}
@@ -130,7 +130,7 @@ func TestContractSnapshotOutcomes(t *testing.T) {
 	near("accepted", r.DueIn, 55*time.Minute)
 
 	// A stale leader's outcome, on a seq passed since, records nothing.
-	if rec, err := c.SnapshotSent(ctx, ws, seq-1, dbClock(t, pool, "0"), store.SnapshotFailed, "x", snapshotTimes); err != nil || rec.Recorded {
+	if rec, err := c.SnapshotSent(ctx, ws, seq-1, dbClock(t, pool, "0"), nil, store.SnapshotFailed, "x", snapshotTimes); err != nil || rec.Recorded {
 		t.Fatalf("a stale seq's outcome: %+v %v", rec, err)
 	}
 
@@ -208,9 +208,12 @@ func TestContractSnapshotOutcomes(t *testing.T) {
 	}
 
 	// Again: a due time set after the measurement (a document that changes
-	// the members, a restart, a name given again) stands, whatever the
-	// outcome, and a failure then counts no try.
-	for _, outcome := range []store.ContractSnapshotOutcome{store.SnapshotAccepted, store.SnapshotFailed, store.SnapshotNotFound} {
+	// the members, a restart, a name given again, a switch of the token
+	// mode) stands, whatever the outcome, and a failure then counts no try;
+	// nor does a refusal park: the snapshot measured after that change goes
+	// next.
+	for _, outcome := range []store.ContractSnapshotOutcome{store.SnapshotAccepted, store.SnapshotFailed, store.SnapshotNotFound,
+		store.SnapshotRefused} {
 		if seq, ok, err = c.SnapshotSeqForTest(ctx, ws, dbClock(t, pool, "0")); err != nil || !ok {
 			t.Fatal(ok, err)
 		}
@@ -219,10 +222,10 @@ func TestContractSnapshotOutcomes(t *testing.T) {
 			t.Fatal(err)
 		}
 		before := readSnapshotRow(t, pool, ws)
-		rec, err := c.SnapshotSent(ctx, ws, seq, measured, outcome, "x", snapshotTimes)
+		rec, err := c.SnapshotSent(ctx, ws, seq, measured, nil, outcome, "x", snapshotTimes)
 		after := readSnapshotRow(t, pool, ws)
 		if err != nil || !rec.Recorded || !rec.Again || !after.DueAt.Equal(*before.DueAt) || after.Tries != before.Tries ||
-			after.NotFoundSince != nil {
+			after.NotFoundSince != nil || rec.Parked || after.ParkedAt != nil {
 			t.Fatalf("outcome %d after a due time set since the measurement: %+v, %+v then %+v (%v)", outcome, rec, before, after, err)
 		}
 	}
@@ -366,7 +369,7 @@ func TestContractSnapshotInFlight(t *testing.T) {
 	}
 	storeDocs(t, c, store.ContractAnswer, contractDoc(sub, gen, 2, "active", personal,
 		store.ContractDocWorkspace{ID: team, Role: "admin", Status: "open", WVersion: 1}))
-	rec, err := c.SnapshotSent(ctx, team, seq, measured, store.SnapshotAccepted, "", snapshotTimes)
+	rec, err := c.SnapshotSent(ctx, team, seq, measured, nil, store.SnapshotAccepted, "", snapshotTimes)
 	if err != nil || !rec.Recorded || !rec.Again {
 		t.Fatalf("the snapshot measured before the document: %+v %v", rec, err)
 	}
@@ -384,7 +387,7 @@ func TestContractSnapshotInFlight(t *testing.T) {
 	if err := c.SnapshotsDue(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if rec, err := c.SnapshotSent(ctx, ws, seq, measured, store.SnapshotAccepted, "", snapshotTimes); err != nil || !rec.Recorded || !rec.Again {
+	if rec, err := c.SnapshotSent(ctx, ws, seq, measured, nil, store.SnapshotAccepted, "", snapshotTimes); err != nil || !rec.Recorded || !rec.Again {
 		t.Fatalf("a late outcome after another leader's start: %+v %v", rec, err)
 	}
 	if r := readSnapshotRow(t, pool, ws); r.DueIn > 0 || r.OKAt == nil {
@@ -405,7 +408,7 @@ func TestContractSnapshotInFlight(t *testing.T) {
 		if err := c.SnapshotsDirty(ctx, []uuid.UUID{ws}, false, 2*time.Second); err != nil {
 			t.Fatal(err)
 		}
-		rec, err := c.SnapshotSent(ctx, ws, seq, measured, outcome, "unavailable:timeout", snapshotTimes)
+		rec, err := c.SnapshotSent(ctx, ws, seq, measured, nil, outcome, "unavailable:timeout", snapshotTimes)
 		if err != nil || !rec.Recorded || !rec.Again || rec.Tries != 0 {
 			t.Fatalf("outcome %d after another leader's debounce: %+v %v", outcome, rec, err)
 		}
@@ -425,7 +428,7 @@ func TestContractSnapshotInFlight(t *testing.T) {
 	if err := c.SnapshotsDirty(ctx, []uuid.UUID{ws}, false, 30*time.Second); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.SnapshotSent(ctx, ws, seq, measured, store.SnapshotFailed, "unavailable:timeout", snapshotTimes); err != nil {
+	if _, err := c.SnapshotSent(ctx, ws, seq, measured, nil, store.SnapshotFailed, "unavailable:timeout", snapshotTimes); err != nil {
 		t.Fatal(err)
 	}
 	if r := readSnapshotRow(t, pool, ws); r.DueIn > 5*time.Second || r.DueIn < 4*time.Second {

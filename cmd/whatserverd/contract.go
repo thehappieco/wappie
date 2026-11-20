@@ -84,7 +84,7 @@ func newContractClient(cfg config.Contract, log *slog.Logger) *membership.Client
 // contract: mode=… transport=… secret=….
 func (a *app) startContract(ctx context.Context, hup <-chan os.Signal) {
 	if a.members == nil && a.pools != nil {
-		a.members = &membership.Members{Contract: store.NewContract(a.pools.API), Log: a.log}
+		a.members = &membership.Members{Contract: store.NewContract(a.pools.API), Tokens: store.NewTokens(a.pools.API), Log: a.log}
 	}
 	defer a.logContractStart(ctx)
 	if !a.cfg.Contract.Configured() {
@@ -136,8 +136,9 @@ func (a *app) logContractStart(ctx context.Context) {
 // contractCommand is whatserverd contract, as the service user runs it
 // (systemd-run with the platform-contract group and runtime.env as its
 // environment, the release as its working directory). check reads no .env
-// and no database; status, diff and mode read the database and never
-// migrate it (contract_status.go).
+// and no database; status, diff, mode, settings and tokens read the
+// database and never migrate it (contract_status.go, contract_settings.go,
+// contract_tokens.go).
 func contractCommand(args []string, stdout io.Writer) error {
 	if len(args) == 0 {
 		return usageError{arg: "contract"}
@@ -153,6 +154,8 @@ func contractCommand(args []string, stdout io.Writer) error {
 		return contractModeCommand(args[1:], stdout)
 	case "settings":
 		return contractSettingsCommand(args[1:], stdout)
+	case "tokens":
+		return contractTokensCommand(args[1:], stdout)
 	}
 	return usageError{arg: "contract " + strings.Join(args, " ")}
 }

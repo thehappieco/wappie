@@ -39,7 +39,7 @@ func (s *session) handlePresenceSubscribe(ctx context.Context, f Frame) {
 		}
 		if policy.Mode != wa.ModeActive {
 			result.Reason = "incognito"
-			s.reply(TypePresenceWatch, f.ReqID, result)
+			s.replyRead(ctx, TypePresenceWatch, f.ReqID, result)
 			return
 		}
 		requestCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
@@ -50,7 +50,7 @@ func (s *session) handlePresenceSubscribe(ctx context.Context, f Frame) {
 			result.Subscribed = true
 		}
 	}
-	s.reply(TypePresenceWatch, f.ReqID, result)
+	s.replyRead(ctx, TypePresenceWatch, f.ReqID, result)
 }
 
 // handleChatPresence tells a conversation we are typing, or have stopped.
@@ -125,6 +125,15 @@ func (s *session) handleDeviceMode(ctx context.Context, f Frame) {
 		if err := dev.SetReceiptMode(ctx, mode); err != nil {
 			s.log.Warn("could not apply a receipt mode", "error", err)
 		}
+	}
+	if s.actor().isToken() {
+		// A token without Read learns the mode it set, and nothing else of
+		// the number.
+		applied := string(mode)
+		s.replyTokenAct(ctx, TypeDeviceDetail, f.ReqID, device, TokenAct{ReceiptMode: &applied}, func(ctx context.Context) {
+			s.deviceDetail(ctx, f, device)
+		})
+		return
 	}
 	// Answered with the device as it now is, so the client draws from the
 	// server's view of the switch rather than from its own optimism.

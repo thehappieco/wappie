@@ -50,6 +50,16 @@ jobs:
         # coverage on a CI runner, near go test's default 10-minute limit.
         run: go test -race -timeout=30m -coverprofile=coverage.out ./...
 
+      # The MCP and AI consent tests again with Wappie's own keys retired
+      # (step 7): the narrowed apikeys.create and the setup key's gate hold
+      # in every one, so a consent that used its key before its connection
+      # names it fails here, not on the pilot.
+      - name: Consent tests with keys narrowed
+        env:
+          WS_TEST_POSTGRES_DSN: postgres://whatserver2_app:dev@localhost:5432/whatserver2_test?sslmode=disable
+          WS_TEST_POSTGRES_REQUIRED: "1"
+        run: make test-narrowed
+
       # The contract socket's peer check on a socket another uid owns needs
       # chown, so root, which the runner user is not, and the step above
       # skips it. The test binary is built as the runner user and run under

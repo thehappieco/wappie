@@ -26,11 +26,24 @@ func (s *Server) RevalidateAccess() {
 }
 
 func (s *session) validAccess(ctx context.Context) bool {
+	_, valid := s.checkAccess(ctx)
+	return valid
+}
+
+// checkAccess is validAccess that also returns, for a token, what its
+// check read: the writer judges its batch under it.
+func (s *session) checkAccess(ctx context.Context) (store.TokenLive, bool) {
 	who := s.actor()
 	checkCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	valid := true
-	if !who.person {
+	var live store.TokenLive
+	if who.isToken() {
+		// What the token reaches now: a token no longer live, or one that
+		// narrowed (a new version), closes the socket; anything else
+		// renews the sets frames are written under.
+		live, valid = s.refreshToken(checkCtx, who)
+	} else if !who.person {
 		valid = s.srv.cfg.Keys != nil && s.srv.cfg.Keys.ConnectionKey(checkCtx, who.keyID, who.tenant, who.scope, who.userID, who.keyVersion) == nil
 	}
 	if valid && (who.person || who.service) {
@@ -53,18 +66,22 @@ func (s *session) validAccess(ctx context.Context) bool {
 	if !valid {
 		s.closeWith(websocket.StatusPolicyViolation, "access changed or expired; reconnect")
 	}
-	return valid
+	return live, valid
 }
 
 func (s *session) accessLoop(ctx context.Context) {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
+	s.mu.Lock()
+	tokenWake := s.tokenWake
+	s.mu.Unlock()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
 		case <-s.accessWake:
+		case <-tokenWake:
 		}
 		if !s.validAccess(ctx) {
 			return
@@ -88,6 +105,9 @@ func (s *session) actionDevices(ctx context.Context, action store.DeviceAction) 
 	if err != nil {
 		return nil, err
 	}
+	if who.isToken() {
+		return s.tokenDevices(ctx, tenant, who, action)
+	}
 	devices, err := s.srv.cfg.Devices.List(ctx, who.tenant)
 	if err != nil {
 		return nil, err
@@ -98,7 +118,7 @@ func (s *session) actionDevices(ctx context.Context, action store.DeviceAction) 
 		if err != nil {
 			return nil, err
 		}
-		has, err := access.Allows(ctx, access.Actor{Tenant: tenant, User: who.userID, Key: who.keyID, Scope: who.scope, Role: who.role}, id, action, s.srv.cfg.Keys, s.accountStore())
+		has, err := s.checker().Probe(ctx, who.accessActor(tenant), id, action)
 		if err != nil {
 			return nil, err
 		}
@@ -109,11 +129,49 @@ func (s *session) actionDevices(ctx context.Context, action store.DeviceAction) 
 	return allowed, nil
 }
 
+// checker is the server's Checker with this session's stores: the API
+// keys, and the accounts of a person's sessions or of a key's service
+// account.
+func (s *session) checker() *access.Checker {
+	var c access.Checker
+	if s.srv.cfg.Access != nil {
+		c = *s.srv.cfg.Access
+	}
+	c.Keys, c.Users = s.srv.cfg.Keys, s.accountStore()
+	return &c
+}
+
+// accessActor is who as the access package names it.
+func (a actor) accessActor(tenant uuid.UUID) access.Actor {
+	return access.Actor{Tenant: tenant, User: a.userID, Key: a.keyID, Scope: a.scope, Role: a.role, Token: a.token}
+}
+
 func (s *session) accountStore() *store.Users {
 	if s.actor().person {
 		return s.srv.cfg.Sessions
 	}
 	return s.srv.cfg.Accounts
+}
+
+// tokenDevices is actionDevices for a token: what it reaches now, in one
+// query, never counted. A list built from its reads is read under each.
+func (s *session) tokenDevices(ctx context.Context, tenant uuid.UUID, who actor, action store.DeviceAction) (map[uuid.UUID]struct{}, error) {
+	live, err := s.checker().TokenSets(ctx, access.Actor{Tenant: tenant, Token: who.token})
+	if err != nil {
+		return nil, err
+	}
+	set := live.Reads
+	switch action {
+	case store.ActionSend:
+		set = live.Sends
+	case store.ActionManage, store.ActionPause:
+		set = live.Manages
+	default:
+		for d := range set {
+			readUnder(ctx, d)
+		}
+	}
+	return set, nil
 }
 
 func frameAction(kind string) store.DeviceAction {
@@ -125,10 +183,11 @@ func frameAction(kind string) store.DeviceAction {
 	case TypeDeviceStop, TypeDeviceStart:
 		// A number's capture, paused and resumed by role (store.ActionPause).
 		// device.start on a number that is not paused is "sync now": a
-		// person's Read, a key's Manage (resolveDevice).
+		// person's Read, a key's Manage (resolveDevice). A platform token's
+		// is its manage permission for both, from its rules (token.go).
 		return store.ActionPause
 	case TypeGroupCreate, TypeGroupParticipants, TypeGroupLeave, TypeDeviceRename, TypeDeviceMode, TypeDeviceDelete, TypeBackfill, TypeGroupJoin, TypeReprojectPut, TypeGrantAdd, TypeGrantRevoke,
-		TypeDeviceDeleteCheck, TypeDevicesDeleted, TypeDeviceRecoverCheck, TypeDeviceRecover:
+		TypeDeviceDeleteCheck, TypeDevicesDeleted, TypeDeviceRecoverCheck, TypeDeviceRecover, TypeTokenGrant:
 		return store.ActionManage
 	case TypeDeviceInfo:
 		return store.ActionView
@@ -139,12 +198,15 @@ func frameAction(kind string) store.DeviceAction {
 
 func (s *session) authorizeDevice(ctx context.Context, f Frame, device uuid.UUID, action store.DeviceAction) bool {
 	who := s.actor()
+	if who.isToken() {
+		return s.authorizeToken(ctx, f, device, store.TokenNeed{Action: action, Media: ruleOf(f.Type).media})
+	}
 	tenant, err := uuid.Parse(who.tenant)
 	if err != nil {
 		s.replyError(f.ReqID, ErrCodeInternal, "invalid workspace")
 		return false
 	}
-	allowed, err := access.Allows(ctx, access.Actor{Tenant: tenant, User: who.userID, Key: who.keyID, Scope: who.scope, Role: who.role}, device, action, s.srv.cfg.Keys, s.accountStore())
+	allowed, err := s.checker().Allows(ctx, who.accessActor(tenant), device, action)
 	if err != nil {
 		s.replyError(f.ReqID, ErrCodeInternal, "could not check device permissions")
 		return false

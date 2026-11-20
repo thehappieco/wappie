@@ -27,9 +27,8 @@ func (sw *settingsWork) follow(ctx context.Context) {
 	l, m := sw.l, sw.l.Members
 	minBack, maxBack := or(sw.cfg.CommandBackoffMin, commandBackoffMin), or(sw.cfg.CommandBackoffMax, commandBackoffMax)
 	backoff := minBack
-	var warned, lastReset time.Time
+	var warned time.Time
 	failing := false
-	resetFloor := or(sw.cfg.ResetFloor, resetFloor)
 	fail := func(class string, attrs ...any) {
 		if ctx.Err() != nil {
 			return
@@ -46,41 +45,39 @@ func (sw *settingsWork) follow(ctx context.Context) {
 		backoff = min(backoff*2, maxBack)
 	}
 	reset := func(seen uuid.UUID, gen *uuid.UUID, why string) {
-		if wait := resetFloor - time.Since(lastReset); !lastReset.IsZero() && wait > 0 {
+		done, err := sw.gate.run(ctx, func(wait time.Duration) {
 			// No notice cuts this wait: a fault must not reset in a loop.
-			// Two resets within the floor are one: the platform's feeds
-			// disagree, or a gone lasts, and every sub, snapshot and section
-			// goes again each time, so --check is told.
+			// Two resets within the floor are one, this side's or the token
+			// feed's (resetGate): the platform's feeds disagree, or a gone
+			// lasts, and every sub, snapshot and section goes again each
+			// time, so --check is told.
 			l.log().Error("contract: a second reset from the command feed within a minute waits", "why", why,
 				"wait", wait.Round(time.Second))
 			if err := m.Contract.RecordError(ctx, store.ContractErrorCommandResetLoop); err != nil && ctx.Err() == nil {
 				l.log().Warn("contract: could not record an ERROR", "error", err)
 			}
-			t := time.NewTimer(wait)
-			select {
-			case <-ctx.Done():
-				t.Stop()
-				return
-			case <-t.C:
-			}
-		}
-		done, err := m.Contract.RestartFromCommands(ctx, seen, gen)
+		}, func() (bool, error) { return m.Contract.RestartFromCommands(ctx, seen, gen) })
 		if err != nil {
 			fail("store", "error", err)
 			return
 		}
 		if !done {
-			// The generation moved meanwhile: another reset came first,
-			// and this one starts no floor.
+			// The leader stops, or the generation moved meanwhile: another
+			// reset came first, and this one starts no floor.
 			return
 		}
-		lastReset = time.Now()
 		attrs := []any{"why", why, "old", seen}
 		if gen != nil {
 			attrs = append(attrs, "generation", *gen)
 		}
 		l.log().Warn("contract: the platform's generation changed: every sub is subscribed again and the feed read from 0", attrs...)
 		sw.accounts.interrupt()
+		if sw.accounts.tokens != nil {
+			// The reset restarted the token feed too (restartTx), which
+			// sends no notice from here: the token long-poll in flight
+			// would ask from the old cursor until its wait ends.
+			sw.accounts.tokens()
+		}
 		kick(sw.accounts.round)
 	}
 	for ctx.Err() == nil {

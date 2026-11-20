@@ -139,9 +139,22 @@ func (a *app) maintainOnce(ctx context.Context, grace time.Duration, objects obj
 	} else if keys > 0 {
 		a.log.Info("api keys expired", "keys", keys)
 	}
+	a.retainAPIKeys(ctx, time.Now())
 	if a.cfg.MCP.Enabled {
 		a.maintainMCP(ctx)
 	}
+	// The token part's: tokens past their expiry by Wappie's clock end, an
+	// ended token's content goes after 30 days (or at its until, if that
+	// comes first), and with it its items in the queues, its usage
+	// refusals on a number and its days of use; its selector, sticky row,
+	// pin, stops, queue entries and usage rows at created_at + 365 days, a
+	// stop of a selector Wappie never held 365 days after it was made (or
+	// at its valid record's created_at + 365 days), the usage rows 2 days
+	// after they were reported (a refusal count 30 after its day at most)
+	// and the queues' entries 30 days after they were sent; then the stop
+	// record's lines 365 days old, and the unreadable lines after them.
+	// With tokens never on, its tables are empty and this finds nothing.
+	a.retainTokens(ctx, time.Now())
 
 	// Every workspace, whatever its status: a closed team's and a suspended
 	// one's deleted numbers are purged on their date too (the owner's
@@ -157,6 +170,81 @@ func (a *app) maintainOnce(ctx context.Context, grace time.Duration, objects obj
 	a.compactLedger(time.Now())
 	a.applyRetention(ctx, deletes)
 	a.deleteOrphans(ctx, tenants, deletes, limits.orphans)
+}
+
+// retainAPIKeys deletes the keys whose end (revocation or expiry, the
+// earlier) is 13 months past, with their connections, on every
+// installation and whatever the token mode (store.RetainAPIKeys; step 7's
+// plan, 7.6). Its log gives counts by origin, never a prefix. A key past
+// its 13 months whose connection has not ended is kept, with a WARN: a
+// key and its connection end together, so that is a fault to look at.
+func (a *app) retainAPIKeys(ctx context.Context, now time.Time) {
+	got, err := store.RetainAPIKeys(ctx, a.pools.API, now)
+	if err != nil {
+		a.log.Warn("api key retention failed", "error", err)
+	}
+	if got.Held > 0 {
+		a.log.Warn("ended api keys kept: their connection has not ended", "keys", got.Held)
+	}
+	var total int64
+	for _, n := range got.Deleted {
+		total += n
+	}
+	if total > 0 {
+		a.log.Info("api keys deleted", "keys", total, "rest", got.Deleted[store.OriginREST], "cli", got.Deleted[store.OriginCLI],
+			"mcp_setup", got.Deleted[store.OriginMCPSetup], "legacy_mcp", got.Deleted[store.OriginLegacyMCP], "no_origin", got.Deleted[""])
+	}
+	if got.Reports > 0 {
+		a.log.Info("key retirement reports lost their keys", "reports", got.Reports)
+	}
+}
+
+// tokenStopTrimWait bounds the stop record's trim and its wait for the
+// lock: a command stopped while it holds the lock never holds up the pass.
+// A test shortens it.
+var tokenStopTrimWait = time.Minute
+
+// retainTokens is the token part's retention, then, when a stop record is
+// configured, its trim (trimTokenStops): the lines 365 days old go, and no
+// other, whatever retention did. The trim reads nothing of the database,
+// so it runs whether or not retention failed; a failed trim changes
+// nothing, and the next pass trims again. Its logs give counts only,
+// never a selector: nothing in them tells whether Wappie holds a token of
+// one.
+func (a *app) retainTokens(ctx context.Context, now time.Time) {
+	got, err := store.NewTokens(a.pools.API).RetainTokens(ctx, now)
+	if err != nil {
+		a.log.Warn("token retention failed", "error", err)
+	} else if got.Expired+got.Forgotten+got.Ended+got.Stops+got.Queues > 0 {
+		a.log.Info("token retention", "expired", got.Expired, "forgotten", got.Forgotten, "ended", got.Ended, "stops", got.Stops,
+			"queues", got.Queues)
+	}
+	path := a.cfg.TokenStopRecord
+	if path == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, tokenStopTrimWait)
+	defer cancel()
+	did, err := trimTokenStops(ctx, path, now)
+	// A dropped line that was no stop's record may have been a stop's line
+	// before it was damaged, and a restore would lose that stop: said at
+	// WARN, counted, never its text.
+	if did.unreadableDropped > 0 {
+		a.log.Warn("token stop record dropped unreadable lines", "path", path, "lines", did.unreadableDropped)
+	}
+	if err != nil {
+		a.log.Error("token stop record trim failed", "path", path, "error", err)
+		return
+	}
+	if did.dropped > 0 {
+		a.log.Info("token stop record trimmed", "path", path, "lines", did.dropped, "unreadable", did.unreadableDropped)
+	}
+	// Kept as they are, until the stop's line before them goes, these
+	// make -replay refuse the record: they are to be mended before a
+	// restore needs it. Never their text.
+	if did.unreadable > 0 {
+		a.log.Error("token stop record has unreadable lines", "path", path, "lines", did.unreadable)
+	}
 }
 
 // maintainMCP is the assistant connector's share of the pass.

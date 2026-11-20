@@ -498,7 +498,8 @@ func TestLedgerOutlivesTheBackups(t *testing.T) {
 // ledger's default directory a named volume that the image's user owns. A
 // read-only root with only /tmp writable would fail every export: the
 // ledgered event rows would never age out, 0050's down-step would refuse,
-// and a restore would have nothing to replay.
+// and a restore would have nothing to replay. The token stop record's
+// default is in the same directory, on the same volume.
 func TestContainerKeepsTheLedger(t *testing.T) {
 	read := func(path string) string {
 		t.Helper()
@@ -509,6 +510,9 @@ func TestContainerKeepsTheLedger(t *testing.T) {
 		return string(b)
 	}
 	dir := filepath.Dir(config.DefaultDeletionLedger)
+	if filepath.Dir(config.DefaultTokenStopRecord) != dir {
+		t.Fatalf("the stop record's default %s is not in the ledger's directory %s", config.DefaultTokenStopRecord, dir)
+	}
 	compose := read("../../deploy/compose.yaml")
 	// The api service's block: its lines up to the next service or top-level key.
 	var api []string

@@ -150,7 +150,7 @@ func (h *clientsHarness) prepareV2For(t *testing.T, client map[string]any, actor
 	requestID = h.enclave.pendingV2(t, randomKey(t), client)
 	expect(t, h.call(t, http.MethodPost, "/v1/mcp/requests/"+requestID+"/prepare", prepareNonce(t, 32), nil), http.StatusOK, "")
 	in := time.Now().Add(20 * time.Minute)
-	key, err := h.keys.IssueActingAsForDevices(context.Background(), h.tenant.String(), "v2", store.ScopeRead, &actor, nil, []uuid.UUID{h.device}, &in)
+	key, err := h.keys.IssueAsked(context.Background(), h.tenant.String(), store.SetupKeyName+"v2", store.ScopeRead, &actor, nil, []uuid.UUID{h.device}, &in)
 	if err != nil {
 		t.Fatal(err)
 	}

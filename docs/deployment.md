@@ -243,11 +243,31 @@ policy and is not charged Wappie storage. See [storage](storage.md).
 Retain a matching previous private artifact and database/object backups before
 rollout. Database migrations are forward-only, except for the documented
 down-steps, such as the [remote MCP one](#remote-mcp-connector),
-[0050's](#rolling-back-below-0050), [0051's](#rolling-back-below-0051) and [0052's](#rolling-back-below-0052); verify old binary compatibility
+[0050's](#rolling-back-below-0050), [0051's](#rolling-back-below-0051),
+[0052's](#rolling-back-below-0052) and [0053's](#rolling-back-below-0053); verify old binary compatibility
 before reverting an executable. Do not restore an older archive over newer
 messages. Restore backups into separate storage when testing rollback. Never
 run two runtimes against the same WhatsApp session. No archive migration or
 re-pairing is necessary for frontend extraction.
+
+## Ended API keys
+
+The hourly pass of every server process deletes an API key 13 months after
+its end: its revocation or its expiry, whichever came first. It does so on
+every installation, whatever the token mode, once Wappie's clock and the
+database's both say the 13 months have passed. The key's MCP connection goes
+with it, with the connection's chats, send ledger, usage counts and notices.
+An AI integration's results stay, and no longer name it. A key whose
+connection has not ended (its status live and its expiry ahead) is kept,
+and the pass logs the WARN "ended api keys kept: their connection has not
+ended" with a count; a key and its connection end together, so look into
+it. A connection past its expiry has ended, whatever its status says: where
+MCP is off, no pass marks it expired. The INFO line "api keys deleted"
+gives counts by origin, never a prefix.
+
+A restore of the database brings back the keys deleted since its snapshot,
+and the next pass deletes them again. Rolling back below 0053 leaves them
+deleted.
 
 ## Deleted numbers and the deletion ledger
 
@@ -444,7 +464,9 @@ stopped:
 A snapshot taken while a number was deleted keeps its `purge_after`, so the
 janitor still purges it on time. If the host is lost, a deletion made after
 the last off-host copy of the ledger is lost with everything else made after
-it, and its owner has to delete again.
+it, and its owner has to delete again. So is a token stop or lift made after
+the newest off-host copy of the stop record, which has to be made again
+([Restoring with the contract](#restoring-with-the-contract)).
 
 ### Rolling back below 0050
 
@@ -452,12 +474,14 @@ A binary older than 0050 refuses a database at version 50, so its
 down-step comes first. No number may be left deleted through it: an older
 binary would show and sync it as live. And an older binary lets
 administrators delete a number at once, with no recovery. On a database at
-version 51 (the [contract's](#the-contract)), run `whatserverd contract mode
-off` before step 2, and 0051's down-step
-([Rolling back below 0051](#rolling-back-below-0051), its step 3) between
-steps 3 and 4: 0050's guard refuses while 51 is applied, and this release's
-commands refuse a database at 50, so the ledger's export comes first. In
-this order:
+version 51 or later (the [contract's](#the-contract)), run `whatserverd
+contract mode off` before step 2 (it turns the settings and token parts off
+with it), and the down-steps of 0053, 0052 and 0051, those applied, in that
+order ([Rolling back below 0053](#rolling-back-below-0053), its step 3, and
+so on down to [0051's](#rolling-back-below-0051)) between steps 3 and 4:
+0050's guard refuses while 51 is applied, and this release's commands
+refuse a database at any other version than theirs, so the ledger's export
+comes first. In this order:
 
 1. `whatserverd devices list-deleted`. An owner recovers each deleted
    number in the console, or, with the owner's agreement,
@@ -529,6 +553,13 @@ says each one's rules):
 - `WS_CONTRACT_ADDR`, development only; `WS_CONTRACT_SECRET` is refused
   everywhere.
 
+With `WS_CONTRACT_SOCKET` or `WS_CONTRACT_ADDR` set, platform tokens can
+reach the server, and each reads its workspace's switches. So the server
+then checks `WS_MCP_WORKSPACE_DEFAULT` and `WS_MCP_DENY_TENANTS`
+([MCP setup](mcp.md)) at start with MCP off too, and a value that does not
+parse stops it. An older binary skipped both with MCP off: check them
+before upgrading a server with the contract configured.
+
 The secret's value is never in `runtime.env`, a backup or an argument: it
 reaches the host only through a pipe from the platform's `platform-cli
 export-contract-secret wappie` into `whatserverd contract-secret seal`, at
@@ -550,10 +581,113 @@ release, which a rollback of the release keeps):
 - no `Requires=` or `Wants=` on the platform's units: without the platform
   Wappie is fail-static.
 
-Each start logs, after the deletion ledger's line and before "starting",
-the contract's line, which a deploy checks:
+Each start logs, after the deletion ledger's and the stop record's lines
+and before "starting", the contract's line, which a deploy checks:
 `contract: mode=off transport=none secret=missing` (the mode, `socket`,
 `tcp` or `none`, and `loaded`, `pending` or `missing`).
+
+**The stop record.** `WS_TOKEN_STOP_RECORD`, by default
+`/var/lib/wappie/token-stops.jsonl`, beside the deletion ledger: the
+operator's token stops and lifts (`tokens suspend` and `tokens lift`,
+below), outside the database, which `tokens suspend -replay` applies again
+after a restore of Wappie's database. Unset or empty, as for the ledger,
+is the default; a value of spaces alone (quoted, in an env file) means
+none. Put it on a persistent path that is in the host's backups and
+off-host copies, with the database's. A backup must copy it by its name,
+as it copies the deletion ledger. It goes off host with every off-host
+copy of the database, and at least daily, as the ledger does. Keep it
+writable by the server's user alone, and delete its copies before they
+are 90 days old, as the backups'. In `deploy/compose.yaml` it is on the
+`deletion-ledger` volume, with the ledger. Change or blank
+`WS_TOKEN_STOP_RECORD` and nothing trims the old file any more: move it
+to the new path with the servers stopped, before the change; otherwise
+trim it by hand (drop each line whose `at` is over 365 days old) or
+delete it once no restore will replay it. One JSON line per stop or lift:
+`{selector, at, lift}`, `lift` present only when true, `at` in UTC to the
+microsecond, the stop's `stopped_at` or its `lifted_at` in the database.
+A line holds only the selector, the time and whether it is a lift: never
+the note, the account that ran the command, a token or anything else, nor
+Wappie's own `apply_failed` stops, which stay in the database. A stop's
+times only go forward. A stop or a lift timed at or before the stop's last
+change (two commands at once, or a clock stepped back) is made a
+microsecond after that change. One timed at or before the mark of what retention let go is
+made just after the mark ([what Wappie keeps of a
+token](contract.md#the-token-feed)). Its line carries the time it was
+made, so a replay brings the stops back as they stood. A command takes
+the file's lock before its database write and holds it to its line, so
+two at once write their lines in the order of their changes.
+The file is created with mode 0600 and replaced whole at each write: a
+temporary file beside it, with its mode and owner, synced and renamed
+over it, the directory synced, under an exclusive lock of the file, so a
+command and the server at once lose no line.
+
+- **When it is written.** By `tokens suspend` and `tokens lift`, once the
+  stop or the lift is in the database: the configured file is the only
+  one they write. A command waits 5 seconds at most for the file's lock,
+  then makes the stop in the database all the same and says the record
+  lacks it, as below. A lift of a stop lifted already changes nothing and
+  writes nothing ("the operator's stop was lifted already; nothing changed
+  or recorded"): its line would carry that lift's time, and go sooner than
+  365 days after it was written. Record a lift whose write failed with
+  `tokens suspend` and then `tokens lift` of the selector, two new lines;
+  without them a restore brings the stop back, the safe side. A lift with
+  no operator's stop to lift writes nothing. With `WS_TOKEN_STOP_RECORD`
+  blank the command still makes the stop and says "no stop record
+  (WS_TOKEN_STOP_RECORD is empty), so a restore of Wappie's database would
+  lose it"; one that cannot write the file says the stop is in the
+  database but not in the record, and exits with status 1. A lift that
+  cannot write it says "the lift is in the database but not in the
+  record", names the `tokens suspend` and `tokens lift` that record it,
+  and exits with status 1. One whose write failed after it replaced the
+  file (at the sync of its directory) says "the stop is recorded in" or
+  "the lift is recorded in" the file, "but a crash of the host could lose
+  its line", names the same commands, and exits with status 1. Record a
+  stop the file lacks by running `tokens suspend` again with the same
+  `-note` (and one it may lose, the same way), as the message says: a re-stop
+  replaces the note, and its line carries the re-stop's time, which the
+  database then holds. Only two things hold the file's lock:
+  another `tokens suspend` or `tokens lift`, from before its database
+  write to its line (that write may wait on the database behind a
+  server's hourly retention), and a server's hourly trim, for
+  milliseconds. `-replay`, the start's check and a backup's copy take
+  none.
+- **When it is trimmed.** A line goes 365 days after its time, which is
+  when it was written, whatever became of its stop, in the hourly pass
+  (after its retention) and at each write. Decision 0056 sets this, and
+  requires it never to be less than the reach of the backups Wappie may
+  restore (the pilot's snapshots: 90 days). The pass logs INFO "token
+  stop record trimmed" with how many lines, never which. A trim that
+  fails logs ERROR "token stop record trim failed" with the path and the
+  error, and changes nothing; the next pass trims again. A trim never
+  creates the file.
+- **A line that is no stop's record** (a hand edit, a damaged disk, a
+  torn last line), blank or not, goes with the nearest stop's line before
+  it, at that line's 365 days. Lines are only added at the end, so it
+  goes at most 365 days after it was written. One with no stop's line
+  before it goes at the next trim. The trim's INFO counts those it
+  dropped (`unreadable`). Until then it is kept as it is, and every pass
+  logs ERROR "token stop record has unreadable lines" with the path and
+  how many, never what they say: `tokens suspend -replay` refuses a
+  record that holds one, so mend or remove it before a restore needs the
+  file. Such a line may have been a stop's line before it was damaged,
+  and once it goes a restore would lose that stop. A pass that drops one
+  logs WARN "token stop record dropped unreadable lines" with the path
+  and how many, never what they said; a `tokens suspend` or `tokens lift`
+  whose write dropped one says "dropped N unreadable lines; run tokens
+  list and suspend again any open stop they may have recorded". Then run
+  `tokens list`, and for each open operator's stop run `tokens suspend`
+  again with the same `-note`: its new line carries the re-stop's time.
+- **At start.** In prod, serve checks the file right after the deletion
+  ledger: it logs INFO "token stop record writable" with the path,
+  creating the file when it is missing (and a temporary file beside it,
+  which it removes, as every write needs), or ERROR "token stop record not
+  writable" with the path and the error (`WS_TOKEN_STOP_RECORD is empty`
+  when it is), and starts anyway: a stop is made in the database whether
+  or not its line can be written, and only a restore reads the file.
+- **The hosted unit** and the commands write it as the same user: the
+  commands run as `wappie` with `runtime.env` (below), and
+  `/var/lib/wappie` is the unit's `StateDirectory`, writable under
+  `ProtectSystem=strict`.
 
 ### Contract commands
 
@@ -564,12 +698,18 @@ whatserverd contract diff [--tenant T]
 whatserverd contract mode off|observe
 whatserverd contract settings off|read [--platform-told]
 whatserverd contract settings status [--check]
+whatserverd contract tokens on|off|status
+whatserverd tokens suspend [-note N] SELECTOR|TOKEN|-
+whatserverd tokens suspend -replay F
+whatserverd tokens lift SELECTOR|TOKEN|-
+whatserverd tokens list
+whatserverd tokens retire-keys -dry-run|-apply -confirm N
 ```
 
 Run them as the server's user, with the socket's group and its
 configuration, and from the server's own working directory, as the
-deletion commands above: `status`, `diff`, `mode` and `settings` read the
-`.env` of their working directory (a root-only one stops them before they do
+deletion commands above: `status`, `diff`, `mode`, `settings` and `tokens`
+read the `.env` of their working directory (a root-only one stops them before they do
 anything) and the database, which they never migrate, refusing a schema
 that is not exactly this binary's. `check` reads neither a `.env` nor the
 database, only its environment and the secret's files. For example:
@@ -594,7 +734,8 @@ sudo systemd-run --uid=wappie --gid=wappie --pipe --wait --collect \
 - `contract mode observe` turns the contract on, and refuses (exit 3,
   "contract mode observe: not ready: …", nothing changed) until the
   running server has a transport and a loaded secret; `contract mode off`
-  stops it at once ([the mode](contract.md#the-mode)).
+  stops it at once, and the settings mode and the token mode with it
+  ([the mode](contract.md#the-mode)).
 - `contract settings read` makes the leader send the numbers sections and
   follow the command feed, answering every command `kind_not_accepted`;
   `off` stops both. Each needs the contract on (exit `3`), and the first
@@ -604,6 +745,25 @@ sudo systemd-run --uid=wappie --gid=wappie --pipe --wait --collect \
   prints the mode, the feed, the ledger and each section; its `--check`
   findings are `contract status --check`'s too
   ([the settings mode](contract.md#the-settings-mode)).
+- `contract tokens on` turns the contract's token part on, and refuses
+  (exit 3, "contract tokens on: not ready: …", nothing changed) until the
+  contract is on, the running server has a transport and a loaded secret,
+  and the platform's token feed answers with the stored generation;
+  `contract tokens off` refuses every token at once
+  ([the token feed](contract.md#the-token-feed)). After a retirement of
+  Wappie's keys, it leaves programs with no credential: the retired keys
+  stay revoked, and keys stay narrowed while the retirement's row exists
+  ([retiring Wappie's keys](#retiring-wappies-keys)).
+- `tokens suspend` stops a token here by its selector, with the platform
+  down too, until `tokens lift`; each appends to the stop record (above),
+  so `tokens suspend -replay /var/lib/wappie/token-stops.jsonl`, before
+  the server starts, brings back the stops made since the snapshot after
+  a restore of Wappie's database ([what Wappie keeps of a
+  token](contract.md#the-token-feed)). It leaves the lines the restored
+  database holds already, and those of stops retention let go before the
+  snapshot. `-note` is kept in Wappie's database only.
+- `tokens retire-keys` revokes Wappie's own general keys once tokens are
+  on ([retiring Wappie's keys](#retiring-wappies-keys)).
 
 `whatserverd contract-secret seal|promote|unpromote|drop|reset|capabilities`
 is root's, at the owner's prompt only, and reads no `.env` and no database
@@ -644,20 +804,151 @@ workspace, and without a transport or a secret every sign-up is refused
 workspaces of Wappie's choosing. Removing the settings is safe only while
 the contract was never observed (`events_from` unset).
 
+### Retiring Wappie's keys
+
+Once tokens are on, the platform's tokens replace Wappie's own general
+keys. `whatserverd tokens retire-keys` revokes those keys and removes the
+standing service accounts they acted as
+([Wappie's own keys under tokens](contract.md#wappies-own-keys-under-tokens)).
+It is an operator's command, never a migration, since a self-hosted
+installation runs the same migrations. It refuses unless the contract is
+on and tokens are on, and writes nothing then.
+
+1. **A fresh backup**, which holds the stop record. There is no other way
+   back: the keys stay revoked through every down-step. A restore of an
+   older snapshot brings the keys back live, so run the retirement again
+   then ([restoring with the contract](#restoring-with-the-contract),
+   step 7).
+2. **The programs that use the keys.** Each one has a platform token, with
+   its grants sealed on the grant page, or the owner accepts that it
+   stops working. After the apply, `contract tokens off` leaves programs
+   with no credential at all: the retired keys stay revoked, and
+   `whatserverd key` and `bootstrap` keep refusing while the retirement's
+   row exists. Only `contract tokens on` again, or 0053's down-step, gives
+   them one back.
+3. **The dry run.** `whatserverd tokens retire-keys -dry-run`, as the
+   server's user, in the `systemd-run` form above. It writes nothing. It
+   prints every live key with its name and its creator's sub or address,
+   and every standing service account.
+   - The output goes to the owner only, through the platform in chat
+     (the platform's W46, Q4). Never write it to a file, a log or a
+     ticket, on either side. Do not redirect it or pipe it through
+     `tee`. `systemd-run --pipe` hands it to the terminal, not the
+     journal. Do not keep it after the apply.
+   - The command itself writes no file, and logs nothing in the dry run.
+4. **The owner's yes**, to the per-key list and the services to remove.
+5. **The apply**, while the contract's feeds are quiet:
+   `whatserverd tokens retire-keys -apply -confirm N`, with `N` the dry
+   run's count of keys to revoke. A different count refuses, and nothing
+   is written. Then the list has changed: run the dry run again, and get
+   the owner's yes to the new list, through the platform, before the
+   next apply.
+   - It is one transaction (the platform's W46, Q3). It holds the
+     contract's and the token mode's rows, and every workspace's row,
+     until it commits. While it runs, nothing of the contract commits:
+     no token page, so no revocation, narrowing or stop from the platform
+     applies, and no account feed page, so no disable, recovery or belt
+     change applies either. `contract mode` and `contract tokens` wait
+     for it, and a capture waits too. On the pilot it takes under a
+     second. `contract status` shows each feed's last page: run the apply
+     when they are caught up.
+   - It prints the same per-key list as the dry run, with `revoked` and
+     `kept`. Treat it as the dry run's: to the terminal only.
+   - Its INFO line "api keys retired" holds counts, key prefixes and
+     service names only, never a key's name or creator. A command writes
+     its log to its standard output, so under `systemd-run --pipe` the
+     line is printed with the apply's list, and is not kept either. Check
+     the run by `key_retirements`' counts (`revoked`, `services_removed`,
+     `services_kept`) or the printed summary, never by the journal.
+6. **The checks.** Revoked keys get 401, and their sockets close within a
+   second. MCP keys and old local MCP tokens still work.
+
+**Run it again after M2L.** 12b's M2L revokes old local MCP tokens and
+may keep a token's service account while a number has no other human
+holder. A later run removes that account once one exists, but it finds
+the account by the revoked token only until the token is deleted, 13
+months after its revoke (ended API keys, above). So run `retire-keys`
+again after M2L ships, inside those 13 months (the platform's W46, Q5).
+A run that revokes nothing writes its row all the same.
+
+**What it keeps** (`key_retirements`, one row per apply): when it ran,
+the process's OS user (`wappie` in the `systemd-run` form above, never
+the person), its counts, and a report. The report names each
+key it revoked by workspace, prefix, name, class, its creator's
+platform sub or email address, and the service it acted as. Those
+entries go 13 months after the run, with the ended keys themselves. The
+counts, the OS user, and each service account it kept (by user id, so a
+later run finds it) stay. A restore brings the entries back until the
+next hourly pass. 0053's down-step drops the table. The site's privacy
+text must list this beside the ended keys before the first apply.
+
+**`-self-hosted`** on `whatserverd key` and `bootstrap` asserts that the
+installation is off the platform: the contract off, tokens off, and no
+retirement. It refuses otherwise, and never lets a key through that the
+narrowing refuses (the platform's W46, Q2). A self-hosted installation
+never turns tokens on, so its keys are never narrowed.
+
 ### Restoring with the contract
 
 A restore of Wappie's database brings back the contract's state as it was
-in the snapshot. After step 4 of [Restoring a backup](#restoring-a-backup),
-run `whatserverd contract status --check`:
+in the snapshot, and the token stops as they stood then. Restore the stop
+record as the ledger is restored (step 2 of [Restoring a
+backup](#restoring-a-backup)): never overwrite a record that survived on the host; use it, else the
+newest off-host copy, put back in `/var/lib/wappie` owned by the server's
+user, mode 0600 (a record root owns fails every later write, the hourly
+trims too). The commands below refuse a schema that is not exactly this
+binary's, so they come after step 3's migration. As the server's user, in
+this order:
 
-- `contract never observed but a secret is installed`: the snapshot is from
-  before the first observe, so the mode is `off` with homes of Wappie's
-  choosing. Run `whatserverd contract mode observe` again if the contract was
-  observing.
-- Otherwise the mode is the snapshot's. The follower reads the feed again
-  from the snapshot's cursor and keeps only newer documents; events the
-  snapshot had not delivered yet are sent again, and the platform answers
-  `duplicate` for those it holds (within its 30 days).
+1. the ledger's replay (step 4);
+2. `whatserverd contract tokens off`, so no token is accepted before the
+   stops stand again;
+3. `whatserverd tokens suspend -replay /var/lib/wappie/token-stops.jsonl`.
+   It says how many stops and lifts it applied, and how many lines it
+   left: those no later than what the database holds or with nothing to
+   lift, those no later than the last stop retention let go (the database
+   holds them already, or retention let their stops go before the
+   snapshot), and those over 365 days old;
+4. start the server (step 5);
+5. `whatserverd contract status --check`:
+   - `contract never observed but a secret is installed`: the snapshot is
+     from before the first observe, so the mode is `off` with homes of
+     Wappie's choosing. Run `whatserverd contract mode observe` again if
+     the contract was observing.
+   - Otherwise the mode is the snapshot's. The follower reads the feed
+     again from the snapshot's cursor and keeps only newer documents;
+     events the snapshot had not delivered yet are sent again, and the
+     platform answers `duplicate` for those it holds (within its 30 days).
+6. `whatserverd contract tokens on`, last, if tokens were on before the
+   restore. It refuses (exit 3, "contract tokens on: not ready: the
+   contract is off: turn it to observe first") while the contract is off,
+   and (exit 3, "… Wappie holds no generation of the platform's yet: wait
+   for the feed's first page") until the feed's first page is stored after
+   an observe; run it again then.
+7. If the snapshot is older than a retirement of Wappie's keys, run the
+   retirement again ([retiring Wappie's keys](#retiring-wappies-keys)),
+   once step 6 has turned tokens on. The snapshot holds the retired `rest`
+   and `cli` keys live, and the service accounts the apply removed, and
+   it has no `key_retirements` row. Those keys work again until then,
+   tokens on or not, and nobody is told. Run `tokens retire-keys
+   -dry-run`, get the owner's yes to the list through the platform, then
+   `-apply -confirm N`.
+
+A stop the replay brings back holds only its line: the selector and its
+times, with no note, as made by `wappie`, whoever ran the replay. Of a
+selector Wappie does not hold, it goes 365 days after its time, or earlier
+at its token's `created_at` plus 365 days once Wappie learns that date
+from a record of its selector (the token feed, while tokens are on) or
+from the leader's lookup by selector (while the contract is on) ([the
+token feed](contract.md#the-token-feed)).
+
+If the host is lost, a stop or lift made after the newest off-host copy of
+the record is lost with everything else made after it, and has to be made
+again, as a deletion made after the ledger's newest off-host copy is. A
+stop here is a stopgap: once the platform answers, have the token revoked
+in the console. A platform revocation comes back through the feed after
+any restore of Wappie's database; a stop comes back only through the
+record.
 
 A restore of the platform's database is the platform's: Wappie sees its new
 generation, or `gone`, and subscribes everyone again by itself. If a
@@ -665,10 +956,59 @@ rotation happened after the platform's backup, Wappie holds a secret the
 platform no longer has: `contract check` exits `3`, and the owner
 reinstalls it (`contract-secret reset`, then the install).
 
+### Rolling back below 0053
+
+A binary older than 0053 (the contract's token part) refuses a database
+at version 53, so its down-step comes first, before 0052's. In this order:
+
+1. `whatserverd contract tokens off`, as the server's user from its
+   working directory (`contract mode off` turns tokens off too). For a
+   release older than 0052, run now as well step 1 of each older rollback,
+   whose down-step refuses while its part is on: below 0052, tell the
+   platform and run `contract settings off --platform-told`
+   ([Rolling back below 0052](#rolling-back-below-0052), step 1); below
+   0051, `contract mode off`, which turns tokens and settings off with it
+   ([Rolling back below 0051](#rolling-back-below-0051), step 1).
+   `contract tokens`, `contract settings` and `contract mode` refuse a
+   database that is not at their binary's version, so after 0053's
+   down-step none of them runs.
+2. Stop the server, and every other process that runs this release's store
+   code against the database (the hosted billing service is one).
+3. The down-step in the header of `0053_contract_tokens.sql`, after
+   checking the file's sha256 against the release's (`migration53_sha256`
+   in a hosted `RELEASE.json`), as the owner of the tables, in its one
+   transaction. Its guards run first: it refuses while tokens are on and
+   while a migration after 0053 is applied, and a refusal changes nothing.
+   It says what it drops: the tokens, their identities and grants, the
+   local stops and the retirement's record. The keys the retirement
+   revoked stay revoked, and the ended keys the hourly pass deleted stay
+   deleted.
+   Between step 1 and this step, after a retirement, programs have no
+   credential: no token is accepted, the retired keys stay revoked, and
+   `whatserverd key` and `bootstrap` refuse while the retirement's row
+   exists. Once this step has dropped the row, they issue keys again.
+4. 0052's down-step, if the release being restored is older than 0052
+   ([Rolling back below 0052](#rolling-back-below-0052), from its step 2:
+   its step 1 ran in step 1 here), and so on down, each from its step 2.
+5. Switch back to the older binary and start it, and the billing service on
+   its release.
+
+An older binary knows nothing of the stop record (`WS_TOKEN_STOP_RECORD`),
+so nothing trims it any more. Trim it by hand, dropping each line whose
+`at` is over 365 days old, or delete it, and its copies, once no
+re-upgrade will replay it. A re-upgrade re-applies the local stops from it
+(`tokens suspend -replay`); with no mark of what retention let go, a line
+of a stop retention let go before the down-step comes back too, as the
+stop of a selector Wappie does not hold.
+
 ### Rolling back below 0052
 
 A binary older than 0052 (the contract's settings part) refuses a database
-at version 52, so its down-step comes first. In this order:
+at version 52, so its down-step comes first, after 0053's
+([Rolling back below 0053](#rolling-back-below-0053)) where 53 is applied.
+Step 1 then runs before 0053's down-step, while this release's binary
+still matches the database: after it, `contract settings` refuses. In this
+order:
 
 1. Tell the platform: from the first read of the command feed it watches
    Wappie's feed for good, and alerts once it goes silent. Then
@@ -701,9 +1041,12 @@ anew.
 ### Rolling back below 0051
 
 A binary older than 0051 refuses a database at version 51, so its
-down-step comes first, after 0052's
-([Rolling back below 0052](#rolling-back-below-0052)) where 52 is applied.
-In this order:
+down-step comes first, after 0053's and 0052's
+([Rolling back below 0053](#rolling-back-below-0053),
+[Rolling back below 0052](#rolling-back-below-0052)) where they are
+applied. Step 1 then runs before the first of those down-steps, while
+this release's binary still matches the database: after it, `contract
+mode` refuses. In this order:
 
 1. `whatserverd contract mode off`, as the server's user from its working
    directory. Tell the platform, which may unmap Wappie.

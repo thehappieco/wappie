@@ -519,6 +519,16 @@ func (m MCP) Validate(prod bool) error {
 	return errors.Join(errs...)
 }
 
+// TokenSwitchesErr is a WS_MCP_WORKSPACE_DEFAULT that is neither on nor
+// off, or a WS_MCP_DENY_TENANTS value that did not parse. Platform tokens
+// read both whatever WS_MCP_ENABLED says (F12): with the connector off,
+// Validate skips them, and a deny list dropped there would widen every
+// token of the workspaces it named. Config.Validate reports it whenever
+// the contract is configured.
+func (m MCP) TokenSwitchesErr() error {
+	return errors.Join(m.workspaceDefaultErr, m.denyErr)
+}
+
 // validateContent checks the content switch. Off, nothing of it is
 // inspected. On, it needs the enclave reader, and WS_MCP_CONTENT_TENANTS,
 // which the workspaces' own switches replaced, must be gone.

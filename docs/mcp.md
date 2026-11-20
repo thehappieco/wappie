@@ -89,6 +89,27 @@ covers importing such a bundle, [Claude Desktop through local stdio](../packages
 and [other hosts that run a stdio server](../packages/mcp/README.md#other-mcp-hosts);
 a new local connection uses its [manual configuration](../packages/mcp/README.md#manual-configuration).
 
+### Keys on an installation that takes the platform's tokens
+
+On an installation connected to The Happie Co, the platform's tokens
+replace Wappie's own general keys once its token mode is on, or once its
+keys were retired ([Wappie's own keys under tokens](contract.md#wappies-own-keys-under-tokens)).
+MCP keeps working:
+
+- A consent still gets its key. `apikeys.create` issues only that shape:
+  read, the chosen numbers, at most 30 minutes, named "MCP · …".
+- A setup's key works on REST, media and the socket only once its
+  connection names it. A consent records its connection first. The one
+  exception is a content or AI renewal's new key, which acts as a fresh
+  provisional account the same person invited: the reader lists its
+  grants before the renewal is recorded. This exception is pending the
+  owner's yes.
+- A connection's key is never retired. Old local MCP tokens are spared
+  too, with the service accounts they act as, so a bundle imported
+  earlier keeps reading until it is revoked in the console.
+- A new key in an old local token's shape that no consent issued is
+  retired with the general keys.
+
 ### Installing the hosted connector in one step
 
 Wappie runs two addresses. `https://api.wappie.thehappie.co/mcp` is the hosted
@@ -200,11 +221,16 @@ bundle as an opaque blob and records the connection; it never sees the key
 inside. A workspace can hold five live connections (ten from the server
 release that prepares reader 0.6.0, of which at most three untested
 assistants or tokens); each is listed in the console's MCP panel and can be
-revoked there, which revokes its API key in the same transaction. Revocation stops future reads; it cannot retract metadata
-already returned. An approval that is not completed within twenty minutes
-expires with its provisional key. The approver must read every number they
-choose (Read and the number's key), for metadata as for text, and losing
-Read on a number ends the connections they approved that held it.
+revoked there, which revokes its API key in the same transaction.
+Revocation stops future reads; it cannot retract metadata already returned.
+The connection's record goes with its key, 13 months after the key's end
+(its revocation or its expiry): the connection, its chats, its send ledger,
+its usage counts and its notices
+([ended API keys](deployment.md#ended-api-keys)). An approval that is not
+completed within twenty minutes expires with its provisional key. The
+approver must read every number they choose (Read and the number's key),
+for metadata as for text, and losing Read on a number ends the
+connections they approved that held it.
 
 On the attested reader the console first asks it for a fresh attestation
 document and verifies it in the browser: the image must be one of the
@@ -332,8 +358,8 @@ and AI ([contract](mcp-enclave.md#1935-fewer-steps-without-a-new-image-a1-to-a7)
 | Variable | Rule |
 |---|---|
 | `WS_MCP_CONTENT_ENABLED` | boolean, default `false`; lets the `enclave` reader hold **content** connections. On without an `enclave` reader in `WS_MCP_READERS` is a configuration error |
-| `WS_MCP_WORKSPACE_DEFAULT` | `on` or `off`, default `off`: what each workspace's own switches are until its owner sets them. Wappie Cloud sets `on`; a self-hosted server keeps text off unless configured. Anything else is a configuration error |
-| `WS_MCP_DENY_TENANTS` | workspace UUIDs, comma separated, refused text, attachments, drafts and AI whatever their own switches say; empty by default; `*` is refused (the switches above are for every workspace at once) |
+| `WS_MCP_WORKSPACE_DEFAULT` | `on` or `off`, default `off`: what each workspace's own switches are until its owner sets them. Wappie Cloud sets `on`; a self-hosted server keeps text off unless configured. Anything else is a configuration error, with MCP off too when the contract is configured (platform tokens read it) |
+| `WS_MCP_DENY_TENANTS` | workspace UUIDs, comma separated, refused text, attachments, drafts and AI whatever their own switches say; empty by default; `*` is refused (the switches above are for every workspace at once). Platform tokens are refused there too, so with the contract configured a value that does not parse stops the server even with MCP off |
 
 `WS_MCP_CONTENT_TENANTS`, `WS_MCP_MEDIA_TENANTS`, `WS_MCP_SEND_TENANTS` and
 `WS_AI_TENANTS`, the lists that used to name every workspace allowed, are

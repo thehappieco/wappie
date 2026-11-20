@@ -22,6 +22,12 @@ import (
 // and retry_after with item_busy. A relink never sends pair.code or
 // pair.timeout.
 func (s *session) handleRelink(ctx context.Context, f Frame, req PairRequest) {
+	// A platform token never links an account into a number (F1); its
+	// rules refuse the pair frame before this, and this says so again.
+	if s.actor().isToken() {
+		s.replyError(f.ReqID, ErrCodeNotAuthorized, tokenFrameRefused)
+		return
+	}
 	switch {
 	case req.Method != "" && req.Method != "qr":
 		s.replyError(f.ReqID, ErrCodeBadRequest, "a relink pairs by QR only")

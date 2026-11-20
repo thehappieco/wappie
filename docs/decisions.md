@@ -1590,6 +1590,11 @@ open.
 **DB7. One leader for all background contract work**, by the advisory lock
 `contract` held on its own connection (`pg.Locker.Hold`), whose loss ends
 the leader within its heartbeat; every leader write is compare-and-set.
+Amended at step 7: a process that does not lead tries the lock every
+5 seconds, not 30, so a leader's death delays the token feed's
+revocations by no more; it costs one `pg_try_advisory_lock` every
+5 seconds per process. The token feed's loops run in the same leader,
+only while the token mode is on.
 
 **DB8. Freshness per sub, in the database, on its clock, from answers
 only.** A PUT's or GET's validated document sets `fresh_at` whatever its
@@ -1865,7 +1870,12 @@ the frames share one pause transaction: a frame's stop that tells nobody
 (every personal workspace), a frame's stop on a moved number, a pause put
 back after a failed resume, and paused rows 0052 found no trace of.
 `paused_by_user` references `users` `ON DELETE SET NULL`, as `deleted_by`
-does: a removed account leaves no id behind, and the kind stays.
+does: a removed account leaves no id behind, and the kind stays. A
+platform token's stop (step 7) is its creator's, as in its event: kind
+`key`, and `paused_by_user` the local account linked to the record's
+`created_by`. When the creator has none here, the section's `paused_by`
+names no sub, though the token's event does (`devices` keeps no sub), until
+the shared `pauseTx` after step 7's PR 11, which needs a column for it.
 
 What 0052's fill can get wrong, accepted: schema 51 keeps no trace of a
 resume once nobody is left to mark (`MarkResumed` marks only unseen
@@ -3344,3 +3354,322 @@ person's regeneration, with the old code kept; the pending code is listed,
 revealed and redeemed; a service invitation is issued and regenerated; a
 local owner of the same team, and the platform account with the provider
 unset, invite a person).
+
+## Platform tokens in Wappie (step 7)
+
+The platform's design of 2026-10-26 (`contract-tokens-and-settings.md`,
+section 3; decision 0053) gives the contract a token part: tokens the
+platform's console makes, with read, send and manage per item, which each
+app takes on its own terms. Wappie follows the token feed under the
+contract's one generation (migration 0053, `store.Tokens`), judges every
+record in Go before writing any of it, and never lets one record stall the
+revocations behind it. Turning tokens on is an operator's act, and every
+installation ships with them off.
+
+**DB25. One lock order for the token part**, beside DB23's:
+
+1. `contract_state` FOR UPDATE: the account side (`CommitPage`,
+   `StoreDocuments`, `SetMode`) and the resets (`Restart`,
+   `RestartFromTokens`). A token commit never locks it: it reads the
+   generation, with no lock, after step 2. The keys' retirement takes it
+   FOR SHARE.
+2. `contract_token_state` FOR UPDATE: a token page's commit,
+   `ApplyTokenRecord` (a by-id GET), `FinishTokenPass`, the token mode,
+   an accepted acknowledgement's record (before its queues' rows, and only
+   while its generation is still Wappie's), and the resets right after
+   step 1, before DB23's workspace rows. The keys' retirement takes it
+   FOR SHARE.
+3. `tenants` rows, in workspace id order: FOR UPDATE
+   (`lockWorkspaceAccess`) by the token grant write, a number's quarantine
+   and move-out, and the keys' retirement (every workspace in one
+   transaction, each row before that workspace's keys, grants and
+   memberships); by a token page's commit and
+   `ApplyTokenRecord`, for every workspace the page applies, in one pass
+   before any record is judged, FOR UPDATE or FOR KEY SHARE (below),
+   followed in each workspace by the live numbers its records name, FOR
+   KEY SHARE, before that workspace's token rows. The foreign keys of the
+   token rows and perms the commit inserts take those very locks, and so
+   does the update that gives a token its identity (a second write of a
+   row in one transaction checks its foreign keys again); taken under the
+   token rows instead, they would wait behind a quarantine or a move that
+   holds the workspace and the number and then deletes the number's
+   perms, which wait on the commit.
+4. `contract_token_selectors` and `contract_tokens` rows, in id order:
+   FOR UPDATE by the applier, the stops, retention and the expiry janitor;
+   FOR SHARE by the token grant write.
+5. `contract_token_perms` rows, in (token, number, perm) order: the
+   applier, the judge, the reset.
+6. The token identities' `users` and `device_key_grants` rows.
+
+The token grant write reads the number's archive key under the
+workspace's row (step 3), and compares the key the grant names with it
+(`archiveKeyIsTx`), the check DS49 gives `grant.add` (`PutGrant`). No lock is
+added: every write to `device_archive_keys` takes that row as well, so
+the key cannot change before the grant commits. What makes it the same
+row: 0036's `archive_owner_lock` locks the `tenants` row named by the
+writer's `app.tenant_id`. That is the number's workspace because
+row-level security's WITH CHECK and `archive_device_owner` tie each
+insert and update to the device's workspace, deletes see only the
+workspace's rows, and `TransferPersonal` locks both workspaces before it
+moves a number. `ResetArchive` and `CreateArchiveKey` run in the
+workspace's `InTenantTx`. A future writer of `device_archive_keys`
+outside these rules must lock the number's workspace row first.
+
+Within one transaction, steps 4 to 6 are taken workspace by workspace, in
+workspace id order. Nobody takes a lower step after a higher one, and no
+trigger writes a row of a lower step: the perms' and the identities'
+triggers only NOTIFY (`wappie_contract_tokens`), which takes no row lock,
+and `contract_tokens.identity_user_id` has no foreign key, so a `users`
+delete never writes the token's row.
+
+The stops (`contract_token_stops`, by selector) have no step of their own:
+they come after the token rows of the token they stop. The operator's stop
+locks that token's row first; the applier writes its lifts and its
+`apply_failed` stops in each workspace's write, after that workspace's
+token rows, and lowers the stops' `record_until` (retention's alone, which
+wakes no socket) once, after every workspace's rows, in (selector, cause)
+order; retention deletes stops, in the same order, after every workspace's
+token rows and before the selectors, and in the same statement writes a
+due stop it keeps (one timed ahead of its cut): its note and author
+cleared, and its `record_until` lowered to its selector's until if that
+went. The mark of what retention let go
+(`contract_token_stops_let_go`, one row) comes between the token rows and
+the stops. A stop or a lift takes it FOR SHARE after its token's row, if
+Wappie holds one. Retention takes it FOR UPDATE after every workspace's
+token rows, just before it deletes the stops.
+
+The selectors' dates (`contract_token_dates`, a valid record's selector
+that no token here holds) come after the stops: the applier writes them
+after the stops' `record_until`, retention reads them, unlocked, in its
+stops statement and deletes them after the selectors. The lookups (the
+leader's signed GETs of one token, by id or by selector, which date what
+Wappie keeps of a token it does not hold) write after their GET, never
+during it, in a short transaction of their own that takes no row of
+steps 1 to 6 and not the mark: the token's sticky row, then its
+selector's stops, then its selector's date, the
+applier's order. Retention's forget, and a reset's pass that unlists a
+token, delete a forgotten token's queue entries and usage rows in its
+workspace's turn, after that workspace's token rows, perms, removed
+instances and identities, as the applier writes the queues: deleting them
+after every workspace would meet the applier's queue writes of an earlier
+workspace the other way round. Retention still deletes the sticky rows
+after the stops, which the applier and the lookups take the other way:
+the two may deadlock there, and `retryDeadlock` retries both.
+
+A token's removed instances (`contract_token_removed`, its grant instances
+never to apply again) come after its perms, as step 5's tail: the
+applier's drop and a reset write them from the perms they delete, a
+number's quarantine or move deletes the number's perms and then writes
+their instances (the same key as a refused perm's), and retention, the
+forget and the past-until delete alike, and a reset's pass, which forgets
+the tokens it unlists, delete the perms (the past-until delete through
+the token rows' cascade) before the instances. Deleting the
+instances first would let a number's drop wait on one retention deleted
+while retention waits on the drop's perm.
+
+The design keeps a dropped Read's grant deletion in the same write as the
+record that drops it (3.5). Step 7's plan had the page commit take no
+`tenants` lock for that; but every write to `device_key_grants` locks its
+workspace's row anyway (0036's `archive_owner_lock`, a statement trigger,
+for the device moves, which a delete of the identity fires too through
+its grants' cascade, with no grant to delete), so a commit that deleted
+grants under its token rows would take step 3 after step 4, and deadlock
+with a grant write. So the commit takes FOR UPDATE, in its one pass, the
+row of every workspace where it may delete an identity or its grants,
+decided before it judges any record: one where a token of the page holds
+an identity, so a reading token's rename or unchanged re-delivery takes
+it too, and one where a token is listed twice, whose identity one record
+may make and a later one drop. Elsewhere it takes FOR KEY SHARE. A token
+identity is never counted by any protection, so no
+`requireRemainingReader` invariant depends on that lock; it is taken only
+for the order.
+
+The cost is a wait: FOR KEY SHARE waits behind a `FOR UPDATE` holder as
+much as FOR UPDATE does, so a page waits for any write that holds one of
+its workspaces' rows (a number's quarantine, a move-out, whose statements
+run under a 120-second timeout, a grant, permission or member change), and
+the revocations of its other workspaces wait with it. A narrowing then
+lands when that write ends, not within the design's second.
+
+A number's ordinal (0053's `devices_ordinal`) is chosen under its
+workspace's row FOR UPDATE, taken first in the trigger: a move holds that
+row already, and an insert takes it anyway for the capacity check, so no
+other lock, such as an advisory one, comes between a number's insert and a
+move into the same workspace.
+
+The usage rows (`contract_token_used`, `contract_token_refusals`) take no
+row of steps 1 to 6. Every process's flush (`AddTokenUse`) writes the used
+rows and then the refusals, each in the order a usage report lists them:
+(day, token), then (day, token, number, perm, code), with no number and no
+perm first. The leader's mark of an accepted report (`UsageSent`) updates
+its refusal rows one by one in that order, and its update of the used rows
+waits on no flush: a flush's new row is not the update's to see before it
+commits, and a conflict with a committed row takes no lock. So two flushes
+over the same keys, or a flush and the mark, never wait on each other in a
+cycle.
+
+A deadlock, a serialization failure, a timeout or a lost connection rolls
+the page back whole and is retried (`retryDeadlock`); only a record's own
+data fault (a data exception, a constraint, a trigger's RAISE) sends its
+workspace to the record-by-record fallback, so no lock conflict ever stops
+a token as `apply_failed`.
+
+**The token mode follows the contract's.** `contract mode off` turns the
+token mode off in its own transaction (DB25's steps 1 then 2) and never
+refuses, so every way back that runs it keeps working with tokens on;
+turning the contract on again leaves tokens off. Token auth refuses every
+token while either mode is off, reading both in its own query.
+
+**A gone's pass starts with the next generation.** A reset after a signed
+`gone` stores no generation, so it cannot name the one its pass from 0
+lists. The first answer that adopts a generation (the account feed's page,
+or a sign-in's) starts that pass in its transaction, so a token the
+restored platform no longer has is still refused once the pass is done. At
+the first observe the same pass runs over no token at all.
+
+**One reset floor for the token and command feeds.** Every reset runs
+`restartTx`, which resets the command state with the account and token
+state (12a's `restartCommandsTx`: the command feed from 0, every section
+and person document due again, the old generation's results not
+delivered dropped), whichever feed saw it first. So the token feed's
+resets keep the command feed's minute (DS5, `command_reset_loop`):
+the two sides share one floor per leader (`resetGate`), a reset within a
+minute of the last either made waits the rest out with an ERROR
+(`token_reset_loop` from the token side), and the gate is held through
+the reset, so two sides that wake together make one reset and the other
+waits again. The token side's backoff between resets with no page
+between still applies under it. The account follower's own resets are
+not spaced, as before: its next page adopts the generation it reset to,
+and a loop with either other feed is spaced by that feed's wait. A reset
+from the command feed also wakes the token follower, which no notice
+reaches from there: its long-poll in flight would otherwise ask from the
+old cursor for up to its 25 seconds.
+
+**How Wappie reads decision 0053 for a token's requests**
+([a token's requests](contract.md#a-tokens-requests)):
+
+- The text switch off refuses every Read, metadata included. That is the
+  safe reading of "switches on outside access to content". A
+  metadata-only Read can come later.
+- The attachments switch off withholds the sealed content of every row
+  that carries an attachment (`withheld: "attachments"`), caption
+  included. That content holds the media key, the CDN path and a legible
+  thumbnail, with which a token could fetch the file around the switch. A
+  text row's link preview stays the text's.
+- The switches are read from the database on every request, never from
+  MCP's in-memory copy, so no start can leave a workspace on the default.
+- A record that brings another reading key than the pin keeps the grants
+  sealed to the pinned key, refuses new ones, and raises an ERROR.
+- A token with only Send or Manage lists no number, and learns no number's
+  id or existence: it works by the id the console shows.
+- A token never reprojects: reprojection reseals a protobuf the caller
+  supplies, and is an operator's repair tool.
+- `workspace_closed` applies at observe too: the token is the
+  platform's.
+- A token a reset's pass finds unlisted is refused for good, here.
+- With the contract off, every token is refused (above).
+
+**Wappie's own keys give way to the platform's tokens.** Keys are narrowed
+while the token mode is on, or once `whatserverd tokens retire-keys -apply`
+has run (a `key_retirements` row, which stays). Then Wappie issues no
+general key:
+
+- Socket `apikeys.create` issues only an MCP setup's key: read, numbers,
+  at most 30 minutes out (what a consent binds), named "MCP · …", acting as
+  no account or as a fresh provisional one (a 30-minute deadline, no
+  connection names it, and the person's own provisional invitation made
+  it). Every other shape gets `tokens_are_the_platforms`.
+- The command line's `key` and `bootstrap` refuse. `-self-hosted` only
+  says the installation is off the platform (the contract off, tokens off,
+  no retirement), so it never lets through what the narrowing refuses.
+- A standing service account's invitation gets 409
+  `tokens_are_the_platforms`, issued or redeemed.
+- Discovery says `tokens.platform.v1`.
+
+A setup's key works on REST, media and the socket's hello only once a
+connection names it; before, it is refused as an unknown key. A consent
+records its connection first. One exception: a key that acts as a
+provisional account that no connection names yet. That is a content or AI
+renewal's new key: the enclave's reader lists its grants with it (`GET
+/v1/grants`) before the renewal is recorded and the ledger names the key.
+A key that acts as an account a connection names is refused too, and
+while keys are narrowed no such key is issued.
+
+This exception is built, and pending the owner's yes: it is an auth
+change, so it needs his answer under 0049 (the platform's W46, Q1). Until
+then it stays as described here.
+
+That is the limit of the plan's L8 guard. An admin can still mint a
+30-minute read key acting as a provisional account of their own, and use
+it on REST. The key reads only the numbers they gave that account Read
+on, and opens only the keys they sealed to it. Each one needs a
+provisional invitation from the setups' budget, and it dies with the
+account's 30 minutes. Another person's fresh account, a consent in
+flight, is not theirs to act as. A self-hosted installation never turns
+tokens on, so nothing changes there.
+
+The retirement revokes the live keys of class `rest` and `cli` (0053's
+`api_key_class`). It also revokes a key in an MCP setup's or an old local
+token's shape whose origin is `rest` or `cli`: no consent issued it, and
+MCPPanel and 12b's M2L list only origin `legacy_mcp`, which the backfill
+alone writes. A connection's key is always spared.
+
+It removes a standing service account only where no spared key acts as
+it, and where every number it holds a key of, at an epoch not retired,
+keeps another holder who is human: a person (user and membership not of
+role service), active, with Read, and no deadline
+(`everyGrantKeepsAHumanHolderTx`, which M2L reuses). That is stricter than
+`sole_key_holders`, where two standing services shield each other. The
+candidates are the accounts a retired key acted as, those an earlier
+report kept, and those a revoked old local token acted as (M2L revokes
+one and keeps its account while a number has no other human holder). A
+service kept for want of a holder is listed in the report, so a later run
+removes it once one exists, even after the keys are deleted. A revoked old
+token's account is found by the token itself only until the token is
+deleted, 13 months after its revoke; a run in that time lists it. Nothing
+is stranded and no notice is raised.
+
+The apply is one transaction. It holds `contract_state` and
+`contract_token_state` FOR SHARE (DB25 steps 1 and 2), so neither mode
+turns off under it. Then it takes each workspace's row FOR UPDATE, in id
+order (step 3), and holds them to the commit. Inserts with a foreign key
+to those workspaces, a capture's included, wait that fraction of a second.
+One transaction checks `-confirm` once and writes one row per apply.
+
+The share locks also hold back the contract's feeds. A token page's
+commit and `ApplyTokenRecord` take `contract_token_state` FOR UPDATE
+(step 2), so no revocation, narrowing or stop from the platform applies
+until the apply commits. Every commit of the account feed and the
+settings feed takes `contract_state` FOR UPDATE (step 1), so no disable,
+recovery or belt change applies either. `contract mode` and `contract
+tokens` wait as well. Decision 0053 asks for a revocation within a
+second. There is no deadlock, and on the pilot the apply takes under a
+second, so the platform kept the one transaction (W46, Q3). The runbook
+says to run the apply while the contract's feeds are quiet
+([retiring Wappie's keys](deployment.md#retiring-wappies-keys)).
+
+**Ended API keys go 13 months after their end** (the owner's yes of
+2026-11-04), on every installation: an ended key serves nothing after
+that, and one rule is simpler than one per edition. The end is the earlier
+of the revocation and the expiry, by Wappie's clock and the database's. Every
+class and origin goes the same way, a retired key included, and its MCP
+connection's record with it. A retirement's report loses its per-key
+entries at the same time; its counts and the services it kept stay.
+
+**A person's lost Read never reaches a token** (DS47, the platform's
+0061). A platform token is its own holder kind (0053): its Read and its
+grants follow its record alone. Its identity is no member, so Wappie's
+permissions screen and the console's flags acts never find it
+(`not_found`), and a person's lost Read ends only that person's own
+connections and integrations (`leaveOwnConnectionsTx`), never a token's
+grant. Nor does a token's grant count for a person: a consent or a
+renewal asks the person's own Read and grant (`consenterReadsTx`).
+
+DS48 keeps to it. A `grant.revoke` of a token's identity is refused
+with `not_found` before anything else, from an owner or an admin: it
+never counts as a person's lost Read, and the token keeps its grant
+(`TestATokenIdentityIsNeverAMember`, `TestTheGrantPagesFrames`). The check at
+every start reads only MCP connections, and a token holds none. A
+token's grant never counts as a person's Read there, and a number whose
+only grants left are tokens' is an orphan
+(`TestConnectionsWithoutReadSweepNobodyReads`).

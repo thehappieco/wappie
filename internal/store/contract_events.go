@@ -89,6 +89,12 @@ var eligibleEventSQL = owedEventSQL + ` AND e.occurred_at > clock_timestamp() - 
 var releasableEventSQL = `e.parked_at IS NOT NULL AND e.reject_code = 'not_found' AND e.settled_at IS NULL
 	AND e.occurred_at > clock_timestamp() - ` + eventExpirySQL
 
+// eventActorSubSQL is the sub of row e's actor: the row's own, else (a
+// replayed row keeps none) the one its local account is linked to now; an
+// app's act has none.
+const eventActorSubSQL = `coalesce(e.actor_sub, CASE WHEN e.actor_kind <> 'app'
+	THEN (SELECT pi.sub FROM platform_identities pi WHERE pi.user_id = e.actor_user_id) END)`
+
 // owedFromSQL joins what owedEventSQL reads: e, s and w.
 const owedFromSQL = `item_events e CROSS JOIN contract_state s JOIN contract_workspaces w ON w.workspace_id = e.tenant_id`
 
@@ -124,6 +130,10 @@ type ContractEvent struct {
 	Replayed  bool
 	// Folded counts the rows folded into it.
 	Folded int
+	// TokenMode: the token mode was on when the batch was read. A pause
+	// then goes with what the gate adds, its stop (step 7's plan, 6.3),
+	// whenever the row was written.
+	TokenMode bool
 }
 
 // ActorUnknown reports a person, or a key whose creator is known, with no
@@ -183,21 +193,26 @@ type deliveredPause struct {
 	seq        int64
 	id, item   uuid.UUID
 	kind       string
-	user       *uuid.UUID
+	user, sub  *uuid.UUID
 	occurredAt time.Time
 }
 
 // sameActor is DB11's actor, README 9's: the person behind the act, by
-// local account, a key's creator for a key ("the creator counts as the
-// actor"), so a person's pause and their key's are the same actor's. With
-// no account on either side (a key with no creator, a person whose account
-// is gone) only the same kind with none is: nobody behind a key is never a
-// person.
-func sameActor(kind string, user *uuid.UUID, otherKind string, other *uuid.UUID) bool {
-	if user == nil || other == nil {
-		return user == nil && other == nil && kind == otherKind
+// local account when both acts have one, a key's creator for a key ("the
+// creator counts as the actor"), so a person's pause and their key's are
+// the same actor's. Else by sub: a platform token's creator may have no
+// local account, and two such creators are two actors, while a person and
+// their own token are one (step 7's plan, 6.3). With neither on both sides
+// (a key with no creator, a person whose account is gone and who never
+// linked) only the same kind is: nobody behind a key is never a person.
+func sameActor(kind string, user, sub *uuid.UUID, otherKind string, otherUser, otherSub *uuid.UUID) bool {
+	switch {
+	case user != nil && otherUser != nil:
+		return *user == *otherUser
+	case sub != nil && otherSub != nil:
+		return *sub == *otherSub
 	}
-	return *user == *other
+	return user == nil && otherUser == nil && sub == nil && otherSub == nil && kind == otherKind
 }
 
 // lockQueueTx takes the queue's locks in DB23's order: workspace's record,
@@ -256,17 +271,36 @@ func (c *Contract) EventBatch(ctx context.Context, workspace uuid.UUID, limit in
 			if err := writeFoldsTx(ctx, tx, workspace, rows); err != nil {
 				return err
 			}
-			return replayedLabelsTx(ctx, tx, out.Events)
+			if err := replayedLabelsTx(ctx, tx, out.Events); err != nil {
+				return err
+			}
+			return tokenModeTx(ctx, tx, out.Events)
 		})
 	})
 	return out, err
 }
 
+// tokenModeTx marks events with the token mode as tx reads it: events
+// render at send time, so a row queued before tokens on goes with what
+// the gate adds, and one queued while on goes without it once off.
+func tokenModeTx(ctx context.Context, tx pgx.Tx, events []ContractEvent) error {
+	if len(events) == 0 {
+		return nil
+	}
+	var on bool
+	if err := tx.QueryRow(ctx, `SELECT coalesce((SELECT mode = 'on' FROM contract_token_state), false)`).Scan(&on); err != nil {
+		return err
+	}
+	for i := range events {
+		events[i].TokenMode = on
+	}
+	return nil
+}
+
 // owedEventsTx locks and reads every owed row of the workspace of tx, in
 // seq order, each marked expired when its 29 days are spent.
 func owedEventsTx(ctx context.Context, tx pgx.Tx, workspace uuid.UUID) ([]pendingEvent, error) {
-	rows, err := tx.Query(ctx, `SELECT e.seq, e.event_id, e.type, e.item_id, e.occurred_at, e.actor_kind,
-			coalesce(e.actor_sub, CASE WHEN e.actor_kind <> 'app' THEN (SELECT pi.sub FROM platform_identities pi WHERE pi.user_id = e.actor_user_id) END),
+	rows, err := tx.Query(ctx, `SELECT e.seq, e.event_id, e.type, e.item_id, e.occurred_at, e.actor_kind, `+eventActorSubSQL+`,
 			e.actor_user_id, e.reader_subs, e.label, e.hint, e.purge_after, e.person_sub, e.cause, e.replayed_at IS NOT NULL,
 			e.coalesced_into, e.occurred_at <= clock_timestamp() - `+eventExpirySQL+`
 		FROM `+owedFromSQL+`
@@ -297,15 +331,16 @@ func deliveredPausesTx(ctx context.Context, tx pgx.Tx, workspace uuid.UUID, rows
 	if earliest == nil {
 		return nil, nil
 	}
-	q, err := tx.Query(ctx, `SELECT seq, event_id, item_id, actor_kind, actor_user_id, occurred_at FROM item_events
-		WHERE tenant_id = $1 AND type = 'sync_paused' AND outcome IN ('accepted', 'duplicate')
-		  AND occurred_at > $2::timestamptz - interval '1 hour' ORDER BY seq`, workspace, *earliest)
+	q, err := tx.Query(ctx, `SELECT e.seq, e.event_id, e.item_id, e.actor_kind, e.actor_user_id, `+eventActorSubSQL+`, e.occurred_at
+		FROM item_events e
+		WHERE e.tenant_id = $1 AND e.type = 'sync_paused' AND e.outcome IN ('accepted', 'duplicate')
+		  AND e.occurred_at > $2::timestamptz - interval '1 hour' ORDER BY e.seq`, workspace, *earliest)
 	if err != nil {
 		return nil, err
 	}
 	return pgx.CollectRows(q, func(row pgx.CollectableRow) (deliveredPause, error) {
 		var d deliveredPause
-		err := row.Scan(&d.seq, &d.id, &d.item, &d.kind, &d.user, &d.occurredAt)
+		err := row.Scan(&d.seq, &d.id, &d.item, &d.kind, &d.user, &d.sub, &d.occurredAt)
 		return d, err
 	})
 }
@@ -370,7 +405,7 @@ func foldEvents(rows []pendingEvent, delivered []deliveredPause, limit int, out 
 			for k := i + 1; k < len(rows); k++ {
 				f := &rows[k]
 				if !f.done && f.into == nil && f.Type == eventSyncPaused && f.ItemID == r.ItemID &&
-					sameActor(r.ActorKind, r.ActorUser, f.ActorKind, f.ActorUser) && f.OccurredAt.Before(r.OccurredAt.Add(time.Hour)) {
+					sameActor(r.ActorKind, r.ActorUser, r.ActorSub, f.ActorKind, f.ActorUser, f.ActorSub) && f.OccurredAt.Before(r.OccurredAt.Add(time.Hour)) {
 					head := r.EventID
 					f.into = &head
 				}
@@ -406,7 +441,7 @@ func foldEvents(rows []pendingEvent, delivered []deliveredPause, limit int, out 
 func deliveredWithin(delivered []deliveredPause, r *pendingEvent) *deliveredPause {
 	for i := len(delivered) - 1; i >= 0; i-- {
 		d := &delivered[i]
-		if d.seq < r.Seq && d.item == r.ItemID && sameActor(d.kind, d.user, r.ActorKind, r.ActorUser) &&
+		if d.seq < r.Seq && d.item == r.ItemID && sameActor(d.kind, d.user, d.sub, r.ActorKind, r.ActorUser, r.ActorSub) &&
 			r.OccurredAt.Sub(d.occurredAt) < time.Hour {
 			return d
 		}

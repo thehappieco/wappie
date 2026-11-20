@@ -27,6 +27,7 @@ import (
 	"github.com/google/uuid"
 	"go.mau.fi/whatsmeow"
 
+	"whatserver2/internal/access"
 	"whatserver2/internal/aiapi"
 	"whatserver2/internal/authapi"
 	"whatserver2/internal/blob"
@@ -79,7 +80,10 @@ const commandList = `usage: whatserverd [serve]
                    retention | erase | reproject | mcp-relay-secret | devices | deletions |
                    reader-alert-test ...
        whatserverd contract check [--other|--only-current|--only-other] | status [--check] |
-                   diff [--tenant T] | mode off|observe | settings off|read|on|status
+                   diff [--tenant T] | mode off|observe | settings off|read|on|status |
+                   tokens on|off|status
+       whatserverd tokens suspend [-note N] SELECTOR|TOKEN|- | suspend -replay F |
+                   lift SELECTOR|TOKEN|- | list | retire-keys -dry-run|-apply -confirm N
        whatserverd contract-secret seal | promote | unpromote | drop | reset | capabilities ...
 `
 
@@ -145,6 +149,8 @@ func runCommand(args []string, serve func() error) error {
 		return deletionsCommand(rest, os.Stdout)
 	case "contract":
 		return contractCommand(rest, os.Stdout)
+	case "tokens":
+		return tokensCommand(rest, os.Stdin, os.Stdout)
 	case "contract-secret":
 		return contractSecret(rest, defaultSecretCommand())
 	case "reader-alert-test":
@@ -234,6 +240,10 @@ type app struct {
 	// the one process of the database that holds the contract's lock; nil
 	// unless a transport is configured.
 	leader *membership.Leader
+	// checker authenticates and authorizes every request of REST, media,
+	// upload and the socket, platform tokens included: their switches,
+	// failure limits, usage counters and NOTIFY watch are its own.
+	checker *access.Checker
 }
 
 // setup opens every dependency and runs migrations. The returned close
@@ -312,7 +322,20 @@ func setupWith(ctx context.Context, withWA, migrations bool) (*app, func(), erro
 	// The contract's part in signing in and its freshness hook, in every
 	// configuration: the socket's acts ask it from the first frame
 	// (startContract gives it its transport).
-	a.members = &membership.Members{Contract: store.NewContract(pools.API), Log: lg}
+	a.members = &membership.Members{Contract: store.NewContract(pools.API), Tokens: store.NewTokens(pools.API), Log: lg}
+	// One checker for every transport. Platform tokens read the
+	// workspaces' own text and attachments switches in SQL, beneath the
+	// operator's default and deny list, whether or not the connector is on:
+	// nothing is loaded for them, so nothing can fail to load.
+	tokens := store.NewTokens(pools.API)
+	a.checker = &access.Checker{
+		Keys: a.apiKeys, Users: a.users, Tokens: tokens,
+		Switches: store.TokenSwitches{Default: cfg.MCP.WorkspaceDefault, Deny: cfg.MCP.DenyTenants},
+		Use:      &access.TokenUse{Store: tokens, Log: lg},
+		Limits:   access.NewTokenLimits(cfg.TrustedProxies, lg),
+		Watch:    access.NewTokenWatch(),
+		Log:      lg,
+	}
 	if cfg.Deletion.Ledger != "" {
 		a.ledger = &ledger.File{Path: cfg.Deletion.Ledger}
 	}
@@ -559,7 +582,7 @@ func setupWith(ctx context.Context, withWA, migrations bool) (*app, func(), erro
 		Groups:   a.groups,
 		Registry: registry, Bus: a.bus, Router: router, Metrics: a.metrics,
 		Blob: a.blob, Pool: pools.API,
-		Limits: a.limits, Log: lg,
+		Limits: a.limits, Log: lg, Access: a.checker,
 		// Wired whether or not the connector is mounted: a key a
 		// connection held never sends or manages here, and a draft is
 		// confirmed only while the switches allow it.
@@ -570,6 +593,9 @@ func setupWith(ctx context.Context, withWA, migrations bool) (*app, func(), erro
 		// Every act README 7.1 gates asks the contract's freshness first;
 		// release B only logs the verdicts.
 		Membership: a.members,
+		// The grant page asks the platform for a token's record by a
+		// signed GET when its last one is over a minute old.
+		TokenRecords: a.members,
 		// A grant.revoke that took a person's Read tells the readers of
 		// their connections it ended (DS48).
 		MCPReaders: &a.readers,
@@ -615,6 +641,9 @@ func serve() error {
 	// while the file cannot be written, and a refusal would crash-loop the
 	// unit and stop every workspace's sync over a file only a restore reads.
 	checkDeletionLedger(a.cfg, a.ledger, a.log)
+	// The stop record's likewise: a stop is made whether or not its line
+	// can be written, and the command says when it cannot.
+	checkTokenStopRecord(a.cfg, a.log)
 	a.startContract(ctx, hup)
 	a.log.Info("starting", "config", a.cfg.String())
 	if !a.cfg.Storage.Configured {
@@ -661,8 +690,16 @@ func serve() error {
 	// A deletion in any process tells this one at its commit, so it lets go
 	// of the number before the next tick.
 	go a.listenExcluded(ctx)
-	// So do a reset and a new archive key, so ingest seals to the number's
-	// key as it is now, with no restart (DS49).
+	// A token's narrowing in any process wakes this one's token sockets and
+	// streams at its commit; their one-second checks are the bound.
+	go a.listenTokens(ctx)
+	// The token usage counts go to the database every ten seconds.
+	if a.checker != nil {
+		go a.checker.Use.Run(ctx)
+	}
+	// A reset and a new archive key in any process tell this one at its
+	// commit, so ingest seals to the number's key as it is now, with no
+	// restart (DS49).
 	go a.listenArchiveKeys(ctx)
 
 	// The attachment queue lives in the database, so this starts whether or
@@ -808,6 +845,12 @@ func serve() error {
 	}()
 	wg.Wait()
 
+	// What the token counters hold goes before the process does.
+	flushCtx, flushCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	if err := a.checkerUse().Flush(flushCtx); err != nil {
+		a.log.Warn("could not add the last token usage counts", "error", err)
+	}
+	flushCancel()
 	if shutdownErr != nil {
 		a.log.Error("graceful shutdown timed out", "error", shutdownErr)
 		return shutdownErr
@@ -927,8 +970,12 @@ func (a *app) routes() http.Handler {
 	mux := http.NewServeMux()
 	mcpServers := advertisedMCP(a.cfg.MCP)
 	platform := a.platform.Discovery(a.cfg.Platform.LocalLogin)
-	mux.HandleFunc("GET /v1/discovery", discoveryWith(mcpServers, platform))
-	mux.HandleFunc("GET /.well-known/wappie", discoveryWith(mcpServers, platform))
+	var tokens *platformTokens
+	if a.apiKeys != nil {
+		tokens = &platformTokens{read: a.apiKeys.KeysNarrowed, log: a.log}
+	}
+	mux.HandleFunc("GET /v1/discovery", discoveryWith(mcpServers, platform, tokens))
+	mux.HandleFunc("GET /.well-known/wappie", discoveryWith(mcpServers, platform, tokens))
 	if a.cfg.MetricsAddr == "" {
 		a.probes(mux)
 	}
@@ -938,7 +985,7 @@ func (a *app) routes() http.Handler {
 	a.authHandler().Mount(mux)
 	(&restapi.Handler{
 		APIKeys: a.apiKeys, Users: a.users, Keys: a.keys, Devices: a.devices,
-		Messages: a.messages, Contacts: a.contacts, Receipts: a.receipts, Log: a.log,
+		Messages: a.messages, Contacts: a.contacts, Receipts: a.receipts, Log: a.log, Access: a.checker,
 		Running: func(deviceID string) bool {
 			device, ok := a.registry.Get(deviceID)
 			return ok && device.Client().IsConnected()
@@ -1057,11 +1104,11 @@ func (a *app) routes() http.Handler {
 	mediaGate := mcpauth.MediaGate(store.NewMCPConnections(a.pools.API), a.switches.Media, a.switches.AI)
 	mux.Handle("GET /v1/media/{uid}", &media.Handler{
 		Keys: a.apiKeys, Sessions: store.NewUsers(a.pools.API),
-		Media: a.media, Blob: a.blob, Gate: mediaGate, Log: a.log,
+		Media: a.media, Blob: a.blob, Gate: mediaGate, Access: a.checker, Log: a.log,
 	})
 	mux.Handle("HEAD /v1/media/{uid}", &media.Handler{
 		Keys: a.apiKeys, Sessions: store.NewUsers(a.pools.API),
-		Media: a.media, Blob: a.blob, Gate: mediaGate, Log: a.log,
+		Media: a.media, Blob: a.blob, Gate: mediaGate, Access: a.checker, Log: a.log,
 	})
 
 	// Sending an attachment is two steps: the bytes come here, and the message
@@ -1081,6 +1128,7 @@ func (a *app) routes() http.Handler {
 			return dev.Client(), nil
 		},
 		MaxBytes: a.cfg.Storage.MaxMediaBytes,
+		Access:   a.checker,
 		Log:      a.log,
 	})
 
@@ -1164,6 +1212,32 @@ func listTenants() error {
 	return w.Flush()
 }
 
+// errCLIKeysNarrowed is the command line's refusal of a general key while
+// keys are narrowed (step 7's plan, 7.3).
+var errCLIKeysNarrowed = errors.New("this installation takes The Happie Co's API tokens (tokens on, or Wappie's own keys " +
+	"were retired): make a token in the platform's console. An installation that leaves the platform for good runs " +
+	"0053's down-step first")
+
+// cliKeysGate refuses key and bootstrap while keys are narrowed: the
+// token mode on, or the keys retired (store.KeyGate). -self-hosted says
+// the operator means an installation off the platform, and is refused
+// unless it is one: the contract off, tokens off, and no retirement. It
+// never lets a key through that the narrowing refuses.
+func cliKeysGate(ctx context.Context, keys *store.APIKeys, selfHosted bool) error {
+	g, err := keys.Gate(ctx)
+	if err != nil {
+		return err
+	}
+	if selfHosted && !g.OffThePlatform() {
+		return fmt.Errorf("-self-hosted: this installation is connected to The Happie Co (contract mode %s, tokens %s, keys retired %t)",
+			g.Contract, g.Tokens, g.Retired)
+	}
+	if g.Narrowed() {
+		return errCLIKeysNarrowed
+	}
+	return nil
+}
+
 // issueKey issues an additional API key for an existing tenant.
 func issueKey(args []string) error {
 	fs := flag.NewFlagSet("key", flag.ContinueOnError)
@@ -1172,6 +1246,8 @@ func issueKey(args []string) error {
 	scopeArg := fs.String("scope", "full",
 		"what the key may do: read (the archive as ciphertext), send (plus outbound "+
 			"messages), full (plus pairing, stopping devices and backfill)")
+	selfHosted := fs.Bool("self-hosted", false, "refuse unless this installation is off The Happie Co's platform "+
+		"(the contract off, tokens off, keys never retired)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -1201,8 +1277,14 @@ func issueKey(args []string) error {
 	if !exists {
 		return fmt.Errorf("key: no tenant %s; run \"whatserverd tenants\" to list them", *tenant)
 	}
+	if err := cliKeysGate(ctx, a.apiKeys, *selfHosted); err != nil {
+		return fmt.Errorf("key: %w", err)
+	}
 
-	key, err := a.apiKeys.IssueScoped(ctx, *tenant, *name, scope, nil)
+	key, err := a.apiKeys.IssueAsked(ctx, *tenant, *name, scope, nil, nil, nil, nil)
+	if errors.Is(err, store.ErrTokensAreThePlatforms) {
+		return fmt.Errorf("key: %w", errCLIKeysNarrowed)
+	}
 	if err != nil {
 		return fmt.Errorf("key: %w", err)
 	}
@@ -1216,6 +1298,8 @@ func bootstrap(args []string) error {
 	name := fs.String("tenant", "", "tenant name (required)")
 	keyName := fs.String("key-name", "bootstrap", "label for the issued API key")
 	force := fs.Bool("force", false, "create the tenant even if one with this name exists")
+	selfHosted := fs.Bool("self-hosted", false, "refuse unless this installation is off The Happie Co's platform "+
+		"(the contract off, tokens off, keys never retired)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -1232,6 +1316,10 @@ func bootstrap(args []string) error {
 		return err
 	}
 	defer closeAll()
+	// Before the tenant: a refused bootstrap leaves nothing behind.
+	if err := cliKeysGate(ctx, a.apiKeys, *selfHosted); err != nil {
+		return fmt.Errorf("bootstrap: %w", err)
+	}
 
 	// Names are not unique — two real companies may share one — but creating a
 	// second tenant with the same name is almost always a mistake reaching for
@@ -1250,14 +1338,9 @@ func bootstrap(args []string) error {
 			"Pass -force to create a second tenant with the same name anyway", *name)
 	}
 
-	var tenantID string
-	if err := a.pools.API.QueryRow(ctx,
-		`INSERT INTO tenants (name) VALUES ($1) RETURNING id::text`, *name).Scan(&tenantID); err != nil {
-		return fmt.Errorf("bootstrap: create tenant: %w", err)
-	}
-	key, err := a.apiKeys.Issue(ctx, tenantID, *keyName)
+	tenantID, key, err := bootstrapTenant(ctx, a, *name, *keyName)
 	if err != nil {
-		return fmt.Errorf("bootstrap: issue api key: %w", err)
+		return fmt.Errorf("bootstrap: %w", err)
 	}
 
 	// To stdout, not the logger: this is output, and it is the only time the
@@ -1265,6 +1348,28 @@ func bootstrap(args []string) error {
 	fmt.Printf("tenant   %s  (%s)\napi key  %s\n\nThis key is shown once and cannot be recovered. Store it now.\n",
 		tenantID, *name, key)
 	return nil
+}
+
+// bootstrapTenant creates a tenant named name and issues its first key,
+// keyName, full scope. Keys narrowed after cliKeysGate (tokens turned on
+// in between) refuse the key: the tenant, which has nothing in it yet,
+// goes, so a refused bootstrap leaves nothing behind.
+func bootstrapTenant(ctx context.Context, a *app, name, keyName string) (tenantID, key string, err error) {
+	if err := a.pools.API.QueryRow(ctx,
+		`INSERT INTO tenants (name) VALUES ($1) RETURNING id::text`, name).Scan(&tenantID); err != nil {
+		return "", "", fmt.Errorf("create tenant: %w", err)
+	}
+	key, err = a.apiKeys.IssueAsked(ctx, tenantID, keyName, store.ScopeFull, nil, nil, nil, nil)
+	if errors.Is(err, store.ErrTokensAreThePlatforms) {
+		if _, derr := a.pools.API.Exec(ctx, `DELETE FROM tenants WHERE id = $1`, tenantID); derr != nil {
+			return "", "", fmt.Errorf("%w; the tenant %s it made could not be removed: %w", errCLIKeysNarrowed, tenantID, derr)
+		}
+		return "", "", errCLIKeysNarrowed
+	}
+	if err != nil {
+		return "", "", fmt.Errorf("issue api key: %w", err)
+	}
+	return tenantID, key, nil
 }
 
 // listTenantIDs returns every tenant, for commands that are given an identifier

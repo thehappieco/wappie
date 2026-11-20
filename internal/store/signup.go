@@ -130,6 +130,11 @@ func lockSignupInvite(ctx context.Context, tx pgx.Tx, secret, email string, serv
 	if err = invitationsPausedTx(ctx, tx, inv.TenantID, inv.Role); err != nil {
 		return inv, nil, err
 	}
+	// A standing service account's, issued before keys were narrowed, is
+	// refused the same way, its code unspent.
+	if err = standingServicePausedTx(ctx, tx, inv.Role, inv.Provisional); err != nil {
+		return inv, nil, err
+	}
 	if !service && inv.Email != "" && inv.Email != normaliseEmail(email) {
 		return inv, nil, ErrInviteEmailMismatch
 	}

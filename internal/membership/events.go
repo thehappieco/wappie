@@ -61,7 +61,10 @@ var eventTypes = map[string]string{
 // snapshot's), and what only its type carries: a deletion's purge date, a
 // move's destination, a stranding's person and cause (null, and so
 // omitted, for a membership the platform ended: it fills the cause from
-// its log).
+// its log). While the token mode is on, a pause goes with its stop,
+// always pause (step 7's plan, 6.3): every item.sync_paused Wappie writes
+// stops one number's capture (a person's, a key's or a token's), never a
+// turn-off.
 func EventOf(workspace uuid.UUID, e store.ContractEvent) kc.Event {
 	ev := kc.Event{
 		EventID: e.EventID.String(), WorkspaceID: workspace.String(), Type: eventTypes[e.Type], OccurredAt: kc.T(e.OccurredAt),
@@ -80,6 +83,10 @@ func EventOf(workspace uuid.UUID, e store.ContractEvent) kc.Event {
 		ev.Readers = &readers
 	}
 	switch ev.Type {
+	case kc.EventSyncPaused:
+		if e.TokenMode {
+			ev.Stop = kc.StopPause
+		}
 	case kc.EventDeleted:
 		if e.PurgeAfter != nil {
 			at := kc.T(*e.PurgeAfter)

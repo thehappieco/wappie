@@ -57,7 +57,18 @@ type UploadHandler struct {
 	// whatsmeow encrypts as it streams, so the file on disk is already
 	// unreadable.
 	TempDir string
-	Log     *slog.Logger
+	// Access authenticates and authorizes every request; nil is a Checker
+	// of Keys and Sessions alone, which refuses every platform token.
+	Access *access.Checker
+	Log    *slog.Logger
+}
+
+// checker is the Checker every request goes through.
+func (h *UploadHandler) checker() *access.Checker {
+	if h.Access != nil {
+		return h.Access
+	}
+	return &access.Checker{Keys: h.Keys, Users: h.Sessions, Log: h.Log}
 }
 
 // UploadResult is what the caller needs in order to send the attachment.
@@ -88,7 +99,7 @@ func (h *UploadHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		log = slog.Default()
 	}
 
-	actor, ok := authenticateActor(r, h.Keys, h.Sessions)
+	actor, ok := authenticateActor(r, h.checker())
 	tenant := actor.Tenant
 	if !ok {
 		w.Header().Set("WWW-Authenticate", `Bearer realm="whatserver2"`)
@@ -108,21 +119,34 @@ func (h *UploadHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "device is required", http.StatusBadRequest)
 		return
 	}
-	// A unique prefix is accepted, the same as everywhere else: the listing
-	// shows a short form, and an identifier you cannot type back is a trap.
-	dev, err := h.Devices.Resolve(r.Context(), tenant.String(), deviceRef)
-	if err != nil {
-		if errors.Is(err, store.ErrAmbiguous) {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+	var dev store.Device
+	if actor.IsToken() {
+		// A token names a number by its full id only, and is checked before
+		// any lookup: a number that does not exist, another workspace's and
+		// one refused get the same answer, which holds no id. The
+		// attachments switch never refuses an upload: it is a send.
+		var ok bool
+		if dev, ok = h.tokenDevice(w, r, actor, deviceRef); !ok {
 			return
 		}
-		http.Error(w, "no such device", http.StatusNotFound)
-		return
-	}
-	allowed, err := access.Allows(r.Context(), actor, uuid.MustParse(dev.ID), store.ActionSend, h.Keys, h.Sessions)
-	if err != nil || !allowed {
-		http.Error(w, "this credential cannot send on this number", http.StatusForbidden)
-		return
+	} else {
+		// A unique prefix is accepted, the same as everywhere else: the
+		// listing shows a short form, and an identifier you cannot type
+		// back is a trap.
+		dev, err = h.Devices.Resolve(r.Context(), tenant.String(), deviceRef)
+		if err != nil {
+			if errors.Is(err, store.ErrAmbiguous) {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			http.Error(w, "no such device", http.StatusNotFound)
+			return
+		}
+		allowed, err := h.checker().Allows(r.Context(), actor, uuid.MustParse(dev.ID), store.ActionSend)
+		if err != nil || !allowed {
+			http.Error(w, "this credential cannot send on this number", http.StatusForbidden)
+			return
+		}
 	}
 	if h.Storage != nil {
 		if err := h.Storage.Check(r.Context(), tenant); err != nil {
@@ -174,6 +198,16 @@ func (h *UploadHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "refusing to send an empty attachment", http.StatusBadRequest)
 		return
 	}
+	// A token's Send is checked again once WhatsApp holds the file and
+	// before its keys are handed out (F11): a token stopped, narrowed or
+	// gone stale meanwhile gets no keys to send it with.
+	if actor.IsToken() {
+		allowed, err := h.checker().Allows(r.Context(), actor, uuid.MustParse(dev.ID), store.ActionSend)
+		if err != nil || !allowed {
+			http.Error(w, "this credential cannot send on this number", http.StatusForbidden)
+			return
+		}
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(UploadResult{
@@ -184,6 +218,26 @@ func (h *UploadHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}); err != nil {
 		log.Debug("upload response was not delivered", "error", err)
 	}
+}
+
+// tokenDevice is the number a token's upload names: its full canonical id,
+// and Send on it, checked before the number is looked up.
+func (h *UploadHandler) tokenDevice(w http.ResponseWriter, r *http.Request, actor access.Actor, ref string) (store.Device, bool) {
+	id, err := uuid.Parse(ref)
+	if err != nil || id.String() != ref {
+		http.Error(w, "device must be a full id", http.StatusBadRequest)
+		return store.Device{}, false
+	}
+	allowed, err := h.checker().Allows(r.Context(), actor, id, store.ActionSend)
+	var dev store.Device
+	if err == nil && allowed {
+		dev, err = h.Devices.Get(r.Context(), actor.Tenant.String(), id.String())
+	}
+	if err != nil || !allowed {
+		http.Error(w, "this credential cannot send on this number", http.StatusForbidden)
+		return store.Device{}, false
+	}
+	return dev, true
 }
 
 // countingReader counts what passed through, so a limit can be enforced after

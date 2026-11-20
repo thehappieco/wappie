@@ -30,7 +30,7 @@ func TestIndependentDevicePermissions(t *testing.T) {
 	actor := access.Actor{Tenant: h.tenant, User: member.ID}
 	check := func(a access.Actor, action store.DeviceAction, want bool) {
 		t.Helper()
-		got, err := access.Allows(ctx, a, device, action, nil, h.users)
+		got, err := (&access.Checker{Users: h.users}).Allows(ctx, a, device, action)
 		if err != nil || got != want {
 			t.Fatalf("%s allowed=%v want=%v err=%v", action, got, want, err)
 		}

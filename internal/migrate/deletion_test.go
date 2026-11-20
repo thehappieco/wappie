@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -259,6 +260,30 @@ func TestMigration0050Checks(t *testing.T) {
 	}
 }
 
+// downAbove runs the down-step of every embedded migration above n,
+// newest first, so a chain test names only where it stops, and a new
+// migration edits no chain.
+func downAbove(t *testing.T, pool *pgxpool.Pool, n int) {
+	t.Helper()
+	migrations, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var versions []int
+	for _, m := range migrations {
+		if m.Version > n {
+			versions = append(versions, m.Version)
+		}
+	}
+	slices.Sort(versions)
+	slices.Reverse(versions)
+	for _, v := range versions {
+		if _, err := pool.Exec(t.Context(), downStepSQL(t, v)); err != nil {
+			t.Fatalf("%04d down-step: %v", v, err)
+		}
+	}
+}
+
 // downStepSQL reads the transaction out of a migration's header comment, so
 // the statements tested are the ones an operator copies.
 func downStepSQL(t *testing.T, version int) string {
@@ -295,7 +320,7 @@ func downStepSQL(t *testing.T, version int) string {
 	return strings.Join(out, "\n")
 }
 
-// 0050's down-step refuses while 0051 or 0052 is applied, a number is excluded or an
+// 0050's down-step refuses while 0051, 0052 or 0053 is applied, a number is excluded or an
 // event row is not in the ledger, and changes nothing then, the forced
 // policy on devices included; once none holds, it leaves exactly 49's
 // schema, so a binary that knows 49 but not 50 starts on it, and 0050
@@ -356,14 +381,9 @@ func TestMigration0050DownStep(t *testing.T) {
 			t.Fatalf("a refused down-step changed something: %d ledger rows (was %d), version 50 %v, devices forced %v", rows, before, has50, forced)
 		}
 	}
-	// 0052 and 0051 come down first, before any other guard is asked.
+	// 0053, 0052 and 0051 come down first, before any other guard is asked.
 	refused("a migration after 0050 is applied")
-	if _, err := pool.Exec(ctx, downStepSQL(t, 52)); err != nil {
-		t.Fatalf("0052's down-step: %v", err)
-	}
-	if _, err := pool.Exec(ctx, downStepSQL(t, 51)); err != nil {
-		t.Fatalf("0051's down-step: %v", err)
-	}
+	downAbove(t, pool, 50)
 	refused("excluded numbers exist")
 	if _, err := pool.Exec(ctx, `ALTER TABLE devices DISABLE ROW LEVEL SECURITY;
 		UPDATE devices SET deleted_at=NULL, purge_after=NULL, paused=false;

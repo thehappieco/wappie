@@ -49,6 +49,15 @@ type ContractSnapshot struct {
 	Items []ContractSnapshotItem
 	// Labels counts the items' labels by class, never their values.
 	Labels map[label.Class]int
+	// TokenMode: the token mode was on when it was measured. Only then
+	// does each item carry its ordinal and its tokens (step 7's plan,
+	// 6.2): the platform decodes strictly, and tokens on says its side
+	// takes them.
+	TokenMode bool
+	// TokensExpire is the earliest expiry after MeasuredAt of a token it
+	// lists, or nil. An expiry writes nothing, so once it is accepted the
+	// next snapshot is due then (SnapshotSent), and the token leaves it.
+	TokensExpire *time.Time
 }
 
 // ContractSnapshotItem is one number of a snapshot.
@@ -71,6 +80,24 @@ type ContractSnapshotItem struct {
 	// Protected are the subs Wappie's rule says the number cannot lose
 	// (sole_key_holders), each among People, in order.
 	Protected []uuid.UUID
+	// Ordinal is the number's place in its workspace (devices.ordinal),
+	// nil past 9999. Tokens are the platform tokens that hold a permission
+	// Wappie applied on it, by id; empty for none, and for a deleted
+	// number. Both are nil while the token mode is off.
+	Ordinal *int
+	Tokens  []ContractSnapshotToken
+}
+
+// ContractSnapshotToken is one token's standing on a number: never a
+// person, so never in People, Protected or OtherBackups.
+type ContractSnapshotToken struct {
+	ID uuid.UUID
+	// The perms Wappie applied; pending, waiting and refused ones are not
+	// listed.
+	Read, Send, Manage bool
+	// Reads: Read and a grant to the token's identity at the number's
+	// current epoch. Waiting: Read without that grant. Never both.
+	Reads, Waiting bool
 }
 
 // ContractSnapshotPerson is one person's standing on a number.
@@ -180,8 +207,10 @@ func snapshotTx(ctx context.Context, tx pgx.Tx, out *ContractSnapshot) error {
 	}
 	var status string
 	var quota bool
-	if err := tx.QueryRow(ctx, `SELECT t.id IS NOT NULL, coalesce(t.status, ''), `+snapshotQuotaSQL+`
-		FROM (SELECT $1::uuid AS id) w LEFT JOIN tenants t ON t.id = w.id`, out.Workspace).Scan(&out.Local, &status, &quota); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT t.id IS NOT NULL, coalesce(t.status, ''), `+snapshotQuotaSQL+`,
+			coalesce((SELECT mode = 'on' FROM contract_token_state), false)
+		FROM (SELECT $1::uuid AS id) w LEFT JOIN tenants t ON t.id = w.id`, out.Workspace).
+		Scan(&out.Local, &status, &quota, &out.TokenMode); err != nil {
 		return err
 	}
 	if !out.Local {
@@ -193,12 +222,13 @@ func snapshotTx(ctx context.Context, tx pgx.Tx, out *ContractSnapshot) error {
 }
 
 // snapshotItemsTx fills out's items from the workspace's tables, read in
-// tx with deleted numbers visible.
+// tx with deleted numbers visible; with the token mode on, their ordinals
+// and tokens too (snapshotTokensTx).
 func snapshotItemsTx(ctx context.Context, tx pgx.Tx, workspace uuid.UUID, at time.Time, active, quota bool, out *ContractSnapshot) error {
 	// The numbers. The predicate is exactly what 0051's devices trigger
 	// wakes on, so a number never enters the snapshot unannounced.
 	rows, err := tx.Query(ctx, `SELECT id, label, coalesce(pn, ''), status, paused, coalesce(pause_cause, ''),
-			deleted_at IS NOT NULL, purge_after
+			deleted_at IS NOT NULL, purge_after, ordinal
 		FROM devices WHERE tenant_id = $1 AND (lid IS NOT NULL OR pn IS NOT NULL OR last_connected_at IS NOT NULL)
 		ORDER BY id`, workspace)
 	if err != nil {
@@ -210,8 +240,12 @@ func snapshotItemsTx(ctx context.Context, tx pgx.Tx, workspace uuid.UUID, at tim
 		var name, pn, status, cause string
 		var paused, deleted bool
 		var purgeAfter *time.Time
-		if err := row.Scan(&it.ID, &name, &pn, &status, &paused, &cause, &deleted, &purgeAfter); err != nil {
+		var ordinal *int
+		if err := row.Scan(&it.ID, &name, &pn, &status, &paused, &cause, &deleted, &purgeAfter, &ordinal); err != nil {
 			return err
+		}
+		if out.TokenMode {
+			it.Ordinal, it.Tokens = ordinal, []ContractSnapshotToken{}
 		}
 		it.Label = label.Contract(name, pn, it.ID.String())
 		it.Hint = label.HintFromPN(pn)
@@ -316,7 +350,7 @@ func snapshotItemsTx(ctx context.Context, tx pgx.Tx, workspace uuid.UUID, at tim
 	if err != nil {
 		return err
 	}
-	return forEachRow(rows, func(row pgx.Rows) error {
+	err = forEachRow(rows, func(row pgx.Rows) error {
 		var device uuid.UUID
 		var n int
 		if err := row.Scan(&device, &n); err != nil {
@@ -324,6 +358,57 @@ func snapshotItemsTx(ctx context.Context, tx pgx.Tx, workspace uuid.UUID, at tim
 		}
 		if i, ok := index[device]; ok {
 			out.Items[i].OtherBackups = n
+		}
+		return nil
+	})
+	if err != nil || !out.TokenMode {
+		return err
+	}
+	return snapshotTokensTx(ctx, tx, workspace, at, index, out)
+}
+
+// snapshotTokensTx lists, on each live number of out, the platform tokens
+// that hold a permission Wappie applied (step 7's plan, 6.2), from the
+// token tables alone, never from device_permissions: a token is never a
+// person. A token is left out once it can never work again: revoked (the
+// belt counts as revoked, as in its usage), expired at the measurement, or
+// unlisted by a reset's pass. A token Wappie stops on its own (an
+// operator's stop, apply_failed, local_rule, creator_disabled_here) is
+// listed, as the acknowledgement reports it suspended. A deleted number
+// lists none: its perms went with its deletion. Tokens are in id order.
+func snapshotTokensTx(ctx context.Context, tx pgx.Tx, workspace uuid.UUID, at time.Time, index map[uuid.UUID]int, out *ContractSnapshot) error {
+	live := newTokenLiveParts("$2", "t.id", "t.tenant_id")
+	rows, err := tx.Query(ctx, `SELECT d.id, t.id, bool_or(p.perm = 'read'), bool_or(p.perm = 'send'), bool_or(p.perm = 'manage'),
+			t.identity_dropped_at IS NULL AND EXISTS (SELECT 1 FROM device_key_grants g
+				WHERE g.user_id = t.identity_user_id AND g.device_id = d.id AND g.epoch = d.current_epoch),
+			least(t.expires_at, (SELECT k.earliest_expires_at FROM contract_token_sticky k WHERE k.token_id = t.id))
+		  FROM contract_token_perms p
+		  JOIN contract_tokens t ON t.id = p.token_id
+		  JOIN devices d ON d.id = p.device_id AND d.tenant_id = $1 AND d.deleted_at IS NULL
+		 WHERE p.tenant_id = $1 AND p.state = 'applied'
+		   AND `+live.NotRevoked+` AND `+live.NotExpired+` AND `+live.Listed+` AND `+live.Belt+`
+		 GROUP BY d.id, t.id
+		 ORDER BY d.id, t.id`, workspace, at)
+	if err != nil {
+		return err
+	}
+	return forEachRow(rows, func(row pgx.Rows) error {
+		var device uuid.UUID
+		var tok ContractSnapshotToken
+		var grant bool
+		var expires time.Time
+		if err := row.Scan(&device, &tok.ID, &tok.Read, &tok.Send, &tok.Manage, &grant, &expires); err != nil {
+			return err
+		}
+		tok.Reads, tok.Waiting = tok.Read && grant, tok.Read && !grant
+		i, ok := index[device]
+		if !ok {
+			// A number not yet linked is no item of the snapshot.
+			return nil
+		}
+		out.Items[i].Tokens = append(out.Items[i].Tokens, tok)
+		if out.TokensExpire == nil || expires.Before(*out.TokensExpire) {
+			out.TokensExpire = &expires
 		}
 		return nil
 	})
@@ -407,7 +492,8 @@ func (c *Contract) NextSnapshot(ctx context.Context) (ContractSnapshotDue, bool,
 // A park is released for one try only, since its not_found_since stays:
 // one more not_found parks it again at once, and a snapshot refused as
 // invalid (a Wappie bug, which a new binary may have fixed) is parked
-// again by its refusal.
+// again by its refusal: the one measured after this start, since the late
+// refusal of one measured before it parks nothing (SnapshotSent's Again).
 func (c *Contract) SnapshotsDue(ctx context.Context) error {
 	return retryDeadlock(ctx, func() error {
 		_, err := c.pool.Exec(ctx, `UPDATE contract_workspaces w SET snapshot_due_at = clock_timestamp(), parked_at = NULL
@@ -468,8 +554,11 @@ const (
 // ContractSnapshotTimes are the sender's timings: an accepted snapshot's
 // next is due Every later (README 8's hourly), and a failure's after
 // BackoffMin doubled with each failure in a row, up to BackoffMax.
+// Debounce is README 8's wait after a change: an accepted snapshot that
+// lists a token is due again Debounce after its expiry, when that is
+// sooner than Every.
 type ContractSnapshotTimes struct {
-	Every, BackoffMin, BackoffMax time.Duration
+	Every, BackoffMin, BackoffMax, Debounce time.Duration
 }
 
 // SnapshotNotFoundFor is how long a workspace's snapshot is retried after
@@ -501,17 +590,23 @@ type ContractSnapshotRecord struct {
 // SnapshotSent records the outcome of the snapshot of workspace sent as
 // seq and measured at measured (with class, a failure's: a refusal's code,
 // an outcome, a transport's; never a message), by compare-and-set on seq.
-// Accepted: accepted now, due again Every later, the run of failures, a
-// not_found and a park ended. Not found: the run's first not_found kept,
-// and parked once it is SnapshotNotFoundFor old, else the backoff.
-// Refused: parked, with no not_found_since, so no document releases it.
-// Failed: the backoff. A due time someone set after the measurement stands
-// whatever the outcome, unless the outcome's own is sooner (Again), and a
-// failure then counts no try: the snapshot measured after that change is
-// what goes next. So the late outcome of a leader that lost its lock
-// without knowing it yet never puts off what the next leader's start or
-// debounce asked.
-func (c *Contract) SnapshotSent(ctx context.Context, workspace uuid.UUID, seq int64, measured time.Time,
+// expires is the earliest expiry of a token it lists (TokensExpire), or
+// nil. Accepted: accepted now, due again Every later, or Debounce after
+// expires when that is sooner (an expiry writes nothing a trigger could
+// tell, and expiries under Debounce apart share one snapshot); the run of
+// failures, a not_found and a park ended. Not found: the run's first
+// not_found kept, and parked once it is SnapshotNotFoundFor old, else the
+// backoff. Refused: parked, with no not_found_since, so no document
+// releases it. Failed: the backoff. A due time someone set after the
+// measurement stands whatever the outcome, unless the outcome's own is
+// sooner (Again), and a failure or a refusal then counts no try and parks
+// nothing: the snapshot measured after that change is what goes next, and
+// it parks if it is refused too. So the late outcome of a leader that lost
+// its lock without knowing it yet never puts off what the next leader's
+// start or debounce asked, and a snapshot measured before a switch of the
+// token mode, refused for what the switch changed, never parks the
+// workspace the switch released.
+func (c *Contract) SnapshotSent(ctx context.Context, workspace uuid.UUID, seq int64, measured time.Time, expires *time.Time,
 	outcome ContractSnapshotOutcome, class string, times ContractSnapshotTimes) (ContractSnapshotRecord, error) {
 	var rec ContractSnapshotRecord
 	err := pg.InTx(ctx, c.pool, func(tx pgx.Tx) error {
@@ -556,7 +651,11 @@ func (c *Contract) SnapshotSent(ctx context.Context, workspace uuid.UUID, seq in
 		switch outcome {
 		case SnapshotAccepted:
 			accepted, errClass, rec.Tries, rec.NotFoundSince = &now, nil, 0, nil
-			next(now.Add(times.Every))
+			at := now.Add(times.Every)
+			if expires != nil && expires.Add(times.Debounce).Before(at) {
+				at = expires.Add(times.Debounce)
+			}
+			next(at)
 		case SnapshotNotFound:
 			if !rec.Again {
 				if rec.NotFoundSince == nil {
@@ -569,6 +668,10 @@ func (c *Contract) SnapshotSent(ctx context.Context, workspace uuid.UUID, seq in
 			}
 			backoff()
 		case SnapshotRefused:
+			if rec.Again {
+				backoff()
+				break
+			}
 			rec.Parked, parked, rec.NotFoundSince = true, &now, nil
 		case SnapshotFailed:
 			backoff()

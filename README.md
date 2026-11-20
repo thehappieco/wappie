@@ -131,6 +131,15 @@ nothing that touches WhatsApp; `send` adds outbound messages and attachments;
 narrowest one that works, because a key is the credential most likely to leak
 and a leaked `send` key is a message to somebody's customers.
 
+These keys are for a self-hosted installation. One connected to The Happie
+Co issues no general key once its token mode is on, or once `whatserverd
+tokens retire-keys -apply` has run: `key` and `bootstrap` refuse, and a
+program uses a token made in the platform's console
+([REST](docs/rest-api.md#authentication-and-workspace-isolation)).
+`-self-hosted` on `key` or `bootstrap` only asserts that the installation is
+off the platform (the contract off, tokens off, no retirement) and refuses
+otherwise. It never lets a key through.
+
 Then use the public account CLI in [packages/cli](packages/cli/README.md) to sign
 up with that code. Do this **before** pairing
 anything: pairing generates the device's archive key and seals it to the
@@ -344,10 +353,10 @@ asset, never from a local build); `npm install` in `packages/cli`,
 JavaScript changes the reader's PCR0, so the client's pin moves only in a
 reader release. Between reader releases `go.mod` alone may move ahead, for
 the server (kit v0.5.0's platform wrap check and relying party rule, then
-v0.8.0's contract client and THCSEAL envelopes, then v0.10.1's settings part,
-with the client still on v0.3.0); it never trails the client. `TestKitVersionsAgree`
-checks that, and that the client's manifest, its lockfile and every package
-linking it name the same asset.
+v0.8.0's contract client and THCSEAL envelopes, then v0.10.1's settings and
+token parts, with the client still on v0.3.0); it never trails the client.
+`TestKitVersionsAgree` checks that, and that the client's manifest, its
+lockfile and every package linking it name the same asset.
 
 Regenerate a fixture deliberately, never as a way to make a test pass (and,
 for the seal and frame fixtures, in the kit as well):
@@ -455,6 +464,11 @@ A key acting as a service reaches only the devices the account was granted.
 Revoking the grant, or the key, is revoking the access; nothing was ever sent
 in the clear for anyone to keep.
 
+This is how a self-hosted installation gives a system access. One that takes
+The Happie Co's tokens refuses a standing service account's invitation
+(`409 tokens_are_the_platforms`), issued or redeemed, and the system uses a
+platform token instead.
+
 ## Retention and erasure
 
 Nothing expires by default. A tenant that wants a window sets one:
@@ -486,6 +500,16 @@ reset ([resetting the archive](docs/devices.md#resetting-the-archive)). Deleting
 number keeps it 30 days, readable by nobody and recoverable by an owner; the
 purge then removes its archive and its attachment objects
 ([device lifecycle](docs/devices.md#deletion-and-recovery)).
+
+An API key goes 13 months after its end, its revocation or its expiry,
+whichever came first ([ended API keys](docs/deployment.md#ended-api-keys)). An
+assistant connection's record goes with its key: the connection, its chats,
+its send ledger, its usage counts and its notices. An AI integration's results
+stay. On an installation connected to The Happie Co, the record of a
+retirement of Wappie's keys names each key it revoked (its name, prefix,
+class, creator's sub or email address, and the service it acted as) for 13
+months after the run; its counts and the OS user it ran as stay
+([retiring Wappie's keys](docs/deployment.md#retiring-wappies-keys)).
 
 Logs mask identifiers at every level: a JID keeps its server and last four
 digits, an email its first letter and domain. `WS_LOG_WIRE` puts whatsmeow's own
