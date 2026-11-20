@@ -76,7 +76,8 @@ func main() {
 // commandList is what an unknown command line prints.
 const commandList = `usage: whatserverd [serve]
        whatserverd bootstrap | tenants | key | device-key | invite | reset-archive | storage |
-                   retention | erase | reproject | mcp-relay-secret | devices | deletions ...
+                   retention | erase | reproject | mcp-relay-secret | devices | deletions |
+                   reader-alert-test ...
        whatserverd contract check [--other|--only-current|--only-other] | status [--check] |
                    diff [--tenant T] | mode off|observe | settings off|read|on|status
        whatserverd contract-secret seal | promote | unpromote | drop | reset | capabilities ...
@@ -146,6 +147,8 @@ func runCommand(args []string, serve func() error) error {
 		return contractCommand(rest, os.Stdout)
 	case "contract-secret":
 		return contractSecret(rest, defaultSecretCommand())
+	case "reader-alert-test":
+		return readerAlertTest(rest, os.Stdout)
 	}
 	return usageError{arg: strings.Join(args, " ")}
 }
@@ -945,6 +948,11 @@ func (a *app) routes() http.Handler {
 	// The hosted assistant connector: consents, the loopback relay to the
 	// reader process on this host and the signed relay to any attested
 	// reader, mounted only where a reader runs.
+	// The operator hears when an attested reader cannot vouch for its clock
+	// (docs/mcp-enclave.md §5.1), with an operator address and a mail
+	// server, whatever sign-in through the platform is; the log says once
+	// whether it is on.
+	clockAlerts := readerClockAlerts(a.cfg, a.log)
 	if a.cfg.MCP.Enabled {
 		a.mcp = &mcpauth.Handler{
 			Connections: store.NewMCPConnections(a.pools.API), APIKeys: a.apiKeys, Users: a.users,
@@ -1009,6 +1017,7 @@ func (a *app) routes() http.Handler {
 		} else if a.cfg.MCP.UnknownAllowed() {
 			a.log.Warn("untested assistants and tokens may connect, but no new-assistant e-mail can go (WS_SMTP_ADDR, WS_MAIL_FROM and WS_MCP_NOTICE_ORIGIN): text for them is refused")
 		}
+		a.mcp.ClockAlerts = clockAlerts
 		// The renewal notice carries no link, so it needs a mail server and
 		// nothing else (docs/mcp-enclave.md §19.35).
 		if a.cfg.Signup.SMTP.Configured() {

@@ -204,6 +204,19 @@ from reader 0.6.1 `state` may also be `"clock_unknown"`, and the object adds
 (the reader's clock, §10: whether it vouches for it, its uncertainty, its
 clock minus the NSM's, and its clock minus the timestamps on Go's verified
 requests, the median over a window at the timestamps' 1 s resolution).
+A 0.6.1 reader may also add
+`"clock_code":<code>|null,"clock_disagree_kms":<integer>|null,"kms_skew_lo_ms":<integer>|null,"kms_skew_hi_ms":<integer>|null,"clock_corr_hour_ms":<integer>|null,"clock_corr_day_ms":<integer>|null`
+(the reason it gives for its clock, how many times since its Node process
+started KMS's Date range contradicted its clock helper, that range, and the
+helper's corrections over the last hour and day), and may send the whole
+health object, with `"code":"clock_unknown"` added, as the body of its 503
+`clock_unknown`. Go keeps `clock_code` only when it is one of `ok`,
+`helper_stale`, `nsm_stale`, `boot_refused`, `cap_exceeded`,
+`chronyd_gone`, `nsm_error`, `unc_high`, `kms_proof`, `nsm_node_proof` and
+`starting` (the clock helper's own state until its first good sample),
+and `clock_disagree_kms` only as a whole number from 0; the others read as
+the four above. A 503 whose body is not this reader's ok health object is a
+bare code, as before.
 Go reads the clock fields apart (`internal/mcpauth/signed_relay.go`
 `ReaderHealth`): a field that is missing (an older reader), null, not a
 number (not a boolean for `clock_ok`) or more than a day either way is left
@@ -234,7 +247,78 @@ signed health check; a clock skew beyond the limit is the likely cause`
 with `reader`, `limit_s=60` and, when known, `last_authenticated_skew_s`,
 `last_authenticated_skew_age_s`, `last_unauthenticated_skew_s` and
 `last_unauthenticated_skew_age_s`. The other cause is a relay secret out of
-step (rotation, §4). The miss lines are unchanged.
+step (rotation, §4). The miss lines are unchanged, but for the reader's
+clock fields when a 503 `clock_unknown` carried the health object.
+
+**Clock alerts.** Go mails the operator when an attested reader cannot
+vouch for its clock (`internal/mcpauth/clock_alerts.go`). They are on when
+`WS_SECURITY_ALERT_EMAIL` and a mail server (`WS_SMTP_ADDR`,
+`WS_MAIL_FROM`) are set, whether or not platform sign-in is wired, and the
+start line says `reader clock alerts on` or `reader clock alerts off` with
+the reason. Each health check is **OK** (200 with `clock_ok` true), **BAD**
+(200 with `clock_ok` false or `state` `clock_unknown`, or a 503
+`clock_unknown` with or without the health object) or **DOWN** (anything
+else). A reader that never sent `clock_ok` (0.6.0) is never tracked. An
+episode opens at the first BAD and closes only at an OK; DOWN, and a new
+boot that has not yet answered OK, keep it open. The mail goes to
+`WS_SECURITY_ALERT_EMAIL` alone, with the subject `Wappie reader alert:
+<word>`, a fixed paragraph per word, whole numbers under the word's own
+keys and the UTC time; it carries no reader id, no boot id and no text from
+the reader or the parent. The words:
+
+| Word | When | Numbers |
+|---|---|---|
+| `cap_exceeded` | the first BAD answer of a boot whose `clock_code` is `cap_exceeded` | `clock_corr_hour_ms`, `clock_corr_day_ms`, `clock_unc_ms`, `nsm_skew_ms` |
+| `nsm_kms_disagree` | `clock_disagree_kms` above 0 and other than the last value seen for this boot | `kms_skew_lo_ms`, `kms_skew_hi_ms`, `nsm_skew_ms`, `clock_unc_ms` |
+| `clock_unknown` | an episode still open 25 minutes after it began, and again every 23 h while it stays open | `minutes_unknown`, `minutes_unanswered`, `clock_unc_ms`, `nsm_skew_ms`, `answering` (0 or 1) |
+| `watchdog_restart` | the first answer from a new `boot_id` with the same `pcr0`, when the boot before last answered BAD within 30 minutes (a new `pcr0` is a deploy or a rollback, not mailed); a manual same-image restart during a fault is mailed the same | `minutes_bad_before`, `minutes_unanswered`, `clock_ok_now` (0 or 1), `clock_unc_ms` |
+
+`clock_code` itself is never mailed. A fault the parent's watchdog fixes is
+back in about 12 minutes, so it mails only `watchdog_restart` (and
+`cap_exceeded` or `nsm_kms_disagree` when they apply); `clock_unknown`
+is a fault the watchdog did not fix, a refault within its 24 h hold, or a
+dead watchdog. The 25 minutes is a named constant the owner may change
+(`clockUnknownAfter`). The two-line page and the warn thresholds of the
+operations runbook stay log-only.
+
+Each word is mailed at most once per 23 h, across restarts and processes.
+Its claim is written to `reader-alerts.json` in the directory of the
+deletion ledger (`/var/lib/wappie` by default), mode 0600 and written
+atomically, under a `flock` on `reader-alerts.lock` beside it, **before**
+the mail is sent: two processes never both send, and a crash between the
+claim and the send loses that window's mail rather than sending it twice.
+A send that fails gives the claim back, only if it is still this one's, and
+is tried again at most every 10 minutes. The same file keeps each reader's
+last `boot_id`, `pcr0`, class and episode, so a restart of wappie-api keeps
+the restart inference. A file that is not this state stops the mail, with a
+WARN at most every 10 minutes, and is never overwritten. Every decision is
+logged as `event=reader_alert cause=<word> outcome=sent|suppressed|failed`.
+
+`whatserverd reader-alert-test` sends the test alert: the subject word
+`test`, never used for a fault, over the real `clock_unknown` alert's body
+(its paragraph and each of its keys, at 0) with `test: 1` as its first
+line, so it shows how a real alert's body arrives. It refuses unless
+`WS_SECURITY_ALERT_EMAIL` and a mail server are set, and keeps its own 23 h window in `reader-alerts-test.json`: a
+second run refuses and prints when the next is allowed. Run it as the
+service user with the service's environment and state directory, for
+example `sudo systemd-run --wait --pipe --collect -p User=wappie -p
+EnvironmentFile=/opt/wappie/runtime.env -p StateDirectory=wappie
+/opt/wappie/release/bin/whatserverd reader-alert-test`.
+
+Known gaps, accepted while there are no real customers:
+- **The blind case.** The restart is inferred from what Go sees. If Go saw
+  nothing through the whole fault, or the new boot never answers, no
+  `watchdog_restart` goes; the second is mailed as `clock_unknown` with
+  `answering` 0 and `minutes_unanswered`.
+- **One path.** Nothing is mailed while wappie-api, the mail server or the
+  8443 path is down, or while the parent cuts that path. Before real
+  customers, name what watches wappie-api itself.
+- **One address.** `WS_SECURITY_ALERT_EMAIL` also turns on the operator's
+  copy of the account-key-changed and step-up mails
+  (`docs/platform-sign-in.md`), and it needs `WS_PLATFORM_ISSUER`, so
+  turning platform sign-in off silences these alerts. Before the first
+  account that is not the owner's, either decouple the operator copy of
+  those mails from it or confirm that Wappie's privacy text covers it.
 
 On listener 5443, `/internal` and `/internal/*` always answer 404. On 5444 every
 other path answers 404. The Host header is checked against

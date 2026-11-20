@@ -59,7 +59,8 @@ type Platform struct {
 	// LocalLogin is on unless set.
 	LocalLogin LocalLogin
 	// AlertEmail, when set and mail is configured, also receives the alert
-	// raised when a sign-in presents another account key than the pinned one.
+	// raised when a sign-in presents another account key than the pinned one,
+	// and alone receives the reader clock alerts (docs/mcp-enclave.md §5.1).
 	AlertEmail string
 }
 

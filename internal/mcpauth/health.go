@@ -41,7 +41,9 @@ const (
 
 // MonitorReaders asks every attested reader for its health once a minute
 // until ctx ends. Nothing it learns changes what this server does; it is
-// there so the log shows a reader's state before a person notices.
+// there so the log shows a reader's state before a person notices, and so
+// that the operator is mailed when a reader cannot vouch for its clock
+// (clock_alerts.go).
 func (h *Handler) MonitorReaders(ctx context.Context) {
 	for _, a := range h.Attested {
 		go h.monitorReader(ctx, a, healthEvery)
@@ -84,12 +86,17 @@ func (h *Handler) checkReader(parent context.Context, a *AttestedReader, failure
 		var status *HealthStatusError
 		if errors.As(err, &status) && status.Code != "" {
 			attrs = append(attrs, "code", status.Code)
+			// From 0.6.1 the 503 carries the reader's clock.
+			if status.Health != nil {
+				attrs = append(attrs, readerClockAttrs(*status.Health)...)
+			}
 		}
 		if failures >= healthFailures {
 			h.log().Warn("an attested reader is not answering its health check", attrs...)
 		} else {
 			h.log().Info("an attested reader missed a health check", attrs...)
 		}
+		h.ClockAlerts.Observe(parent, a.ID, ReaderHealth{}, err, time.Now())
 		return failures
 	}
 	if failures >= healthFailures {
@@ -129,6 +136,8 @@ func (h *Handler) checkReader(parent context.Context, a *AttestedReader, failure
 	default:
 		h.log().Info("attested reader health", attrs...)
 	}
+	// After the line, which a mail must not hold up.
+	h.ClockAlerts.Observe(parent, a.ID, health, nil, time.Now())
 	return 0
 }
 
@@ -139,6 +148,9 @@ func readerClockAttrs(health ReaderHealth) []any {
 	if health.ClockOK != nil {
 		attrs = append(attrs, "clock_ok", *health.ClockOK)
 	}
+	if health.ClockCode != nil {
+		attrs = append(attrs, "clock_code", *health.ClockCode)
+	}
 	for _, f := range []struct {
 		key string
 		ms  *int64
@@ -146,6 +158,11 @@ func readerClockAttrs(health ReaderHealth) []any {
 		{"clock_unc_ms", health.ClockUncMS},
 		{"nsm_skew_ms", health.NSMSkewMS},
 		{"go_skew_ms", health.GoSkewMS},
+		{"clock_disagree_kms", health.ClockDisagreeKMS},
+		{"kms_skew_lo_ms", health.KMSSkewLoMS},
+		{"kms_skew_hi_ms", health.KMSSkewHiMS},
+		{"clock_corr_hour_ms", health.ClockCorrHourMS},
+		{"clock_corr_day_ms", health.ClockCorrDayMS},
 	} {
 		if f.ms != nil {
 			attrs = append(attrs, f.key, *f.ms)
