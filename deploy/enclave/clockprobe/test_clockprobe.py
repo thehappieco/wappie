@@ -41,6 +41,7 @@ class FakeSystem:
         self.steps = []
         self.holders = []
         self.fail = set()
+        self.listening = None
 
     def run(self, argv, timeout=60):
         self.calls.append(argv)
@@ -53,6 +54,9 @@ class FakeSystem:
         h = FakeHolder()
         self.holders.append(h)
         return h
+
+    def kms_listening(self, unit):
+        return next(self.listening) if self.listening is not None else True
 
     def sleep(self, s):
         pass
@@ -83,17 +87,16 @@ class ControlTest(unittest.TestCase):
         self.assertEqual(s.calls, [["systemctl", "stop", "kms-proxy"]])
         self.assertEqual(s.holders, [])
         self.assertTrue(c.handle("kms unblock")["ok"])
-        self.assertEqual(s.calls[1:], [["systemctl", "reset-failed", "kms-proxy"], ["systemctl", "start", "kms-proxy"],
-                                       ["systemctl", "is-active", "--quiet", "kms-proxy"]])
+        self.assertEqual(s.calls[1:], [["systemctl", "reset-failed", "kms-proxy"], ["systemctl", "start", "kms-proxy"]])
 
-    def test_unblock_retries_until_the_unit_is_active(self):
+    def test_unblock_retries_until_the_proxy_listens_twice(self):
         c, s = make("--allow-kms-block")
         c.handle("kms block hold")
-        answers = iter([1, 1, 0])
-        run = s.run
-        s.run = lambda argv, timeout=60: (next(answers), "") if argv[:2] == ["systemctl", "is-active"] else run(argv, timeout)
+        # try 1: not listening; try 2: listening then gone (a crash loop); try 3: listening twice
+        s.listening = iter([False, True, False, True, True])
         self.assertTrue(c.handle("kms unblock")["ok"])
         self.assertEqual(sum(1 for a in s.calls if a[:2] == ["systemctl", "start"]), 3)
+        self.assertEqual(sum(1 for a in s.calls if a[:2] == ["systemctl", "reset-failed"]), 3)
         self.assertFalse(c.kms_blocked)
 
     def test_unblock_reports_a_unit_that_never_comes_back(self):
@@ -102,35 +105,55 @@ class ControlTest(unittest.TestCase):
         s.fail.add(("systemctl", "start", "kms-proxy"))
         a = c.handle("kms unblock")
         self.assertFalse(a["ok"])
-        self.assertIn("not active after", a["error"])
+        self.assertIn("does not listen", a["error"])
         self.assertEqual(sum(1 for x in s.calls if x[:2] == ["systemctl", "start"]), control.UNBLOCK_TRIES)
 
 
 class HolderTest(unittest.TestCase):
-    def test_stop_frees_the_port_while_accept_waits(self):
+    def free_port(self):
+        import socket
+        p = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        p.bind(("127.0.0.1", 0))
+        port = p.getsockname()[1]
+        p.close()
+        return port
+
+    def test_stop_frees_the_port_with_a_connection_held(self):
         import socket
         import struct
-        probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        probe.bind(("127.0.0.1", 0))
-        port = probe.getsockname()[1]
-        probe.close()
-        h = control.Holder(port=port, family=socket.AF_INET, addr=("127.0.0.1", port))
+        port = self.free_port()
+        h = control.Holder(port=port, family=socket.AF_INET, host="127.0.0.1")
         h.start()
+        self.assertTrue(h.alive())
         held = socket.create_connection(("127.0.0.1", port), timeout=2)
-        time.sleep(0.2)  # accepted and held; the thread is back in accept()
-        self.assertEqual(len(h.conns), 1)
+        held.settimeout(0.5)
+        with self.assertRaises(socket.timeout):
+            held.recv(1)  # held: no answer, no close
         # Reset it from the client side, so TCP leaves no TIME_WAIT on the
         # port (vsock has none): only a listener still bound can refuse the
         # bind below.
         held.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
         held.close()
-        time.sleep(0.1)
+        proc = h.proc
         h.stop()
-        self.assertFalse(h.thread.is_alive())
+        self.assertIsNotNone(proc.poll())
         again = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         again.bind(("127.0.0.1", port))  # the proxy's bind
         again.listen(1)
         again.close()
+
+    def test_a_port_in_use_is_an_error(self):
+        import socket
+        port = self.free_port()
+        busy = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        busy.bind(("127.0.0.1", port))
+        busy.listen(1)
+        try:
+            with self.assertRaises(OSError):
+                control.Holder(port=port, family=socket.AF_INET, host="127.0.0.1").start()
+        finally:
+            busy.close()
+
 
 
 

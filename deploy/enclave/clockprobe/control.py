@@ -54,55 +54,63 @@ def offset_ns():
     return time.time_ns() - time.monotonic_ns()
 
 
+# The holder runs in a child process. A listener closed from Python while a
+# thread is blocked in accept() on it stays bound on AF_VSOCK (shutdown() does
+# not wake it there), so the KMS proxy could not bind vsock 8000 again until
+# the control server exited (probe runs 20261121T000250Z and T023345Z).
+# Killing the child frees its listener and every held connection.
+HOLD_CODE = r"""
+import socket, sys
+family, port, host = int(sys.argv[1]), int(sys.argv[2]), sys.argv[3]
+s = socket.socket(family, socket.SOCK_STREAM)
+s.bind((int(host), port) if family == getattr(socket, "AF_VSOCK", -1) else (host, port))
+s.listen(64)
+print("listening", flush=True)
+held = []
+while True:
+    c, _ = s.accept()
+    held.append(c)
+"""
+
+
 class Holder:
     """Listens on vsock 8000 and holds every connection open, silent: KMS
     neither answers nor refuses."""
 
-    def __init__(self, port=KMS_PORT, family=None, addr=None):
+    def __init__(self, port=KMS_PORT, family=None, host=None):
         self.port = port
         self.family = family if family is not None else getattr(socket, "AF_VSOCK", None)
-        self.addr = addr if addr is not None else (VMADDR_CID_ANY, port)
-        self.sock = None
-        self.conns = []
-        self.thread = None
+        self.host = host if host is not None else str(VMADDR_CID_ANY)
+        self.proc = None
 
     def start(self):
-        self.sock = socket.socket(self.family, socket.SOCK_STREAM)
-        self.sock.bind(self.addr)
-        self.sock.listen(64)
-        self.thread = threading.Thread(target=self._accept, daemon=True)
-        self.thread.start()
+        self.proc = subprocess.Popen([sys.executable, "-c", HOLD_CODE, str(int(self.family)), str(self.port), self.host],
+                                     stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        line = self.proc.stdout.readline().strip()
+        if line != "listening":
+            self.stop()
+            raise OSError(f"the holder did not listen on {self.port}: {line or 'no answer'}")
 
-    def _accept(self):
-        while True:
-            try:
-                conn, _ = self.sock.accept()
-            except OSError:
-                return
-            self.conns.append(conn)
+    def alive(self):
+        return self.proc is not None and self.proc.poll() is None
 
     def stop(self):
-        # close() alone does not free the port: the accept thread still holds
-        # the file and the listener stays bound, so the KMS proxy's restart
-        # fails to bind vsock 8000 (probe run 20261121T000250Z). shutdown()
-        # wakes accept(); the thread returns and the close then frees it.
-        if self.sock is not None:
+        if self.proc is None:
+            return
+        try:
+            self.proc.kill()
+        except OSError:
+            pass
+        try:
+            self.proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            pass
+        for f in (self.proc.stdout, self.proc.stderr):
             try:
-                self.sock.shutdown(socket.SHUT_RDWR)
-            except OSError:
+                f.close()
+            except (OSError, AttributeError):
                 pass
-            if self.thread is not None:
-                self.thread.join(timeout=5)
-            try:
-                self.sock.close()
-            except OSError:
-                pass
-        for c in self.conns:
-            try:
-                c.close()
-            except OSError:
-                pass
-        self.sock, self.conns = None, []
+        self.proc = None
 
 
 class System:
@@ -121,6 +129,14 @@ class System:
 
     def holder(self):
         return Holder()
+
+    def kms_listening(self, unit):
+        """The unit's own main process listens on vsock 8000 (from ss)."""
+        rc, pid = self.run(["systemctl", "show", "-p", "MainPID", "--value", unit])
+        if rc != 0 or not pid.strip().isdigit() or pid.strip() == "0":
+            return False
+        rc, out = self.run(["ss", "-Hlp", "--vsock"])
+        return rc == 0 and any(f":{KMS_PORT} " in line and f"pid={pid.strip()}," in line for line in out.splitlines())
 
     def sleep(self, s):
         time.sleep(s)
@@ -170,22 +186,23 @@ class Control:
             self.holder.stop()
             self.holder = None
         if self.kms_blocked and self.args.kms_unit:
-            # A start that fails on a port still bound counts against the
-            # unit's start limit: clear it, start, and wait until it is
-            # active, else report the unblock as failed (never a silent
-            # proxy that stays down for the rest of the run).
+            # A start that fails to bind counts against the unit's start
+            # limit: clear it and start again until the unit's own process
+            # listens on vsock 8000 on two looks a second apart (a unit that
+            # crash-loops is "active" for an instant), else report the
+            # unblock as failed rather than leave KMS down for the run.
             unit = self.args.kms_unit
             for attempt in range(UNBLOCK_TRIES):
                 self.sys.sleep(1)
                 self.sys.run(["systemctl", "reset-failed", unit])
                 rc, out = self.sys.run(["systemctl", "start", unit])
-                if rc == 0:
+                self.sys.sleep(2)
+                if rc == 0 and self.sys.kms_listening(unit):
                     self.sys.sleep(1)
-                    rc, out = self.sys.run(["systemctl", "is-active", "--quiet", unit])
-                    if rc == 0:
+                    if self.sys.kms_listening(unit):
                         break
             else:
-                return {"ok": False, "error": f"systemctl start {unit}: not active after {UNBLOCK_TRIES} tries: {out}"}
+                return {"ok": False, "error": f"{unit} does not listen on vsock {KMS_PORT} after {UNBLOCK_TRIES} tries"}
         self.kms_blocked = False
         return {"ok": True}
 
