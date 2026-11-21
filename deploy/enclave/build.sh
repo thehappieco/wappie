@@ -147,7 +147,10 @@ mkdir -p "$out"
 # also kept, as $out/tarballs/<name>, and published on the reader release
 # (docs/mcp-enclave.md §9): a third party rebuilding this image then needs
 # nothing beyond Wappie's release. Links between these packages
-# (file:../client) are recorded, not fetched.
+# (file:../client) are recorded, not fetched. The C source the image builds,
+# chrony's release tarball, is vendored in deploy/enclave/chrony; its name,
+# version and sha256 are recorded under "sources", once checked against the
+# .sha256 file next to it (the Dockerfile checks it again).
 python3 - "$context" "$context/dependencies.json" "$out/tarballs" <<'PY'
 import base64, hashlib, json, pathlib, re, sys, urllib.request
 
@@ -189,7 +192,21 @@ for name in LOCKS:
                              "integrity": entry["integrity"], "sha256": hashlib.sha256(data).hexdigest(),
                              "file": f"tarballs/{file}"})
     locks.append({"file": name, "sha256": hashlib.sha256(raw).hexdigest(), "packages": packages})
-target.write_text(json.dumps({"locks": locks, "tarballs": tarballs}))
+sources = []
+chrony = context / "deploy/enclave/chrony"
+for sums in sorted(chrony.glob("*.sha256")):
+    expected, _, file = sums.read_text().partition("  ")
+    file = file.rstrip("\n")
+    version = re.fullmatch(r"chrony-([0-9]+\.[0-9]+(?:\.[0-9]+)?)\.tar\.gz", file)
+    if not version or not re.fullmatch(r"[0-9a-f]{64}", expected) or sums.name != file + ".sha256":
+        sys.exit(f"build.sh: {sums.name} is not '<sha256>  chrony-<version>.tar.gz' for its own tarball")
+    if not (chrony / file).is_file() or hashlib.sha256((chrony / file).read_bytes()).hexdigest() != expected:
+        sys.exit(f"build.sh: {file} does not match {sums.name}")
+    sources.append({"name": "chrony", "version": version[1], "url": f"https://chrony-project.org/releases/{file}",
+                    "sha256": expected, "file": f"deploy/enclave/chrony/{file}"})
+if len(sources) != 1 or sorted(p.name for p in chrony.glob("*.tar.gz")) != [sources[0]["file"].rsplit("/", 1)[-1]]:
+    sys.exit("build.sh: deploy/enclave/chrony must hold exactly one chrony tarball and its .sha256")
+target.write_text(json.dumps({"locks": locks, "tarballs": tarballs, "sources": sources}))
 PY
 eif=wappie-reader-$version.eif
 nitro-cli build-enclave --docker-uri "$tag" --output-file "$out/$eif" > "$out/build-enclave.json"

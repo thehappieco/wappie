@@ -164,7 +164,10 @@ export function createAttestor({ attest, readerId, readerVersion, resource, spki
       const fields = { request_id: requestId, resource, tls_spki_sha256: tls, policy_sha256: policyHash, reader_version: readerVersion }
       const userData = descriptor === undefined ? attestationUserData(fields) : attestationUserDataV2(fields, descriptorSHA256(descriptor))
       let document
-      try { document = await attest({ publicKey: publicKey ?? null, nonce, userData }) } catch { throw new AttestationError('attest_failed') }
+      // Too many documents asked for at once (enclave/attest.mjs): 503 attest_busy, worth a retry.
+      try { document = await attest({ publicKey: publicKey ?? null, nonce, userData }) } catch (error) {
+        throw new AttestationError(error?.message === 'attest_busy' ? 'attest_busy' : 'attest_failed')
+      }
       if (!Buffer.isBuffer(document) || document.length === 0 || document.length > MAX_DOCUMENT_BYTES) throw new AttestationError('attest_failed')
       const pcr0 = decodeAttestationDocument(document).pcrs[0]
       if (!/^[0-9a-f]{96}$/.test(pcr0 ?? '')) throw new AttestationError('attest_failed')

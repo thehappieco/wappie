@@ -141,20 +141,21 @@ jobs:
         working-directory: packages/client
       # The attested reader's image measures packages/client's build into
       # PCR0: what it keeps of the client must equal release A's (c9ec561),
-      # or the change needs a reader release. Type-only edits pass. c9ec561
-      # is the gate's fixed point, not the pilot's image: reader 0.6.0 was
-      # built from 2b540ba, whose client differs.
+      # or the change needs a reader release. Type-only edits pass. Reader
+      # 0.6.1 (a9b06bc) measures c9ec561's client, so the gate equals the
+      # release's client; 0.6.0 was built from 2b540ba, whose client differs.
       - name: The reader's measured client is release A's
         run: |
           git fetch --no-tags --depth=1 origin c9ec561ca2cc669cdec12d5d90523269c3c2396a
           scripts/check-client-dist.sh c9ec561ca2cc669cdec12d5d90523269c3c2396a
       # The image also measures packages/mcp and packages/mcp-http whole
-      # (src/ and test/ pruned), the attachment workers, nsm-attest and
-      # media-jail. They must equal f7babbe's, main when this check began.
+      # (src/ and test/ pruned), the attachment workers, nsm-attest with
+      # nsm-timefeed, media-jail and chrony. They must equal a9b06bc's, reader
+      # 0.6.1's release commit.
       - name: The reader's other measured inputs are unchanged
         run: |
-          git fetch --no-tags --depth=1 origin f7babbeeb0a386981eee8d1cee5c2dd071a9d2df
-          scripts/check-reader-inputs.sh f7babbeeb0a386981eee8d1cee5c2dd071a9d2df
+          git fetch --no-tags --depth=1 origin a9b06bc8daeedfcec93b1fd9706b9536231ea561
+          scripts/check-reader-inputs.sh a9b06bc8daeedfcec93b1fd9706b9536231ea561
       - run: npm ci && npm test
         working-directory: packages/cli
       - run: npm ci && npm test && npm pack --dry-run
@@ -223,12 +224,15 @@ jobs:
       - name: Deploy scripts parse
         run: |
           for f in deploy/enclave/*.sh; do bash -n "$f"; done
-          shellcheck deploy/enclave/*.sh deploy/enclave/probe/*.sh deploy/enclave/jailcheck/*.sh
+          for f in deploy/enclave/chrony/test-chrony.sh deploy/enclave/chrony/wappie-clock-start; do sh -n "$f"; done
+          shellcheck deploy/enclave/*.sh deploy/enclave/probe/*.sh deploy/enclave/jailcheck/*.sh deploy/enclave/clockprobe/*.sh \
+            deploy/enclave/chrony/test-chrony.sh deploy/enclave/chrony/wappie-clock-start
           python3 -m py_compile deploy/enclave/kms/render.py
           python3 -m unittest discover -s deploy/enclave -p 'test_*.py'
           python3 -m unittest discover -s deploy/enclave/kms -p 'test_*.py'
           python3 -m unittest discover -s deploy/enclave/probe -p 'test_*.py'
           node --check deploy/enclave/probe/probe-report.mjs
+          for f in deploy/enclave/clockprobe/*.mjs; do node --check "$f"; done
           for f in deploy/enclave/jailcheck/*.mjs; do node --check "$f"; done
           for t in deploy/enclave/kms/*.template.json; do
             python3 deploy/enclave/kms/render.py "$t" --role-arn arn:aws:iam::123456789012:role/ci \
@@ -244,7 +248,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: make media-jail-check
+      - run: make nsm-attest-check
       - run: make enclave-image ENCLAVE_TAG=wappie-reader:ci
+      # The clock: the sign of nsm-timefeed's samples, and chronyd's step,
+      # maxchange exits and boot gate, with the image's own chronyd and
+      # configuration (deploy/enclave/chrony/test-chrony.sh).
+      - run: make chrony-check ENCLAVE_TAG=wappie-reader:ci
+      # The clock probe (never released) still builds on this image and its
+      # unit tests pass; its scenarios run only in an enclave.
+      - run: make clockprobe-check ENCLAVE_TAG=wappie-reader:ci
       # The jail itself: the escape tests, media-jail's signals and table, and
       # every corpus file through the workers under media-jail, natively and
       # with the 4.14 blob kernel's fallbacks.

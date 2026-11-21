@@ -36,6 +36,16 @@ env | grep -q "^NODE_ENV=production$" || fail "NODE_ENV is not production"
 if env | grep -E "^(WAPPIE|WS|VIPS|MEDIA_JAIL)_" > /dev/null; then fail "reader configuration in the environment"; fi
 
 [ ! -e /var/log/apk.log ] || fail "/var/log/apk.log is in the image"
+# Every file time is SOURCE_DATE_EPOCH (the Dockerfile sets them all), so a
+# cached stage or a checkout cannot carry its own time into PCR0. What
+# Docker adds to a running container is left out (/.dockerenv, the /etc/mtab
+# link, the three /etc mounts), and so are / and /etc, whose times adding
+# them changes.
+sde=$(stat -c %Y /entrypoint.sh)
+odd=$(find / -xdev \( -path /proc -o -path /sys -o -path /dev -o -path /.dockerenv -o -path /etc/mtab \
+  -o -path /etc/hosts -o -path /etc/hostname -o -path /etc/resolv.conf \) -prune \
+  -o ! -path / ! -path /etc -exec stat -c "%Y %n" {} + | awk -v t="$sde" "\$1 != t" | head -n 5)
+[ -z "$odd" ] || fail "file times other than SOURCE_DATE_EPOCH ($sde): $odd"
 [ -x /entrypoint.sh ] || fail "no /entrypoint.sh"
 sh -n /entrypoint.sh || fail "entrypoint.sh does not parse under the image shell"
 grep -q "^# Media jail (docs/mcp-enclave.md §16.6)" /entrypoint.sh || fail "entrypoint.sh has no media jail block"
@@ -48,6 +58,60 @@ rc=0; nsm-attest - - - > /dev/null 2>&1 || rc=$?
 [ "$rc" = 2 ] || fail "nsm-attest without /dev/nsm exited $rc, want 2"
 rc=0; nsm-attest zz - - > /dev/null 2>&1 || rc=$?
 [ "$rc" = 3 ] || fail "nsm-attest with a bad argument exited $rc, want 3"
+
+# The clock (docs/mcp-enclave.md, Clock). nsm-timefeed: bad arguments exit 3
+# before the device is touched, no /dev/nsm exits 2, and no probe build
+# (feature fake-drift) is in the image.
+tf=/usr/local/bin/nsm-timefeed
+[ "$(stat -c %a "$tf")" = 555 ] || fail "$tf is not mode 0555"
+rc=0; "$tf" > /dev/null 2>&1 || rc=$?
+[ "$rc" = 3 ] || fail "nsm-timefeed without arguments exited $rc, want 3"
+rc=0; "$tf" relative /tmp > /dev/null 2>&1 || rc=$?
+[ "$rc" = 3 ] || fail "nsm-timefeed with a relative path exited $rc, want 3"
+rc=0; "$tf" /run/chrony/nsm.sock /tmp > /dev/null 2>&1 || rc=$?
+[ "$rc" = 2 ] || fail "nsm-timefeed without /dev/nsm exited $rc, want 2"
+if grep -q WAPPIE_FAKE_DRIFT "$tf"; then fail "nsm-timefeed holds WAPPIE_FAKE_DRIFT: a probe build is in the image"; fi
+# chronyd: the pinned version with exactly the features the Dockerfile asks
+# for (configure drops a feature silently when a package goes missing, and
+# adds one when a package appears), static, and no chronyc.
+[ "$(stat -c %a /usr/sbin/chronyd)" = 555 ] || fail "/usr/sbin/chronyd is not mode 0555"
+want="chronyd (chrony) version 4.9 (-CMDMON +REFCLOCK -RTC -PRIVDROP -SCFILTER -SIGND -NTS -SECHASH -IPV6 -DEBUG)"
+[ "$(chronyd -v)" = "$want" ] || fail "chronyd -v is \"$(chronyd -v)\", want \"$want\""
+if command -v chronyc > /dev/null || [ -e /usr/bin/chronyc ]; then fail "chronyc is in the image"; fi
+node -e "
+  const b = require(\"fs\").readFileSync(\"/usr/sbin/chronyd\")
+  if (b.readUInt32BE(0) !== 0x7f454c46 || b[4] !== 2) throw new Error(\"not a 64-bit ELF\")
+  const phoff = Number(b.readBigUInt64LE(32)), size = b.readUInt16LE(54), count = b.readUInt16LE(56)
+  for (let i = 0; i < count; i++) if (b.readUInt32LE(phoff + i * size) === 3) throw new Error(\"PT_INTERP: linked dynamically\")
+" || fail "/usr/sbin/chronyd is not a static executable"
+# The configuration: read-only, parsed by this chronyd (-p prints it and
+# exits), no network source, client or command socket, no file that would
+# outlive the boot, and the one step allowed only in boot.conf.
+[ "$(stat -c %a /etc/chrony)" = 555 ] || fail "/etc/chrony is not mode 0555"
+[ "$(ls /etc/chrony | tr "\n" " ")" = "boot.conf common.conf run.conf " ] || fail "/etc/chrony holds other files: $(ls /etc/chrony)"
+for f in common boot run; do
+  [ "$(stat -c %a /etc/chrony/$f.conf)" = 444 ] || fail "/etc/chrony/$f.conf is not mode 0444"
+done
+for f in boot run; do
+  chronyd -p -f /etc/chrony/$f.conf > /tmp/$f.printed 2> /tmp/$f.err || fail "chronyd does not accept $f.conf: $(cat /tmp/$f.err)"
+  [ ! -s /tmp/$f.err ] || fail "chronyd warns about $f.conf: $(cat /tmp/$f.err)"
+  grep -q "^refclock SOCK /run/chrony/nsm.sock refid NSM poll 5 filter 8 precision 1e-3$" /tmp/$f.printed || fail "$f.conf: not the NSM refclock"
+  for d in "cmdport 0" "port 0" "maxslewrate 60" "maxdrift 50" "pidfile /run/chrony/chronyd.pid"; do
+    grep -qx "$d" /tmp/$f.printed || fail "$f.conf: no \"$d\""
+  done
+  if grep -Ei "^(server|pool|peer|allow|deny|bindaddress|bindcmdaddress|cmdallow|driftfile|dumpdir|logdir|rtcsync|rtcfile|keyfile|ntsdumpdir|ntsserverkey|sourcedir|confdir|include) " /tmp/$f.printed; then
+    fail "$f.conf: a directive not allowed in the reader"
+  fi
+  [ "$(grep -c "^refclock " /tmp/$f.printed)" = 1 ] || fail "$f.conf: more than one refclock"
+done
+grep -qx "makestep 0.5 1" /tmp/boot.printed || fail "boot.conf: no \"makestep 0.5 1\""
+grep -qx "maxchange 5 1 0" /tmp/boot.printed || fail "boot.conf: no \"maxchange 5 1 0\""
+! grep -q "^makestep" /tmp/run.printed || fail "run.conf steps the clock"
+grep -qx "maxchange 5 0 0" /tmp/run.printed || fail "run.conf: no \"maxchange 5 0 0\""
+# The start script: read-only, parsed, and called by the entrypoint.
+[ "$(stat -c %a /usr/local/sbin/wappie-clock-start)" = 555 ] || fail "wappie-clock-start is not mode 0555"
+sh -n /usr/local/sbin/wappie-clock-start || fail "wappie-clock-start does not parse under the image shell"
+grep -qx "/usr/local/sbin/wappie-clock-start" /entrypoint.sh || fail "entrypoint.sh does not start the clock"
 
 # media-jail (§16.6): read-only, its table printed, bad invocations refused
 # with 3 before anything is created, and no MEDIA_JAIL_EMULATE in this build.

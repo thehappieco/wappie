@@ -1,5 +1,9 @@
-# In-enclave attestation helper for the Wappie reader (deploy/enclave). Built in a
-# rust:1-alpine stage (musl targets link statically by default).
+# In-enclave NSM helpers for the Wappie reader (deploy/enclave), built in a
+# rust:1-alpine stage (musl targets link statically by default):
+# - nsm-attest (src/main.rs): one attestation document on stdout;
+# - nsm-timefeed (src/bin/nsm-timefeed.rs): the long-running feed of NSM time
+#   to chronyd, with its logic in src/timefeed/ (the library, so it can be
+#   unit-tested).
 [package]
 name = "nsm-attest"
 version = "0.1.0"
@@ -15,6 +19,16 @@ publish = false
 aws-nitro-enclaves-nsm-api = "=0.5.2"
 serde_bytes = "=0.11.19"
 hex = "=0.4.3"
+# nsm-timefeed: COSE_Sign1 outer array, and the clocks, adjtimex, alarm and
+# getrandom. Both were already in Cargo.lock as nsm-api's dependencies.
+serde_cbor = "=0.11.2"
+libc = "=0.2.189"
+
+[features]
+# Probe builds only (deploy/enclave/clockprobe): scales the NSM time the feed
+# reports by +200 ppm, to test chrony's frequency cap. The image builds with
+# no features, and its nsm-timefeed must not contain WAPPIE_FAKE_DRIFT.
+fake-drift = []
 
 [profile.release]
 lto = true

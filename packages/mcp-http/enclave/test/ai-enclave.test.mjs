@@ -92,7 +92,7 @@ test('an AI request: an attested descriptor of its own key, kind ai; at most AI_
   const { status, descriptor, nonce } = await requestAI(w)
   assert.equal(status, 200)
   assert.deepEqual(Object.keys(descriptor), ['descriptor_version', 'request_id', 'kind', 'reader_public_key', 'kid', 'resource', 'reader_version', 'expires_at', 'attestation'])
-  assert.deepEqual([descriptor.descriptor_version, descriptor.kind, descriptor.resource, descriptor.reader_version], [2, 'ai', 'https://mcp.wappie.thehappie.co/mcp', '0.6.0'])
+  assert.deepEqual([descriptor.descriptor_version, descriptor.kind, descriptor.resource, descriptor.reader_version], [2, 'ai', 'https://mcp.wappie.thehappie.co/mcp', '0.6.1'])
   // Attested whole (§19.13): user_data v2 over the descriptor.
   const userData = decodeAttestationDocument(Buffer.from(descriptor.attestation.document, 'base64url')).userData
   assert.deepEqual(userData, attestationUserDataV2(descriptor.attestation, descriptorSHA256(descriptor)))

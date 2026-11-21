@@ -126,6 +126,10 @@ LOCKS = ["packages/client/package-lock.json", "packages/mcp/package-lock.json", 
          "packages/mcp-http/enclave/package-lock.json", "packages/mcp-http/enclave/media/worker/package-lock.json"]
 NOBLE = {"version": "2.4.0", "resolved": "https://registry.npmjs.org/@noble/hashes/-/hashes-2.4.0.tgz", "integrity": "sha512-n"}
 CLIENT_LINK = {"node_modules/@whatserver2/client": {"resolved": "../client", "link": True}}
+CHRONY = b"chrony source"
+CHRONY_SHA256 = hashlib.sha256(CHRONY).hexdigest()
+CHRONY_SOURCE = {"name": "chrony", "version": "4.9", "url": "https://chrony-project.org/releases/chrony-4.9.tar.gz",
+                 "sha256": CHRONY_SHA256, "file": "deploy/enclave/chrony/chrony-4.9.tar.gz"}
 
 
 class DependenciesTest(unittest.TestCase):
@@ -134,8 +138,15 @@ class DependenciesTest(unittest.TestCase):
     kit's release and the CDN here; build.sh refuses anything but https).
     Links between the packages are recorded and never fetched."""
 
-    def run_step(self, worker_packages, allow_file_urls=True, client_packages=None):
+    def run_step(self, worker_packages, allow_file_urls=True, client_packages=None, chrony=None):
         context = pathlib.Path(self.enterContext(tempfile.TemporaryDirectory()))
+        # The vendored chrony source: {file name: bytes}, by default one
+        # tarball and its .sha256.
+        if chrony is None:
+            chrony = {"chrony-4.9.tar.gz": CHRONY, "chrony-4.9.tar.gz.sha256": f"{CHRONY_SHA256}  chrony-4.9.tar.gz\n".encode()}
+        (context / "deploy/enclave/chrony").mkdir(parents=True)
+        for file, data in chrony.items():
+            (context / "deploy/enclave/chrony" / file).write_bytes(data)
         for name, packages in ((LOCKS[0], client_packages or {"": {}, "node_modules/@noble/hashes": NOBLE}),
                                (LOCKS[1], {"": {}, **CLIENT_LINK}),
                                (LOCKS[2], {"": {}, **CLIENT_LINK, "node_modules/@whatserver2/mcp": {"resolved": "../mcp", "link": True}}),
@@ -207,6 +218,30 @@ class DependenciesTest(unittest.TestCase):
         self.assertIsInstance(error, str)
         self.assertIn("two different tarballs", error)
 
+    def test_records_the_vendored_chrony_source(self):
+        url, integrity = self.tarball(b"sheetjs")
+        manifest = self.run_step({"": {}, "node_modules/xlsx": {"version": "0.20.3", "resolved": url, "integrity": integrity}})
+        self.assertEqual(manifest["sources"], [CHRONY_SOURCE])
+        # Vendored in the commit, so not copied to the release's tarballs/.
+        self.assertEqual(sorted(p.name for p in self.mirror.iterdir()), ["xlsx-0.20.3.tgz"])
+
+    def test_refuses_a_chrony_tarball_that_does_not_match_its_sha256(self):
+        error = self.run_step({"": {}}, chrony={"chrony-4.9.tar.gz": b"something else",
+                                                "chrony-4.9.tar.gz.sha256": f"{CHRONY_SHA256}  chrony-4.9.tar.gz\n".encode()})
+        self.assertIsInstance(error, str)
+        self.assertIn("does not match chrony-4.9.tar.gz.sha256", error)
+
+    def test_refuses_a_chrony_directory_without_exactly_one_checked_tarball(self):
+        sums = f"{CHRONY_SHA256}  chrony-4.9.tar.gz\n".encode()
+        for files in ({}, {"chrony-4.9.tar.gz": CHRONY},
+                      {"chrony-4.9.tar.gz": CHRONY, "chrony-4.9.tar.gz.sha256": sums, "chrony-4.8.tar.gz": CHRONY},
+                      {"chrony-4.9.tar.gz.sha256": sums},
+                      {"chrony-4.9.tar.gz": CHRONY, "chrony-4.9.tar.gz.sha256": f"{CHRONY_SHA256}  chrony-4.8.tar.gz\n".encode()},
+                      {"chrony-4.9.tar.gz": CHRONY, "chrony-4.9.tar.gz.sha256": f"{CHRONY_SHA256} chrony-4.9.tar.gz\n".encode()}):
+            error = self.run_step({"": {}}, chrony=files)
+            self.assertIsInstance(error, str, files)
+            self.assertIn("build.sh:", error, files)
+
     def test_refuses_a_tarball_without_https_or_integrity(self):
         url, _ = self.tarball(b"sheetjs")
         error = self.run_step({"": {}, "node_modules/xlsx": {"version": "0.20.3", "resolved": url}}, allow_file_urls=False)
@@ -228,6 +263,67 @@ class DependenciesTest(unittest.TestCase):
         self.assertTrue(entry["integrity"].startswith("sha512-"))
         outside = [p for p, e in lock["packages"].items() if p and not (e.get("resolved") or "").startswith("https://registry.npmjs.org/")]
         self.assertEqual(outside, ["node_modules/xlsx"])
+
+
+class ChronyTest(unittest.TestCase):
+    """The vendored chrony: one tarball, its sha256 recorded next to it, and
+    the same version named by the Dockerfile, check-image.sh and the inputs
+    gate, so a version bump cannot change one of them alone."""
+
+    def setUp(self):
+        self.dir = HERE / "chrony"
+        (self.sums,) = self.dir.glob("*.tar.gz.sha256")
+        expected, _, self.file = self.sums.read_text().rstrip("\n").partition("  ")
+        self.expected = expected
+        self.version = re.fullmatch(r"chrony-([0-9.]+)\.tar\.gz", self.file)[1]
+
+    def test_the_tarball_matches_its_sha256(self):
+        self.assertEqual([p.name for p in self.dir.glob("*.tar.gz")], [self.file])
+        self.assertEqual(hashlib.sha256((self.dir / self.file).read_bytes()).hexdigest(), self.expected)
+
+    def test_the_dockerfile_builds_that_tarball(self):
+        dockerfile = (HERE / "Dockerfile").read_text()
+        self.assertIn(f"COPY deploy/enclave/chrony/{self.file} deploy/enclave/chrony/{self.sums.name} ./", dockerfile)
+        self.assertIn(f"sha256sum -c {self.sums.name}", dockerfile)
+        # configure's default NTP era is the build date: the binary would
+        # change with every build.
+        self.assertRegex(dockerfile, r"--with-ntp-era=[0-9]+ ")
+        self.assertEqual(set(re.findall(r"chrony-[0-9.]+[0-9](?=\.tar\.gz|\b)", dockerfile)), {f"chrony-{self.version}"})
+
+    def test_check_image_expects_that_version(self):
+        self.assertIn(f'want="chronyd (chrony) version {self.version} (', (HERE / "check-image.sh").read_text())
+
+    def test_the_inputs_gate_measures_every_chrony_file_the_image_takes(self):
+        gate = (HERE.parent.parent / "scripts/check-reader-inputs.sh").read_text()
+        copies = "\n".join(l for l in (HERE / "Dockerfile").read_text().splitlines() if l.startswith("COPY "))
+        copied = set(re.findall(r"deploy/enclave/chrony/[A-Za-z0-9._-]+", copies))
+        self.assertEqual(copied, {f"deploy/enclave/chrony/{n}" for n in
+                                  (self.file, self.sums.name, "common.conf", "boot.conf", "run.conf", "wappie-clock-start")})
+        for path in copied:
+            self.assertIn(path, gate)
+
+
+class ClockProbeIsNotAReleaseInputTest(unittest.TestCase):
+    """deploy/enclave/clockprobe is never released: the release Dockerfile
+    takes nothing from it and the inputs gate does not measure it, so a
+    change there never moves PCR0."""
+
+    def test_the_release_dockerfile_takes_nothing_from_it(self):
+        self.assertNotIn("clockprobe", (HERE / "Dockerfile").read_text())
+
+    def test_the_inputs_gate_does_not_measure_it(self):
+        gate = (HERE.parent.parent / "scripts/check-reader-inputs.sh").read_text()
+        listed = re.search(r"enclave_files=\((.*?)\)", gate, re.S)[1]
+        self.assertNotIn("clockprobe", listed)
+        self.assertNotIn("deploy/enclave ", listed + " ")
+
+    def test_its_fake_drift_build_is_its_own(self):
+        probe = (HERE / "clockprobe" / "Dockerfile.clockprobe").read_text()
+        self.assertIn("--features fake-drift --bin nsm-timefeed", probe)
+        self.assertIn("/opt/clockprobe/fake/nsm-timefeed", probe)
+        # It never replaces the release binary the probe tests.
+        copies = [l for l in probe.splitlines() if l.startswith("COPY ")]
+        self.assertFalse([l for l in copies if "/usr/local/bin/" in l or "/usr/sbin/" in l or "/etc/chrony" in l])
 
 
 if __name__ == "__main__":

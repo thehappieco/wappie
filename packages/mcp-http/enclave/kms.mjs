@@ -7,6 +7,7 @@
 // operator controls would open here.
 import { generateKeyPairSync } from 'node:crypto'
 import { DecryptCommand, GenerateDataKeyCommand, GetKeyPolicyCommand, KMSClient } from '@aws-sdk/client-kms'
+import { kmsRange } from './clock.mjs'
 import { openRecipientCms } from './cms.mjs'
 import { REGION } from './constants.mjs'
 
@@ -61,16 +62,53 @@ export function roleCredentials(readText, now = Date.now) {
   }
 }
 
+/** A header's value whatever its case (Node gives lower case), or undefined. */
+function header(headers, name) {
+  if (!headers || typeof headers !== 'object') return undefined
+  for (const [key, value] of Object.entries(headers)) if (key.toLowerCase() === name) return Array.isArray(value) ? value[0] : value
+  return undefined
+}
+
+/**
+ * The client middleware that turns every KMS answer into a clock range
+ * (clock.mjs kmsRange) for `onRange`. It sits in the deserialize step, inside
+ * the SDK's retries, so each attempt gives its own range; an error answer
+ * carries its raw response as `$response`, and its Date counts as well. A
+ * call that never got an answer gives nothing. The SDK's own clock-skew
+ * correction is left as it is, which is why a call succeeding proves nothing
+ * about our clock and the Date is read here.
+ */
+export function dateRangeMiddleware(onRange, { now = Date.now, mono = () => performance.now() } = {}) {
+  return next => async args => {
+    const sent = now(), sentMono = mono()
+    const record = response => {
+      const received = now(), receivedMono = mono()
+      const date = header(response?.headers, 'date')
+      if (typeof date !== 'string') return
+      const range = kmsRange({ sent, received, sentMono, receivedMono, date })
+      if (range) { try { onRange(range) } catch { /* a clock check never fails a KMS call */ } }
+    }
+    let out
+    try { out = await next(args) } catch (error) { record(error?.$response); throw error }
+    record(out?.response)
+    return out
+  }
+}
+
 // Default endpoint https://kms.eu-west-1.amazonaws.com: the enclave's /etc/hosts
 // sends it to the local socat bridge, and TLS is verified here, not on the parent.
-export function kmsClient(credentials) {
-  return new KMSClient({
+// `onRange` receives a clock range from every answer; `requestHandler` is
+// only replaced by tests.
+export function kmsClient(credentials, { onRange, requestHandler } = {}) {
+  const client = new KMSClient({
     region: REGION,
     credentials,
     maxAttempts: 2,
     // A stalled vsock proxy must fail the call rather than hang the boot.
-    requestHandler: { connectionTimeout: 5000, requestTimeout: 15000 },
+    requestHandler: requestHandler ?? { connectionTimeout: 5000, requestTimeout: 15000 },
   })
+  if (onRange) client.middlewareStack.add(dateRangeMiddleware(onRange), { step: 'deserialize', name: 'wappieDateRange' })
+  return client
 }
 
 /** The per-boot RSA-2048 recipient key: never exported, never persisted. */
@@ -94,14 +132,17 @@ export function createKms({ client, keys, attest, log = () => {} }) {
     AttestationDocument: await attest({ publicKey: keys.spki }),
   })
 
+  // Durations on the monotonic clock: a step of the system clock must not
+  // make one negative (the log schema would drop the line).
   async function send(op, command) {
-    const started = Date.now()
+    const started = performance.now()
+    const ms = () => Math.max(0, Math.round(performance.now() - started))
     try {
       const out = await client.send(command)
-      log(op, { ms: Date.now() - started, ok: true })
+      log(op, { ms: ms(), ok: true })
       return out
     } catch (error) {
-      log(op, { ms: Date.now() - started, ok: false })
+      log(op, { ms: ms(), ok: false })
       throw error
     }
   }

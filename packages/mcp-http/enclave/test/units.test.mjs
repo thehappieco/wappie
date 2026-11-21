@@ -126,6 +126,9 @@ test('hmac guard: missing, stale (±60 s), wrong secret, wrong reader, tampered 
   const refused = await guard(request(goHeaders('B'.repeat(43), { method: 'GET', target, now: at })), { target })
   assert.equal(refused.status, 401)
   assert.deepEqual(await refused.json(), { code: 'unauthorized' })
+  // The signature is checked first (reader 0.6.1): a stale timestamp under a wrong secret is hmac_bad, not hmac_stale.
+  assert.equal(code(await guard(request(goHeaders('B'.repeat(43), { method: 'GET', target, now: at - 61_000 })), { target })), 'hmac_bad')
+  assert.equal(code(await guard(request(goHeaders('B'.repeat(43), { method: 'GET', target, now: at + 3_600_000 })), { target })), 'hmac_bad')
   // A full cache refuses with 503 even a valid request.
   const tiny = createHmacGuard({ readerId: 'enclave', secrets, now: () => at, replay: createReplayCache({ max: 1, now: () => at }) })
   assert.equal(await tiny(request(goHeaders('A'.repeat(43), { method: 'GET', target, now: at })), { target }), undefined)
@@ -134,6 +137,35 @@ test('hmac guard: missing, stale (±60 s), wrong secret, wrong reader, tampered 
   assert.deepEqual(await full.json(), { code: 'replay_cache_full' })
   at += 62_000 // the first entry expires and is swept
   assert.equal(await tiny(request(goHeaders('A'.repeat(43), { method: 'GET', target, now: at })), { target }), undefined)
+})
+
+test('hmac guard: Go\'s time is heard from verified signatures only, and a stale one is refused before the replay cache', async () => {
+  const at = 1790300000_000
+  const secrets = createSecrets({ current: 'A'.repeat(43), open: async () => Buffer.from('') })
+  const heard = [], admitted = []
+  const cache = createReplayCache({ now: () => at })
+  const replay = { admit: (key, timestamp) => { admitted.push(timestamp); return cache.admit(key, timestamp) } }
+  const guard = createHmacGuard({ readerId: 'enclave', secrets, now: () => at, replay, onVerified: (seconds, when) => heard.push([seconds, when]) })
+  const target = '/internal/healthz'
+  const request = headers => new Request('https://mcp.wappie.thehappie.co:8443' + target, { headers })
+  const code = response => response?.headers.get('x-wappie-code')
+  // A forged timestamp under a bad MAC records nothing, however far off it claims to be.
+  for (const offset of [0, -61_000, 90_000_000]) assert.equal(code(await guard(request(goHeaders('B'.repeat(43), { method: 'GET', target, now: at + offset })), { target })), 'hmac_bad')
+  assert.equal(code(await guard(request({ ...goHeaders('A'.repeat(43), { method: 'GET', target, now: at }), 'x-wappie-reader': 'hosted' }), { target })), 'hmac_missing')
+  assert.deepEqual(heard, [])
+  // Go's real signature 90 s old: its time is recorded, then the request is refused as stale before the cache sees it.
+  const stale = goHeaders('A'.repeat(43), { method: 'GET', target, now: at - 90_000 })
+  assert.equal(code(await guard(request(stale), { target })), 'hmac_stale')
+  assert.deepEqual(heard, [[Math.floor((at - 90_000) / 1000), at]])
+  assert.deepEqual(admitted, [], 'a stale request never reaches the replay cache')
+  assert.equal(code(await guard(request(stale), { target })), 'hmac_stale', 'so repeating it is still stale, not a replay')
+  // A fresh one is recorded and admitted.
+  assert.equal(await guard(request(goHeaders('A'.repeat(43), { method: 'GET', target, now: at - 2000 })), { target }), undefined)
+  assert.deepEqual(heard.at(-1), [Math.floor((at - 2000) / 1000), at])
+  assert.equal(admitted.length, 1)
+  // A recorder that throws never decides the request.
+  const throwing = createHmacGuard({ readerId: 'enclave', secrets, now: () => at, onVerified: () => { throw new Error('boom') } })
+  assert.equal(await throwing(request(goHeaders('A'.repeat(43), { method: 'GET', target, now: at })), { target }), undefined)
 })
 
 test('relay secret rotation: current and previous accepted, previous dropped on the first request under current', async () => {

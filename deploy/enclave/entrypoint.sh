@@ -59,6 +59,12 @@ mount -o remount,nosuid,nodev,noexec,hidepid=2 proc /proc || true
 # kernel's OOM killer takes (media-jail gives each job 1000).
 echo -1000 > /proc/self/oom_score_adj || true
 
+# The clock (docs/mcp-enclave.md, Clock): chronyd steered by the Nitro Secure
+# Module's time through nsm-timefeed, both in restart loops in the background,
+# started here so they inherit the -1000 above. Nothing here waits for the
+# clock: the reader decides when it is good enough.
+/usr/local/sbin/wappie-clock-start
+
 # Keeps one socat alive. A bridge that dies (it should not: fork mode) comes
 # back after a second instead of leaving the reader deaf or mute until the
 # next boot. The arguments are socat's two addresses.

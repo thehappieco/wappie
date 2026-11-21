@@ -8,6 +8,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { bytes, hpke, seal } from '@whatserver2/client'
 import { DRAFT_TEXT_MAX_CHARS as READER_DRAFT_MAX, SELF_TEXT_MAX_CHARS as READER_SELF_MAX } from '@whatserver2/mcp'
+import { RelayError } from '../../internal.mjs'
 import { messageURLs } from '../provider.mjs'
 import { createDedupe, dedupeKey } from '../send/dedupe.mjs'
 import { draftPlaintext, sealDraft } from '../send/drafts.mjs'
@@ -203,6 +204,34 @@ test('a note Go sent answers its uid, time and console link: Go\'s wa_id proves 
   delete answer.data.wa_id
   clock += policy.SEND_MIN_INTERVAL_MS
   await assert.rejects(sendSelf(record, { device_id: device, text: 'outra nota' }), { code: 'send_uncertain' })
+})
+
+test('a send the relay refused for the clock never left: send_failed, not uncertain, the place given back, and the same call may run again', async () => {
+  const uidSent = '0199b3c4-dddd-7eee-8fff-000011112222'
+  let clockOk = false, calls = 0
+  const events = []
+  const counters = { sends: 0 }
+  const clock = Date.parse('2026-10-01T09:00:00.000Z')
+  const relay = { sending: async () => {
+    calls++
+    if (!clockOk) throw new RelayError('clock_unknown')
+    return { status: 200, data: { id: 'x', message_uid: uidSent, wa_id: '3EB0C0FFEE0123456789', timestamp: '2026-10-01T09:32:15.123456Z' } }
+  } }
+  const windows = createWindows({ now: () => clock })
+  const sendSelf = createSends({ relay, consoleURL: 'https://app.wappie.thehappie.co/console', dedupe: createDedupe({ now: () => clock }), windows,
+    gate: async () => {}, recordRefusal: async () => {}, event: (name, id, code) => events.push([name, code]), fromGo: () => new Error('refused'), refusal: code => Object.assign(new Error(code), { code }), codeOf: error => error.code, counters })
+  const record = { connection_id: 'c', api_key: 'k', tenant_id: '018f3a2b-2222-7000-8000-00000000bbbb' }
+  const refused = await sendSelf(record, { device_id: device, text: 'nota' }).then(() => null, error => error)
+  assert.equal(refused.code, 'send_failed')
+  assert.notEqual(refused.keep, true, 'not kept: the same call may run again')
+  assert.deepEqual(events, [['send_refused', 'send_failed']], 'never send_uncertain')
+  assert.equal(counters.sends, 0)
+  // The window's place was given back, so the same call at the same moment runs again (no minimum interval, no dedupe answer).
+  clockOk = true
+  const sent = await sendSelf(record, { device_id: device, text: 'nota' })
+  assert.equal(sent.message_uid, uidSent)
+  assert.equal(sent.duplicate, undefined)
+  assert.deepEqual([calls, counters.sends], [2, 1])
 })
 
 test('the enclave\'s windows: the Nth in the span passes, the next gets the moment it would, and a release gives the place back', () => {

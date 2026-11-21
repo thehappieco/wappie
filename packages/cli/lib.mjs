@@ -17,8 +17,9 @@ export const defaultStateDir = () => join(homedir(), '.config', 'whatserver2')
 // The archive key a grant seals is named by its fingerprint, as the server
 // names it (wappie DS49, store.ArchiveKeyFingerprint): the lowercase hex
 // SHA-256 of its public half's 32 raw X25519 bytes. wsctl computes it from the
-// key it opened, with Node's own crypto: the client that reader 0.6.1 measures
-// passes it, the one the reader runs now does not. Both are checked against
+// key it opened, with Node's own crypto: the client that reader 0.6.2 measures
+// (the release after 0.6.1, the clock) passes it, the one the reader runs now
+// does not. Both are checked against
 // internal/store/testdata/archive-key-fingerprints.json.
 const x25519PKCS8 = Buffer.from('302e020100300506032b656e04220420', 'hex')
 const x25519SPKI = Buffer.from('302a300506032b656e032100', 'hex')

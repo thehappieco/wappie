@@ -127,3 +127,45 @@ test('health line: process figures, the reader fields, the clock skew against a 
   assert.equal(lineAllowed(lines[0]), true)
   assert.equal(JSON.parse(lines[0]).event, 'health')
 })
+
+test('reader 0.6.1: the clock\'s events and health fields pass the sink\'s schema, and a fully populated health line stays within MAX_LINE_BYTES', async () => {
+  const lines = []
+  const log = createLog(entry => lines.push(entry))
+  log.event('clock_wait')
+  log.event('clock_state', { code: 'nsm_node_proof', clock_unc_ms: 5001 })
+  log.event('clock_sources_disagree', { code: 'kms_proof' })
+  log.event('clock_kms_inconsistent')
+  log.event('boot_failed', { code: 'clock_unknown' })
+  log.request({ route: 'POST /mcp', status: 503, ms: 1, code: 'clock_unknown' })
+  log.request({ route: 'internal', status: 503, ms: 0, code: 'clock_unknown' })
+  for (const line of lines) assert.equal(lineAllowed(line), true, line)
+
+  // Every field a health line can carry, each at a width it could reach: counts of nine digits, and
+  // anything that measures a clock thirteen digits and negative (a clock years off).
+  const count = 999_999_999, skew = -9_999_999_999_999
+  const fields = {
+    // health.mjs's own.
+    rss_mb: count, heap_mb: count, clock_skew_ms: skew,
+    // main.mjs: the reader, the attachments (§16.10), sending (§17.12), AI (§18), clients (§19.24).
+    cert_days_left: -count, connections: count, pending: count, state_dirty: true, relay_secrets: 2, acme_account_id: 99_999_999_999_999_999_999,
+    policy_ok: false, policy: 'ab'.repeat(6), pcr0: 'cd'.repeat(6), spki: 'ef'.repeat(6), log_dropped: count, proxy_rejected: count,
+    content_connections: count, content_keys: count,
+    media_jail: false, media_opens: count, media_killed: count, media_queue: count, mem_avail_min_mb: count,
+    drafts: count, sends: count, fp_entries: count,
+    ai_records: count, ai_keys: count, ai_jobs: count, ai_failed: count, ai_queue: count, ai_in_flight: count,
+    clients_unknown: count, connections_unknown: count, connections_local: count, connections_token: count,
+    cimd_fetches: count, cimd_refusals: count, tested_drift: count, ip_mismatches: count, budget_hits: count,
+  }
+  const clockFields = {
+    clock_ok: false, clock_unc_ms: -skew, nsm_skew_ms: skew, go_skew_ms: skew, kms_skew_lo_ms: skew, kms_skew_hi_ms: skew,
+    clock_corr_hour_ms: skew, clock_corr_day_ms: skew, clock_freq_ppm: -12_345.67, clock_steps: count, clock_refused: count,
+  }
+  const full = []
+  const line = createHealthLine({ log: createLog(entry => full.push(entry)), probe: async () => skew, fields: () => fields, clock: { fields: () => clockFields }, mono: () => 315_360_000_000, started: 0 })
+  const entry = await line.tick()
+  for (const key of [...Object.keys(fields), ...Object.keys(clockFields), 'uptime_s']) assert.ok(key in entry, key)
+  assert.equal(entry.uptime_s, 315_360_000)
+  const bytes = Buffer.byteLength(full[0])
+  assert.ok(bytes <= MAX_LINE_BYTES, `a full health line is ${bytes} bytes`)
+  assert.equal(lineAllowed(full[0]), true)
+})

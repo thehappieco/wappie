@@ -1,6 +1,6 @@
 .PHONY: help run test test-race lint lint-layout vet fmt cover fuzz dev-up dev-down build tidy check \
 	fixtures-check identifiers-check client-install client-build client-test client-check client-dist-check reader-inputs-check mcp-check mcp-http-check public-source \
-	enclave-check enclave-image enclave-jail media-worker-check media-jail-check reader-verify
+	enclave-check enclave-image enclave-jail chrony-check clockprobe-check media-worker-check media-jail-check nsm-attest-check reader-verify
 
 GO      ?= go
 PKGS    := ./...
@@ -113,8 +113,9 @@ client-dist-check: ## The reader's measured client equals c9ec561's
 	scripts/check-client-dist.sh
 
 # The rest of the reader image's inputs: packages/mcp and packages/mcp-http
-# as the image keeps them, the attachment workers, nsm-attest and media-jail.
-reader-inputs-check: ## The reader's other measured inputs equal f7babbe's
+# as the image keeps them, the attachment workers, nsm-attest (with
+# nsm-timefeed), media-jail and chrony.
+reader-inputs-check: ## The reader's other measured inputs equal reader 0.6.1's (a9b06bc)
 	scripts/check-reader-inputs.sh
 
 mcp-check: client-build ## Install and verify the local MCP server
@@ -151,6 +152,28 @@ enclave-image: ## Build and check the reader enclave image (arm64 Docker)
 enclave-jail: ## Run the jail checks and the worker corpus under media-jail (arm64, privileged)
 	sh deploy/enclave/check-image.sh --jail $(ENCLAVE_TAG)
 
+# The clock on a built image (deploy/enclave/chrony/test-chrony.sh): the
+# image's chronyd and configuration against nsm-timefeed's cycle with a fake
+# NSM. chronyd runs with -x, so the host clock is never touched and no
+# privilege is needed. About six minutes.
+chrony-check: ## Run the image's chronyd against a fake NSM feed (arm64 Docker, after enclave-image)
+	sh deploy/enclave/chrony/test-chrony.sh $(ENCLAVE_TAG)
+
+# The clock probe (deploy/enclave/clockprobe, never released) on a built
+# reader image: its unit tests, its image, and a smoke run without /dev/nsm
+# whose console must assemble into a complete report (kept in
+# dist/clockprobe-check). Nothing here sets a clock: the scenarios run only
+# in an enclave (README.md there).
+clockprobe-check: ## Build the clock probe on a built reader image and smoke-run it (arm64 Docker, after enclave-image)
+	python3 -m unittest discover -s deploy/enclave/clockprobe -p 'test_*.py'
+	node --test deploy/enclave/clockprobe/evaluate.test.mjs
+	docker build -q -f deploy/enclave/clockprobe/Dockerfile.clockprobe --build-arg READER_IMAGE=$(ENCLAVE_TAG) \
+	  --build-arg RUST_IMAGE=$(RUST_IMAGE) -t $(ENCLAVE_TAG)-clockprobe . > /dev/null
+	mkdir -p dist/clockprobe-check
+	docker run --rm --network none -e PROBE_CONSOLE=- $(ENCLAVE_TAG)-clockprobe > dist/clockprobe-check/console.log 2>&1
+	python3 deploy/enclave/clockprobe/assemble.py dist/clockprobe-check/console.log dist/clockprobe-check/main
+	@echo "clockprobe-check: ok"
+
 # The attachment workers (§16.11): their own package, installed as the image
 # installs it (no install scripts, pdf.js's optional canvas removed).
 media-worker-check: ## Install and test the enclave's attachment workers
@@ -163,6 +186,22 @@ RUST_IMAGE ?= $(shell sed -n 's/^ARG RUST_IMAGE=//p' deploy/enclave/Dockerfile)
 media-jail-check: ## Test and build media-jail in the pinned rust image (arm64 Docker)
 	docker run --rm -v "$(CURDIR)/deploy/enclave/media-jail:/mj:ro" -w /mj -e CARGO_TARGET_DIR=/tmp/target $(RUST_IMAGE) \
 	  sh -c 'apk add --no-cache musl-dev > /dev/null && cargo test --locked && cargo test --locked --features emulate-old-kernel && cargo build --locked --release'
+
+# nsm-attest and nsm-timefeed: unit tests (with and without the probe-only
+# fake-drift feature), the release build, the exit codes without /dev/nsm,
+# and the fake-drift marker: absent from the release nsm-timefeed, present
+# in a fake-drift build.
+nsm-attest-check: ## Test and build nsm-attest and nsm-timefeed in the pinned rust image (arm64 Docker)
+	docker run --rm -v "$(CURDIR)/deploy/enclave/nsm-attest:/nsm:ro" -w /nsm -e CARGO_TARGET_DIR=/tmp/target $(RUST_IMAGE) \
+	  sh -c 'set -e; apk add --no-cache musl-dev > /dev/null; cargo test --locked; cargo test --locked --features fake-drift; \
+	    cargo build --locked --release; bin=/tmp/target/release; \
+	    rc=0; $$bin/nsm-timefeed > /dev/null 2>&1 || rc=$$?; test $$rc -eq 3; \
+	    rc=0; $$bin/nsm-timefeed relative /tmp > /dev/null 2>&1 || rc=$$?; test $$rc -eq 3; \
+	    rc=0; $$bin/nsm-timefeed /run/chrony/nsm.sock /tmp > /dev/null 2>&1 || rc=$$?; test $$rc -eq 2; \
+	    rc=0; $$bin/nsm-attest - - - > /dev/null 2>&1 || rc=$$?; test $$rc -eq 2; \
+	    if grep -q WAPPIE_FAKE_DRIFT $$bin/nsm-timefeed; then echo "release nsm-timefeed holds WAPPIE_FAKE_DRIFT" >&2; exit 1; fi; \
+	    cargo build --locked --release --features fake-drift; grep -q WAPPIE_FAKE_DRIFT $$bin/nsm-timefeed; \
+	    echo "nsm-attest-check: ok"'
 
 reader-verify: client-build ## Install and test the attestation CLI and the CT monitor
 	$(NPM) --prefix tools/reader-verify ci

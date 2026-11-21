@@ -30,8 +30,19 @@ export const AI_ROUTE_TIMEOUT_MS = 15_000
  */
 export const AI_ROUTE_MAX_BYTES = 18 * 1024 * 1024
 
-export function createSignedRelay({ base, readerId, secrets, fetch = globalThis.fetch, timeoutMs = 10_000, now = Date.now }) {
-  const headersFor = (method, target, body) => signedHeaders({ secret: secrets.current, direction: 'to-go', readerId, method, target, body, now })
+/**
+ * From reader 0.6.1 nothing goes to Go while `clock` (clock.mjs createClock)
+ * says the reader's clock is not trusted: every call fails at once with
+ * RelayError('clock_unknown'), before anything is signed or sent, and is
+ * counted as clock_refused on the next health line. A refused call is known
+ * not to have left, unlike relay_unavailable. It is thrown outside the
+ * relay's own try, so it reaches the caller as it is.
+ */
+export function createSignedRelay({ base, readerId, secrets, fetch = globalThis.fetch, timeoutMs = 10_000, now = Date.now, clock = null }) {
+  const headersFor = (method, target, body) => {
+    if (clock && !clock.ok()) { clock.noteRefused?.(); throw new RelayError('clock_unknown') }
+    return signedHeaders({ secret: secrets.current, direction: 'to-go', readerId, method, target, body, now })
+  }
   const relay = createRelay({ archive: base, fetch, timeoutMs, prefix: '/v1/mcp/enclave', headersFor, reasons: true, mediaKinds: MEDIA_KINDS, send: true,
     ai: { functions: AI_FUNCTIONS, providers: Object.keys(AI_PROVIDERS) } })
   const statePath = name => {
@@ -61,7 +72,8 @@ export function createSignedRelay({ base, readerId, secrets, fetch = globalThis.
      * is the row's live key: a mix-up of connection ids in here fails at Go.
      * Resolves to `{status, data}`, `data` the parsed JSON body or null;
      * RelayError('relay_unavailable') when no whole answer came, which for a
-     * send means it may have left.
+     * send means it may have left; RelayError('clock_unknown') when the
+     * clock refused the call here, which means it never left.
      */
     async sending(id, apiKey, method, route, { body, query, timeout } = {}) {
       if (!SEND_ROUTES.has(route)) throw new RelayError('relay_failed')

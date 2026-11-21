@@ -1,0 +1,37 @@
+#!/bin/sh
+# Starts the reader enclave's clock (docs/mcp-enclave.md, Clock): chronyd,
+# steered by one reference clock, and nsm-timefeed, which feeds it the Nitro
+# Secure Module's time and writes /run/wappie-clock/state.json for the reader.
+# Installed as /usr/local/sbin/wappie-clock-start, called once per enclave
+# boot by entrypoint.sh (and by the clock probe's entrypoint after it injects
+# a fault). Both programs run in restart loops in the background, so this
+# returns at once. Nothing here waits for the clock: the reader reads
+# state.json and decides when the clock is good enough.
+set -eu
+
+mkdir -p /run/chrony /run/wappie-clock
+chmod 0700 /run/chrony /run/wappie-clock
+
+# chronyd. Only the first run may step the clock (boot.conf); every restart
+# uses run.conf, which never steps and exits again on a correction over 5 s.
+# The pidfile is removed before each start: chronyd refuses to start while
+# the PID it names is alive, and after a crash that PID can belong to another
+# process by now.
+(
+  conf=/etc/chrony/boot.conf
+  while :; do
+    rm -f /run/chrony/chronyd.pid
+    chronyd -n -f "$conf" -l /dev/null > /dev/null 2>&1 < /dev/null || true
+    conf=/etc/chrony/run.conf
+    sleep 30
+  done
+) &
+
+# nsm-timefeed. Its boot gate and ledger live in /run/wappie-clock, so a
+# restarted feed keeps this boot's decisions.
+(
+  while :; do
+    nsm-timefeed /run/chrony/nsm.sock /run/wappie-clock > /dev/null 2>&1 < /dev/null || true
+    sleep 5
+  done
+) &

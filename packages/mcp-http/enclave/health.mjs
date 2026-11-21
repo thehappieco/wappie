@@ -3,9 +3,11 @@
 // ("last 7 days") are computed from `new Date()`, so once a minute it compares
 // its clock with the Date header of an unauthenticated HTTPS request to the
 // KMS endpoint: TLS verified here, so the parent can delay the answer but not
-// forge it, and a 4xx carries a Date without spending any quota.
+// forge it, and a 4xx carries a Date without spending any quota. The same
+// answer also gives a clock range (clock.mjs) for the KMS cross-check.
 
 import { readFile as readFileAsync } from 'node:fs/promises'
+import { kmsRange } from './clock.mjs'
 import { MEM_SAMPLE_MS } from './media/policy.mjs'
 
 export const HEALTH_EVERY_MS = 60_000
@@ -15,16 +17,23 @@ const MB = 1024 * 1024
 /**
  * Local time minus the server's (its Date header plus half the round trip),
  * in ms, or null when the probe fails. Date has 1 s resolution, and the alarm
- * threshold (2 s) is set with that in mind.
+ * threshold (2 s) is set with that in mind. `onRange` also receives the
+ * answer as a clock range (clock.mjs kmsRange), timed on `mono`
+ * (performance.now()) as well, when it gives one.
  */
-export async function clockSkew({ url = CLOCK_URL, fetch = globalThis.fetch, now = Date.now, timeoutMs = 5000 } = {}) {
-  const sent = now()
+export async function clockSkew({ url = CLOCK_URL, fetch = globalThis.fetch, now = Date.now, mono = () => performance.now(), timeoutMs = 5000, onRange } = {}) {
+  const sent = now(), sentMono = mono()
   let response
   try { response = await fetch(url, { method: 'GET', redirect: 'manual', signal: AbortSignal.timeout(timeoutMs) }) } catch { return null }
-  const received = now()
+  const received = now(), receivedMono = mono()
   await response.body?.cancel().catch(() => {})
-  const date = Date.parse(response.headers.get('date') ?? '')
+  const header = response.headers.get('date') ?? ''
+  const date = Date.parse(header)
   if (!Number.isFinite(date)) return null
+  if (onRange) {
+    const range = kmsRange({ sent, received, sentMono, receivedMono, date: header })
+    if (range) { try { onRange(range) } catch { /* never fails the probe */ } }
+  }
   return Math.round(received - (date + (received - sent) / 2))
 }
 
@@ -33,16 +42,19 @@ export const prefix = value => (typeof value === 'string' && /^[0-9a-f]{12,}$/.t
 
 /**
  * `fields()` returns the reader's own numbers (connections, pending, …); this
- * adds process figures and the last clock probe. Unknown fields are omitted.
+ * adds process figures, the last clock probe and, with `clock` (clock.mjs
+ * createClock), the clock's fields. Unknown fields are omitted. Uptime is on
+ * the monotonic clock (`mono`, performance.now()), so a step of the system
+ * clock does not move it.
  */
-export function createHealthLine({ log, fields, probe = () => clockSkew(), everyMs = HEALTH_EVERY_MS, started = Date.now(), now = Date.now }) {
+export function createHealthLine({ log, fields, probe = () => clockSkew(), everyMs = HEALTH_EVERY_MS, clock = null, mono = () => performance.now(), started = mono() }) {
   let timer = null, skew = null
   async function tick() {
     skew = await probe().catch(() => null)
     const memory = process.memoryUsage()
     const entry = {
-      uptime_s: Math.floor((now() - started) / 1000), rss_mb: Math.round(memory.rss / MB), heap_mb: Math.round(memory.heapUsed / MB),
-      ...(skew === null ? {} : { clock_skew_ms: skew }), ...fields(),
+      uptime_s: Math.max(0, Math.floor((mono() - started) / 1000)), rss_mb: Math.round(memory.rss / MB), heap_mb: Math.round(memory.heapUsed / MB),
+      ...(skew === null ? {} : { clock_skew_ms: skew }), ...fields(), ...(clock?.fields() ?? {}),
     }
     for (const [key, value] of Object.entries(entry)) if (value === undefined || value === null) delete entry[key]
     log.event('health', entry)

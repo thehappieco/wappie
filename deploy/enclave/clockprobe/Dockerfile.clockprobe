@@ -1,0 +1,57 @@
+# The CLOCK PROBE image (deploy/enclave/clockprobe). It is NEVER released:
+# clockprobe.sh builds it with a distinct tag and a throwaway EIF, runs it in
+# --debug-mode on the parent and throws it away. Debug mode zeroes the PCRs,
+# so this image can never pass the reader's KMS policy.
+#
+# It is the reader image of the same commit (deploy/enclave/Dockerfile), so
+# chronyd, /etc/chrony, nsm-timefeed and wappie-clock-start are the release
+# bytes, plus only what the probe adds:
+# - /opt/clockprobe/bin/nsm-p0: the measuring tool (nsm-p0.rs), built as an
+#   example of the nsm-attest crate from its own Cargo.lock;
+# - /opt/clockprobe/fake/nsm-timefeed: nsm-timefeed built with the probe-only
+#   fake-drift feature, used by S6 alone (put first on PATH for that one
+#   wappie-clock-start);
+# - the runner, the KMS sampler and their entrypoint under /clockprobe.
+# build-image.sh builds both images:
+#   deploy/enclave/clockprobe/build-image.sh <tag>
+# or by hand, from the repository root, on arm64:
+#   docker build -f deploy/enclave/Dockerfile --build-arg SOURCE_DATE_EPOCH=... -t R .
+#   docker build -f deploy/enclave/clockprobe/Dockerfile.clockprobe --build-arg READER_IMAGE=R -t P .
+# Classic Dockerfile syntax only (the parent may run the legacy builder).
+
+ARG READER_IMAGE
+ARG RUST_IMAGE=rust:1-alpine@sha256:7cc1c22d77d9432f7fe012a70e6d3e555af54c2a6832700ed7d553f1769ae89f
+
+FROM ${RUST_IMAGE} AS tools
+RUN apk add --no-cache musl-dev
+WORKDIR /nsm
+COPY deploy/enclave/nsm-attest/Cargo.toml deploy/enclave/nsm-attest/Cargo.lock ./
+COPY deploy/enclave/nsm-attest/src/ ./src/
+COPY deploy/enclave/clockprobe/nsm-p0.rs ./examples/nsm-p0.rs
+RUN cargo build --release --locked --example nsm-p0 \
+ && cp target/release/examples/nsm-p0 /nsm-p0 \
+ && cargo build --release --locked --features fake-drift --bin nsm-timefeed \
+ && cp target/release/nsm-timefeed /nsm-timefeed-fake \
+ && grep -q WAPPIE_FAKE_DRIFT /nsm-timefeed-fake
+
+FROM ${READER_IMAGE}
+COPY --from=tools /nsm-p0 /opt/clockprobe/bin/nsm-p0
+COPY --from=tools /nsm-timefeed-fake /opt/clockprobe/fake/nsm-timefeed
+COPY deploy/enclave/clockprobe/entrypoint-clockprobe.sh deploy/enclave/clockprobe/clockprobe-run.mjs \
+     deploy/enclave/clockprobe/evaluate.mjs deploy/enclave/clockprobe/kms-sampler.mjs /clockprobe/
+# The release binary stays the release binary; the bridge and the KMS name
+# the entrypoint sets up are the ones /entrypoint.sh uses; the reader modules
+# the sampler imports are there.
+RUN chmod 0555 /opt/clockprobe/bin/nsm-p0 /opt/clockprobe/fake/nsm-timefeed /clockprobe/entrypoint-clockprobe.sh \
+ && if grep -q WAPPIE_FAKE_DRIFT /usr/local/bin/nsm-timefeed; then echo "the release nsm-timefeed holds WAPPIE_FAKE_DRIFT" >&2; exit 1; fi \
+ && grep -q "127.0.0.2 kms.eu-west-1.amazonaws.com" /entrypoint.sh \
+ && grep -q "bind=127.0.0.2,reuseaddr,fork VSOCK-CONNECT:3:8000" /entrypoint.sh \
+ && grep -q "bind=127.0.0.2,reuseaddr,fork VSOCK-CONNECT:3:8000" /clockprobe/entrypoint-clockprobe.sh \
+ && grep -q "^/usr/local/sbin/wappie-clock-start$" /entrypoint.sh \
+ && test -x /usr/local/sbin/wappie-clock-start \
+ && test -f /app/packages/mcp-http/enclave/clock.mjs && test -f /app/packages/mcp-http/enclave/health.mjs \
+ && node --check /clockprobe/clockprobe-run.mjs && node --check /clockprobe/kms-sampler.mjs \
+ && sh -n /clockprobe/entrypoint-clockprobe.sh \
+ && mkdir -p /run/clockprobe
+ENTRYPOINT ["/bin/sh", "/clockprobe/entrypoint-clockprobe.sh"]
+CMD []

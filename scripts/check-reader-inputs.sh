@@ -4,8 +4,9 @@
 # copies packages/mcp and packages/mcp-http whole, prunes src/ and test/,
 # deletes *.ts and *.map, and installs each package's production
 # dependencies from its lockfile. It builds the attachment workers from
-# their own files, and nsm-attest and media-jail from their Cargo files and
-# sources. All of it goes into PCR0, built by the Dockerfile and build.sh
+# their own files, nsm-attest and media-jail from their Cargo files and
+# sources, and chronyd from the vendored chrony tarball, with its
+# configuration and start script. All of it goes into PCR0, built by the Dockerfile and build.sh
 # (which writes the KMS key ARNs into constants.mjs), so those two are
 # compared too. A change to any of these bytes needs a reader release.
 # This check refuses one: it compares every such file at a
@@ -16,17 +17,17 @@
 #
 #   scripts/check-reader-inputs.sh [baseline]
 #
-# The baseline defaults to f7babbe, main when this check began (2026-11-10).
-# It is not the image the pilot runs. Main already differed there from release
-# A's c9ec561 and from 2b540ba, which reader 0.6.0's measurements name:
-# packages/mcp-http/enclave/main.mjs (711465a, a test seam for the
-# challenge listener) and deploy/enclave/build.sh (91fab1d). The next reader
-# release carries those. Move the baseline only with a reader release, or
+# The baseline defaults to a9b06bc, reader 0.6.1's release commit
+# (2026-11-21). The check began at f7babbe (2026-11-10), main then, which was
+# not the image the pilot ran: main already differed from 2b540ba, which
+# reader 0.6.0's measurements name, in packages/mcp-http/enclave/main.mjs
+# (711465a) and deploy/enclave/build.sh (91fab1d). Reader 0.6.1 carries
+# those and the clock. Move the baseline only with a reader release, or
 # with a reason recorded in the commit that moves it. The commit must be in
 # the repository (CI fetches it).
 set -euo pipefail
 
-base=${1:-f7babbeeb0a386981eee8d1cee5c2dd071a9d2df}
+base=${1:-a9b06bc8daeedfcec93b1fd9706b9536231ea561}
 root=$(git rev-parse --show-toplevel)
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
@@ -34,6 +35,11 @@ mkdir -p "$work/base" "$work/head"
 
 # The paths the image takes, as the Dockerfile copies them. The workers'
 # directory is removed from mcp-http's copy and built from its own files.
+# From deploy/enclave/chrony only the files the image takes are listed: its
+# README.md and test-chrony.sh never reach the image
+# (deploy/enclave/test_build.py checks the list against the Dockerfile).
+# The probes, deploy/enclave/probe and deploy/enclave/clockprobe, are never
+# released and are not listed (test_build.py checks clockprobe stays out).
 paths=(packages/mcp packages/mcp-http deploy/enclave)
 worker=packages/mcp-http/enclave/media/worker
 worker_files=("$worker/package.json" "$worker/package-lock.json" "$worker/image.mjs"
@@ -41,7 +47,10 @@ worker_files=("$worker/package.json" "$worker/package-lock.json" "$worker/image.
 enclave_files=(deploy/enclave/Dockerfile deploy/enclave/build.sh deploy/enclave/entrypoint.sh
 	deploy/enclave/nsm-attest/Cargo.toml deploy/enclave/nsm-attest/Cargo.lock deploy/enclave/nsm-attest/src
 	deploy/enclave/media-jail/Cargo.toml deploy/enclave/media-jail/Cargo.lock deploy/enclave/media-jail/src
-	deploy/enclave/media-jail/profiles)
+	deploy/enclave/media-jail/profiles
+	deploy/enclave/chrony/chrony-4.9.tar.gz deploy/enclave/chrony/chrony-4.9.tar.gz.sha256
+	deploy/enclave/chrony/common.conf deploy/enclave/chrony/boot.conf deploy/enclave/chrony/run.conf
+	deploy/enclave/chrony/wappie-clock-start)
 
 git -C "$root" cat-file -e "$base^{commit}" 2>/dev/null || {
 	echo "check-reader-inputs: $base is not in this repository (git fetch origin $base)" >&2
@@ -66,8 +75,10 @@ measured() {
 				find "$p" -path "$worker" -prune -o -type d \( -name src -o -name test -o -name node_modules \) -prune -o \
 					-type f ! -name '*.ts' ! -name '*.map' -print
 			done
+			# A path the tree lacks (new since the baseline, or removed) is
+			# skipped; the comparison then reports its files.
 			for f in "${worker_files[@]}" "${enclave_files[@]}"; do
-				[ -e "$f" ] && find "$f" -type f -print
+				if [ -e "$f" ]; then find "$f" -type f -print; fi
 			done
 		} | LC_ALL=C sort | while IFS= read -r f; do sum "$f"; done
 	)

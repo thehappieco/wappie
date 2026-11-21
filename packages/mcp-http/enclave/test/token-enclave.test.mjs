@@ -86,7 +86,7 @@ test('a token request (§19.18 step 1): an attested descriptor of kind token wit
   assert.equal(status, 200)
   assert.deepEqual(Object.keys(d), ['descriptor_version', 'kind', 'request_id', 'kid', 'reader_public_key', 'client_kind', 'trust', 'limits_tier', 'limits', 'resource',
     'reader_version', 'expires_at', 'attestation'])
-  assert.deepEqual([d.descriptor_version, d.kind, d.client_kind, d.trust, d.limits_tier, d.resource, d.reader_version], [2, 'token', 'token', 'unknown', 'token', RESOURCE, '0.6.0'])
+  assert.deepEqual([d.descriptor_version, d.kind, d.client_kind, d.trust, d.limits_tier, d.resource, d.reader_version], [2, 'token', 'token', 'unknown', 'token', RESOURCE, '0.6.1'])
   assert.deepEqual(d.limits, CLIENT_LIMITS.token)
   assert.equal(d.limits.durations_days.content.default, 1, 'text tokens last a day by default')
   const document = decodeAttestationDocument(Buffer.from(d.attestation.document, 'base64url'))

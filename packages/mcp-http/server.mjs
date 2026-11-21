@@ -113,6 +113,12 @@ async function readRelaySecret(path) {
  * `readingLimits` (enclave/budgets.mjs, §19.19), the reading limits of the
  * tiers that have them, and `liveList` (enclave/livelist.mjs, §19.22), which
  * adds the attested live list.
+ *
+ * From reader 0.6.1 the enclave also injects `clock` (enclave/clock.mjs).
+ * While it is not trusted the router closes the OAuth and MCP routes, the
+ * internal routes answer 503 `clock_unknown` (internal.mjs), and both sweeps
+ * skip their turn: a clock running fast must not expire connections, tokens
+ * or requests early.
  */
 export async function startReader(options = {}) {
   const config = options.config ?? readEnv(options.env ?? process.env)
@@ -124,6 +130,8 @@ export async function startReader(options = {}) {
   const state = options.state ?? await openState(config.stateDir)
   const relay = options.relay ?? createRelay({ archive: config.archive, secret })
   const content = options.content
+  const clock = options.clock ?? null
+  const clockUnknown = () => clock !== null && !clock.ok()
   // Go is the authority on connections: anything it no longer serves is dropped
   // before the first request. An unreachable Go keeps the state as it was; the
   // per-request check catches up within a minute.
@@ -185,15 +193,17 @@ export async function startReader(options = {}) {
     return { ...described, attestation: await attestor.attestation({ requestId: pending.id, publicKey: pending.recipient.publicKey, nonce, ...whole }) }
   })
   const internal = internalRoutes({ state, secret, now, pendingFor: as.pendingFor, auth: options.internalAuth, health: config.health, prepare, rotateSecret: options.secrets?.rotate, content,
-    unknownLiveMax: policy.unknownLiveMax, liveList: options.liveList })
+    unknownLiveMax: policy.unknownLiveMax, liveList: options.liveList, clock })
   const router = createRouter({ state, metadata, as, internal, verifier, limiter, log, archive: config.archive, publicHost: new URL(publicOrigin).hostname,
     listenerHosts: injected ? config.listenerHosts : undefined, trustForwarded: !injected,
     attestation: attestor && (({ nonce }) => attestor.attestation({ requestId: '', publicKey: null, nonce })), content,
     clientLimits: policy.limits, readingLimits: options.readingLimits, readerVersion: config.readerVersion,
-    site: { console: config.consoleURL, documentation: config.links?.documentation } })
+    site: { console: config.consoleURL, documentation: config.links?.documentation }, clock })
 
   const handlerFor = listener => async (req, res) => {
-    const started = now(), meta = {}
+    // The duration is on the monotonic clock: a step of the system clock
+    // must not make it negative (the log schema would drop the line).
+    const started = performance.now(), meta = {}
     let response
     try {
       const request = await toWebRequest(req, publicOrigin, bodyLimitFor(req.url.split('?')[0]))
@@ -204,7 +214,7 @@ export async function startReader(options = {}) {
       response = Response.json({ code: 'internal_error' }, { status: 500, headers: { 'Cache-Control': 'no-store' } })
     }
     try { await sendWebResponse(res, response) } catch { /* the peer went away */ }
-    log.request({ route: meta.route ?? 'unmatched', status: response.status, ms: now() - started, connection: meta.connection, client: meta.client, code: meta.code, flags: meta.flags })
+    log.request({ route: meta.route ?? 'unmatched', status: response.status, ms: Math.max(0, Math.round(performance.now() - started)), connection: meta.connection, client: meta.client, code: meta.code, flags: meta.flags })
   }
   const servers = injected ? [[injected.public, 'public'], ...(injected.internal ? [[injected.internal, 'internal']] : [])] : [[server, undefined]]
   for (const [target, listener] of servers) {
@@ -213,7 +223,9 @@ export async function startReader(options = {}) {
     target.on('request', handlerFor(listener))
   }
 
+  /** Local expiry; skipped (false) while the clock is not trusted. */
   async function sweep() {
+    if (clockUnknown()) return false
     as.sweepPending()
     let changed = tokens.sweep() | clients.sweep()
     for (const [id, connection] of state.connections) {
@@ -233,6 +245,7 @@ export async function startReader(options = {}) {
     }
     options.readingLimits?.sweep(new Set(state.connections.keys()))
     if (changed) await state.save()
+    return true
   }
   const timer = setInterval(() => { sweep().catch(() => {}) }, 30_000)
   timer.unref()
@@ -241,8 +254,10 @@ export async function startReader(options = {}) {
    * Asks Go about every content connection, used or idle, so a revocation
    * reaches an idle key within a minute. Go being away wipes nothing: the
    * cached answers lapse and the verifier answers 503 until Go is back.
+   * While the clock is not trusted it skips its turn and answers null.
    */
   async function contentSweep() {
+    if (clockUnknown()) return null
     let checked = 0, wiped = 0, unreachable = 0
     for (const [id, record] of [...state.connections]) {
       if (record.kind !== 'content' && record.kind !== 'ai') continue

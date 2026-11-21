@@ -14,8 +14,10 @@
 // AI authorizations (§18) keep their keys and their providers' keys the same
 // way, and reach the providers only through ai/egress.mjs.
 //
-// Boot order (§10.2): boot.json; credentials and the RSA recipient key; the
-// relay secret; the key policy hash (not fatal); the sealed state; the ACME
+// Boot order (§10.2): boot.json; credentials and the RSA recipient key; a
+// trusted clock (reader 0.6.1, clock.mjs: Node waits up to 180 s for the
+// helper and KMS to agree, and a boot without one fails with clock_unknown);
+// the relay secret; the key policy hash (not fatal); the sealed state; the ACME
 // account; the challenge listener, then the certificate; the media jail's
 // boot check (§16.6, never fatal: attachments stay off for the boot); the
 // HTTPS listeners; reconciliation with Go. A fatal boot error writes boot_failed and exits 78;
@@ -23,6 +25,7 @@
 // same path, with code constants_invalid, before anything else starts.
 import { createServer as createHTTPServer } from 'node:http'
 import { realpathSync } from 'node:fs'
+import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { createAttestor, decodeAttestationDocument } from '../attestation.mjs'
 import { createLog } from '../log.mjs'
@@ -35,6 +38,7 @@ import { parseBootJson, readLocal as readLocalPort } from './boot.mjs'
 import { imageConstants, PORTS } from './constants.mjs'
 import { createReadingLimits } from './budgets.mjs'
 import { createCIMDFetcher } from './cimd-fetch.mjs'
+import { createClock, createCountFile, createKmsCheck, createNsmCheck, DISAGREE_FILE } from './clock.mjs'
 import { createContent } from './content.mjs'
 import { createHealthLine, createMemSampler, clockSkew, HEALTH_EVERY_MS, prefix } from './health.mjs'
 import { createHmacGuard } from './hmac.mjs'
@@ -98,6 +102,8 @@ async function persist(collection, wait) {
  * (`cimdFetcher`: never the parent's proxy in a test) and the client policy
  * (`clientPolicy`: 0.5.0's `{mode: 'allowlist', hosts}` for the tests that
  * predate 0.6.0, or fields that replace the image's `any` policy).
+ * `clock` replaces the reader's clock (clock.mjs createClock, which reads the
+ * helper's state.json): the tests' is a fake one they set by hand.
  */
 export async function startEnclave(options = {}) {
   // An image that still carries a build marker (or a bad ARN) is a boot
@@ -122,19 +128,29 @@ export async function startEnclave(options = {}) {
   }
   const readLocal = options.readLocal ?? (port => readLocalPort(port))
   const counters = { proxyRejected: 0 }
+
+  // The reader's clock (clock.mjs): whether the system clock, which chronyd
+  // steers to NSM time, can be trusted right now. It hears every KMS answer's
+  // Date and every attestation document's NSM timestamp, and probes the KMS
+  // endpoint's Date itself while it waits at boot. Its count of KMS
+  // disagreements lives in the run directory (tmpfs, per enclave boot, like
+  // boot_id), so a Node restart carries it on.
+  const runDir = overrides.runDir ?? c.RUN_DIR
+  const kmsDate = () => clockSkew({ url: overrides.clockUrl, fetch: options.fetch, now, onRange: range => clock.onKms(range) })
+  const clock = options.clock ?? createClock({ kms: createKmsCheck({ wall: now, log }), nsm: createNsmCheck({ wall: now }), probe: kmsDate, log, wall: now, disagreeStore: createCountFile(join(runDir, DISAGREE_FILE)) })
   const facts = { pcr0: null, state: null, secrets: null, certificates: null, policy: null, acmeUri: null, content: null, reader: null, budgets: null, ready: false }
 
   // Every document the NSM signs carries PCR0; the first one tells the reader its own.
   const attest = async fields => {
-    const document = await (options.attest ?? nsmAttest)(fields)
+    const document = await (options.attest ?? nsmAttest)(fields, { onSample: sample => clock.onNsm(sample) })
     if (!facts.pcr0) { try { facts.pcr0 = decodeAttestationDocument(document).pcrs[0] ?? null } catch { /* reported as unknown */ } }
     return document
   }
 
   const memory = createMemSampler()
   const health = createHealthLine({
-    log, now, started: now(),
-    probe: () => clockSkew({ url: overrides.clockUrl, fetch: options.fetch, now }),
+    log, clock,
+    probe: kmsDate,
     fields: () => ({
       ...mediaHealth(), ...(facts.content?.sending.counts() ?? {}), ...(facts.content?.ai?.counts() ?? {}),
       cert_days_left: facts.certificates?.daysLeft() ?? undefined,
@@ -195,7 +211,7 @@ export async function startEnclave(options = {}) {
 
     // 2. Role credentials and the per-boot RSA recipient key.
     const kms = options.kms ?? createKms({
-      client: kmsClient(roleCredentials(async () => (await readLocal(ports.credentials)).toString('utf8'))),
+      client: kmsClient(roleCredentials(async () => (await readLocal(ports.credentials)).toString('utf8')), { onRange: range => clock.onKms(range) }),
       keys: recipientKeys(), attest,
       log: (op, fields) => log.event(op, fields),
     })
@@ -203,6 +219,15 @@ export async function startEnclave(options = {}) {
     // PCR0 for the health object and line: KMS calls already carry a document,
     // but one document with no fields settles it even before the first of them.
     if (!facts.pcr0) await attest({}).catch(() => log.event('attest_failed'))
+
+    // 2b. A trusted clock, before anything that keeps or compares times: the
+    // relay secret's signatures, the sealed state, the key policy's
+    // freshness, ACME and every token. clock_unknown after 180 s.
+    await step('clock_unknown', async () => {
+      log.event('clock_wait')
+      await clock.ready()
+    })
+    clock.start()
 
     // 3. The relay secret, under the boot key.
     const relayContext = { purpose: 'wappie-mcp-relay', reader_id: c.READER_ID }
@@ -218,7 +243,7 @@ export async function startEnclave(options = {}) {
 
     // 5. Sealed state, all four names (each load retries while Go is away).
     const archive = overrides.archive ?? c.ARCHIVE
-    const relay = createSignedRelay({ base: archive, readerId: c.READER_ID, secrets, fetch: options.fetch, now })
+    const relay = createSignedRelay({ base: archive, readerId: c.READER_ID, secrets, fetch: options.fetch, now, clock })
     const store = relayStore(relay)
     const sealer = createSealer({ kms, keyArn: c.KMS_READER_KEY_ARN, readerId: c.READER_ID, origin: c.PUBLIC_ORIGIN })
     // A second writer or a tampered store: stop, and let entrypoint.sh reload from what Go holds.
@@ -249,7 +274,6 @@ export async function startEnclave(options = {}) {
     // 7. The challenge listener, then the per-boot key and the certificate.
     const challengeServer = challenges.server()
     await listen(challengeServer, ports.challenge, host)
-    const runDir = overrides.runDir ?? c.RUN_DIR
     const material = await step('tls_key_failed', () => bootMaterial(runDir))
     const names = [c.PUBLIC_HOST, `${material.bootId}${c.BOOT_NAME_SUFFIX}`]
     const certificates = createCertificates({ dir: runDir, material, names, acme, log, now, wait })
@@ -298,7 +322,12 @@ export async function startEnclave(options = {}) {
       listenerHosts: { public: c.PUBLIC_LISTENER_HOST, internal: c.INTERNAL_LISTENER_HOST },
       spki: () => certificates.spkiSha256(), policy: () => policy.current(),
       health: () => ({
-        ok: true, reader_id: c.READER_ID, reader_version: c.READER_VERSION, boot_id: material.bootId, state: facts.ready ? 'ready' : 'loading',
+        ok: true, reader_id: c.READER_ID, reader_version: c.READER_VERSION, boot_id: material.bootId,
+        state: !clock.ok() ? 'clock_unknown' : facts.ready ? 'ready' : 'loading',
+        // The clock as the health line has it (clock_ok, clock_unc_ms, nsm_skew_ms, go_skew_ms, kms_skew_lo_ms,
+        // kms_skew_hi_ms, clock_corr_hour_ms, clock_corr_day_ms; null when unknown), its reason clock_code and
+        // the clock_disagree_kms count.
+        ...clock.summary(),
         pcr0: facts.pcr0, tls_spki_sha256: certificates.spkiSha256(), cert_not_after: certificates.notAfter() ? new Date(certificates.notAfter()).toISOString().replace(/\.\d{3}Z$/, 'Z') : null,
         policy_sha256: policy.current(), acme_account_uri: facts.acmeUri, relay_secrets: secrets.count(),
         // Each AI provider's host reached over verified TLS by the last probe (§18.16), on a release with ai_v1.
@@ -309,8 +338,8 @@ export async function startEnclave(options = {}) {
     const budgets = createReadingLimits({ limits: c.CLIENT_LIMITS, now, log, onHit: (id, code) => relay.budgetHit(id, code) })
     facts.budgets = budgets
     const reader = await startReader({
-      config, now, logSink, secrets, state, relay, servers, keys: 'per-request', attest, content,
-      internalAuth: createHmacGuard({ readerId: c.READER_ID, secrets, now }),
+      config, now, logSink, secrets, state, relay, servers, keys: 'per-request', attest, content, clock,
+      internalAuth: createHmacGuard({ readerId: c.READER_ID, secrets, now, onVerified: (seconds, at) => clock.noteGo(seconds, at) }),
       readingLimits: c.READER_CAPABILITIES.includes('client_limits_v1') ? budgets : undefined,
       liveList: c.READER_CAPABILITIES.includes('live_list_v1') ? createLiveList({ state, attestor, now }) : undefined,
     })
@@ -319,9 +348,9 @@ export async function startEnclave(options = {}) {
     log.event('enclave_ready', { ...(facts.pcr0 ? { pcr0: prefix(facts.pcr0) } : {}), ...(certificates.spkiSha256() ? { spki: prefix(certificates.spkiSha256()) } : {}) })
     return {
       reader, ports: Object.fromEntries(Object.entries(listeners).map(([name, server]) => [name, server.address().port]).concat([['challenge', challengeServer.address().port]])),
-      material, names, secrets, state, certificates, policy, health, facts,
+      material, names, secrets, state, certificates, policy, health, facts, clock,
       async close() {
-        health.stop(); memory.stop(); policy.stop(); certificates.stop()
+        health.stop(); memory.stop(); policy.stop(); certificates.stop(); clock.stop()
         if (reachTimer) clearInterval(reachTimer)
         await reader.close()
         for (const server of [...Object.values(listeners), challengeServer]) await new Promise(resolve => server.close(() => resolve()))
@@ -331,6 +360,7 @@ export async function startEnclave(options = {}) {
   } catch (error) {
     health.stop()
     memory.stop()
+    clock.stop()
     if (reachTimer) clearInterval(reachTimer)
     const code = error instanceof BootFailure ? error.code : 'boot_failed'
     log.event('boot_failed', { code })

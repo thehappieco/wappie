@@ -9,7 +9,7 @@
 #
 # Everything in this image is measured into PCR0, so every input is pinned:
 # base images by digest (the defaults below; build.sh records them), npm and
-# cargo dependencies by lockfile, and file times clamped to SOURCE_DATE_EPOCH.
+# cargo dependencies by lockfile, and every file time set to SOURCE_DATE_EPOCH.
 # The spike found that PCR0 changes between clean builds because of file times
 # and /var/log/apk.log (commercial/docs/enclave-spike-plan.md, Day 5), so both
 # are handled here. The Alpine packages (socat, iproute2) still come from the
@@ -30,7 +30,37 @@ RUN apk add --no-cache musl-dev
 WORKDIR /nsm
 COPY deploy/enclave/nsm-attest/Cargo.toml deploy/enclave/nsm-attest/Cargo.lock ./
 COPY deploy/enclave/nsm-attest/src/ ./src/
-RUN cargo build --release --locked && cp target/release/nsm-attest /nsm-attest
+RUN cargo build --release --locked \
+ && cp target/release/nsm-attest /nsm-attest && cp target/release/nsm-timefeed /nsm-timefeed
+
+# chronyd, the clock's discipline (docs/mcp-enclave.md, Clock), built from the
+# vendored upstream source (deploy/enclave/chrony/README.md), never from apk:
+# that would be one more unpinned input, with NTP and chronyc besides. Static
+# and as small as configure allows. Every feature configure would otherwise
+# detect from the installed packages is turned off by name, an option it
+# does not know fails the build (configure itself only warns), and
+# check-image.sh compares the exact feature list chronyd -v prints. 4.9 has
+# no option to leave NTP out: port 0 and no sources keep it closed. The NTP
+# era is fixed (1976-11-13, 50 years of 365 days before nsm-timefeed's date
+# floor of 2026-11-01): configure's default is the build time, which would
+# make every build a different binary.
+FROM ${RUST_IMAGE} AS chrony
+RUN apk add --no-cache musl-dev make
+WORKDIR /chrony
+COPY deploy/enclave/chrony/chrony-4.9.tar.gz deploy/enclave/chrony/chrony-4.9.tar.gz.sha256 ./
+RUN sha256sum -c chrony-4.9.tar.gz.sha256 \
+ && tar -xzf chrony-4.9.tar.gz \
+ && cd chrony-4.9 \
+ && { LDFLAGS=-static ./configure --prefix=/usr --sysconfdir=/etc/chrony \
+        --disable-readline --without-editline --disable-sechash --without-nettle --without-gnutls --without-nss \
+        --without-tomcrypt --without-aes-gcm-siv --disable-nts --disable-cmdmon --disable-phc --disable-pps \
+        --disable-ipv6 --disable-rtc --disable-privdrop --without-libcap --disable-scfilter --without-seccomp \
+        --disable-timestamping --with-ntp-era=216691200 > /tmp/configure.log 2>&1 || { cat /tmp/configure.log; exit 1; }; } \
+ && cat /tmp/configure.log \
+ && if grep -q "Unrecognized option" /tmp/configure.log; then echo "chrony configure: unknown option" >&2; exit 1; fi \
+ && make chronyd \
+ && strip -o /chronyd chronyd \
+ && if readelf -l /chronyd | grep -q INTERP; then echo "chronyd is not static (PT_INTERP)" >&2; exit 1; fi
 
 # media-jail, the sandbox every attachment parser runs in (docs/mcp-enclave.md
 # §16.6), in the same pattern: a static musl binary from its committed
@@ -119,19 +149,30 @@ ARG SOURCE_DATE_EPOCH
 RUN apk add --no-cache socat iproute2 && rm -f /var/log/apk.log
 COPY --from=build /out/packages/ /app/packages/
 COPY --from=nsm /nsm-attest /usr/local/bin/nsm-attest
+COPY --from=nsm /nsm-timefeed /usr/local/bin/nsm-timefeed
+COPY --from=chrony /chronyd /usr/sbin/chronyd
 COPY --from=mediajail /media-jail /usr/local/bin/media-jail
 COPY --from=workerdeps /opt/media/ /opt/media/
 COPY deploy/enclave/entrypoint.sh /entrypoint.sh
-# Clamp every time newer than SOURCE_DATE_EPOCH (the apk files, the copied
-# trees and every directory they touched) to it; the base image's older times
-# stay. The reference directory is removed and / is re-clamped last, because
-# removing it changes the time of /. The runtime mounts are skipped.
-# COPY made /opt/media itself 0755; the tree below it is 0555/0444 already.
-RUN chmod 0555 /entrypoint.sh /usr/local/bin/nsm-attest /usr/local/bin/media-jail /opt/media \
+# The clock (docs/mcp-enclave.md, Clock): chronyd's three files and the
+# script entrypoint.sh calls to start chronyd and nsm-timefeed. No chronyc.
+COPY deploy/enclave/chrony/common.conf deploy/enclave/chrony/boot.conf deploy/enclave/chrony/run.conf /etc/chrony/
+COPY deploy/enclave/chrony/wappie-clock-start /usr/local/sbin/wappie-clock-start
+# Set every time to SOURCE_DATE_EPOCH: the base image's, the apk files', the
+# copied trees' and every directory they touched. Not only the times newer
+# than it: COPY keeps a file's time, so a binary from a cached stage, or a
+# file from a checkout, can carry a time from before the commit, and would
+# then differ from a clean build's. The reference directory is removed and /
+# is set last, because removing it changes the time of /. The runtime mounts
+# are skipped. COPY made /opt/media itself 0755; the tree below it is
+# 0555/0444 already.
+RUN chmod 0555 /entrypoint.sh /usr/local/bin/nsm-attest /usr/local/bin/nsm-timefeed /usr/local/bin/media-jail /opt/media \
+      /usr/sbin/chronyd /usr/local/sbin/wappie-clock-start /etc/chrony \
+ && chmod 0444 /etc/chrony/common.conf /etc/chrony/boot.conf /etc/chrony/run.conf \
  && mkdir /.sde && touch -d "@${SOURCE_DATE_EPOCH}" /.sde/ref \
  && find / -xdev \( -path /proc -o -path /sys -o -path /dev -o -path /.sde \
       -o -path /etc/hosts -o -path /etc/hostname -o -path /etc/resolv.conf \) -prune \
-      -o -newer /.sde/ref -exec touch -h -r /.sde/ref {} + \
+      -o -exec touch -h -r /.sde/ref {} + \
  && rm -r /.sde && touch -h -d "@${SOURCE_DATE_EPOCH}" /
 
 # ...then copied whole into an empty image as a single layer. A layer that

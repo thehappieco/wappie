@@ -9,7 +9,7 @@
 // image that still carries a marker refuses to boot (constants_invalid). They
 // are ARNs by key id, never aliases: an UpdateAlias would swap the key.
 export const READER_ID = 'enclave'
-export const READER_VERSION = '0.6.0'
+export const READER_VERSION = '0.6.1'
 // What this release can do, for the console (build.sh writes it into
 // measurements.json as `capabilities`, docs/mcp-enclave.md §16.2 rule 8,
 // §17.2 rule 9, §18.14 and §19.3): consent version 2, attachments for a
@@ -21,7 +21,9 @@ export const READER_VERSION = '0.6.0'
 // and link bundle v2 (`consent_v4`), the tiers' limits (`client_limits_v1`),
 // the attested live list (`live_list_v1`) and the console connection token
 // (`console_token_v1`). Direct send (`send_direct_v1`) comes after 0.6.0.
-// Without `ai_v1` content.mjs builds no AI service at all.
+// 0.6.1 (the clock, docs/mcp-enclave.md §10.5) adds no capability: the
+// console seals the same consents for it as for 0.6.0. Without `ai_v1`
+// content.mjs builds no AI service at all.
 export const READER_CAPABILITIES = Object.freeze(['consent_v2', 'media', 'consent_v3', 'send_draft_v1', 'ai_v1',
   'any_client_v1', 'descriptor_attest_v2', 'consent_v4', 'client_limits_v1', 'live_list_v1', 'console_token_v1'])
 export const PUBLIC_HOST = 'mcp.wappie.thehappie.co'
