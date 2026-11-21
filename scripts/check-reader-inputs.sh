@@ -17,17 +17,17 @@
 #
 #   scripts/check-reader-inputs.sh [baseline]
 #
-# The baseline defaults to f7babbe, main when this check began (2026-11-10).
-# It is not the image the pilot runs. Main already differed there from release
-# A's c9ec561 and from 2b540ba, which reader 0.6.0's measurements name:
-# packages/mcp-http/enclave/main.mjs (711465a, a test seam for the
-# challenge listener) and deploy/enclave/build.sh (91fab1d). The next reader
-# release carries those. Move the baseline only with a reader release, or
+# The baseline defaults to a9b06bc, reader 0.6.1's release commit
+# (2026-11-21). The check began at f7babbe (2026-11-10), main then, which was
+# not the image the pilot ran: main already differed from 2b540ba, which
+# reader 0.6.0's measurements name, in packages/mcp-http/enclave/main.mjs
+# (711465a) and deploy/enclave/build.sh (91fab1d). Reader 0.6.1 carries
+# those and the clock. Move the baseline only with a reader release, or
 # with a reason recorded in the commit that moves it. The commit must be in
 # the repository (CI fetches it).
 set -euo pipefail
 
-base=${1:-f7babbeeb0a386981eee8d1cee5c2dd071a9d2df}
+base=${1:-a9b06bc8daeedfcec93b1fd9706b9536231ea561}
 root=$(git rev-parse --show-toplevel)
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT

@@ -113,8 +113,9 @@ client-dist-check: ## The reader's measured client equals c9ec561's
 	scripts/check-client-dist.sh
 
 # The rest of the reader image's inputs: packages/mcp and packages/mcp-http
-# as the image keeps them, the attachment workers, nsm-attest and media-jail.
-reader-inputs-check: ## The reader's other measured inputs equal f7babbe's
+# as the image keeps them, the attachment workers, nsm-attest (with
+# nsm-timefeed), media-jail and chrony.
+reader-inputs-check: ## The reader's other measured inputs equal reader 0.6.1's (a9b06bc)
 	scripts/check-reader-inputs.sh
 
 mcp-check: client-build ## Install and verify the local MCP server
