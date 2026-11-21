@@ -3532,11 +3532,18 @@ and its 503 `clock_unknown`, and mails the clock alerts (§5.1); a 0.6.0
 reader sends none of them and is never tracked. The public PR
 (`READER_VERSION` 0.6.1, nsm-timefeed, chrony and `wappie-clock-start` in
 the image, `clock.mjs` and the gate) ran the clock probe
-(`deploy/enclave/clockprobe/RESULTS-2026-11-21.md`) on 2ae2037 to 4e46a17,
-whose reader differs from the release's only in `constants.mjs`
-(`READER_VERSION` and a comment). The plan
-had the probe image built from the release commit's reader image; that
-difference is the only one, so the evidence stands. Besides the clock,
+(`deploy/enclave/clockprobe/RESULTS-2026-11-21.md`) on the commits 2ae2037
+(P0, S1–S3, S5–S7, S9-boot), 575f359 (S8) and 4e46a17 (S4, S9), not on the
+release head. The platform accepted that evidence for plan R2 (2026-11-21):
+`deploy/enclave/clockprobe/RESULTS-2026-11-21-inputs.txt` gives the SHA-256
+of every file the reader image is built from (the set
+`scripts/check-reader-inputs.sh` measures, and `packages/client/`) at each
+probed commit and at the head, and the one file that differs is
+`packages/mcp-http/enclave/constants.mjs`. Its whole difference is
+`READER_VERSION` `'0.6.0'` → `'0.6.1'` and a comment that 0.6.1 adds no
+capability. A version string does not change the clock's behaviour. The EIF
+the owner approves at R8 is the head's reproducible build, never a probed
+one. Besides the clock,
 0.6.1 measures what main changed since 0.6.0's 2b540ba: `main.mjs`
 (711465a) and `build.sh` (91fab1d), and release A's client (c9ec561) in
 place of 2b540ba's (`README.md` and `dist/api/auth.js`, `client.js` and
