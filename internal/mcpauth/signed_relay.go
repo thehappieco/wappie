@@ -207,9 +207,9 @@ type ReaderHealth struct {
 	//
 	// ClockCode is the reason the reader gives for its clock, one of
 	// ReaderClockCodes and nil for any other word: a word Go does not know
-	// is never kept. ClockDisagreeKMS is how many times since its Node
-	// process started the reader found KMS's Date range contradicting its
-	// clock helper. KMSSkewLoMS and KMSSkewHiMS are the range KMS allows
+	// is never kept. ClockDisagreeKMS is how many times in this enclave
+	// boot (one boot_id, across Node restarts) the reader found KMS's Date
+	// range contradicting its clock helper. KMSSkewLoMS and KMSSkewHiMS are the range KMS allows
 	// for the reader's clock minus true time, and ClockCorrHourMS and
 	// ClockCorrDayMS how far the helper corrected the clock in the last hour
 	// and day.

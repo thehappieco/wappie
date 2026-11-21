@@ -618,6 +618,7 @@ and the registry. The image goes to `ghcr.io/thehappieco/wappie-reader@sha256:�
   "pcrs": { "0": "<96 hex>", "1": "<96 hex>", "2": "<96 hex>" },
   "nitro_cli": { "version": "1.5.0", "blobs": { "<file name>": "<64 hex>" } },
   "kms": { "region": "eu-west-1", "reader_key_arn": "arn:aws:kms:eu-west-1:<account>:key/<id>", "boot_key_arn": "…" },
+  "dependencies": { "locks": […], "tarballs": […], "sources": [ { "name": "chrony", … } ] },
   "policies": [ { "phase": "transition", "file": "reader-key-policy.transition.json", "sha256": "<64 hex>",
                   "pins_pcr0": ["<96 hex: previous PCR0>", "<96 hex: this PCR0>"] },
                 { "phase": "steady", "file": "reader-key-policy.steady.json", "sha256": "<64 hex>",
@@ -799,7 +800,8 @@ S8).
   SOCK reference clock (`/run/chrony/nsm.sock`). Every cycle writes
   `/run/wappie-clock/state.json` atomically.
 - **chronyd** (chrony 4.9, built static from the vendored tarball in
-  `deploy/enclave/chrony`, recorded under `sources` in `measurements.json`).
+  `deploy/enclave/chrony`, recorded in `measurements.json` under
+  `dependencies.sources`).
   One reference clock, `NSM`, and nothing else: no server, pool, peer or
   allow line, `cmdport 0`, `port 0`, and no `chronyc` in the image. The first
   run uses `boot.conf` (`makestep 0.5 1`: one step, at the first update
@@ -835,15 +837,18 @@ S8).
   chronyd exit (`maxchange`), and its restart never steps.
 - **Ledger**: nsm-timefeed watches REALTIME − MONOTONIC_RAW from its first
   sample within 1 s of NSM time, so the boot step is left out. It keeps 25
-  hourly buckets in `/run/wappie-clock/ledger`. Corrections over 5 s within
-  an hour or 10 s within a day give `cap_exceeded`, sticky for the boot, and
-  feeding stops. `clock_steps` counts changes over 100 ms between cycles.
+  hourly buckets in `/run/wappie-clock/ledger` and checks whole buckets,
+  which errs towards tripping: the range of corrections over the current
+  and previous bucket (1 to 2 h) over 5 s, or over all 25 buckets (24 to
+  25 h) over 10 s, gives `cap_exceeded`, sticky for the boot, and feeding
+  stops. `clock_steps` counts changes over 100 ms between cycles.
 
 **Helper states** (`state.json` `state`): `ok`; `starting` (no good sample
 yet, also after a restart of nsm-timefeed); `boot_refused`;
 `cap_exceeded`; `chronyd_gone` (nothing reached chronyd for 30 s);
-`nsm_stale` (no good sample for 120 s); `nsm_error` (3 cycles in a row with
-every attempt failing). `synced` is true once every good sample has been
+`nsm_stale` (no good sample for 120 s); `nsm_error` (3 cycles in a row in
+which every attempt failed at the NSM or a document check; a cycle with a
+timing-only failure resets the count). `synced` is true once every good sample has been
 within 500 ms of NSM time for 64 s.
 
 **Runtime rule.** `clock.ok()` is true only when the helper's state is `ok`,
@@ -853,14 +858,19 @@ proof, and `clock_unc_ms` is at most 5000:
 
 `clock_unc_ms = |nsm_skew_ms| + ceil(rtt/2) + 1 + age_of_last_good_sample × 200 ppm`
 
-Once closed, the gate reopens only below 1000 ms. A proof is two ranges in
-the last 10 minutes wholly beyond ±5 s (KMS) or ±2 s (NSM). It is sticky:
-missing or wide samples never set or clear one, and only two ranges in a
-row, each at most 2.5 s wide and inside the threshold, clear it. Each range is moved with any
-step of the clock since it was taken and widened by 200 ppm of its age.
+The gate starts closed: it opens only below 1000 ms, and once open it
+closes above 5000 ms. A proof is two ranges in the last 10 minutes wholly
+beyond ±5 s (KMS) or ±2 s (NSM). A range proves when it lies wholly beyond
+the threshold, however wide; a missing sample never sets or clears a
+proof. The proof is sticky: it clears only after two ranges, each at most
+2.5 s wide and inside the threshold, with no range between them that
+proves or that is at most 2.5 s wide and not inside it (wider ranges are
+skipped). Each range is moved with any step of the clock since it was
+taken and widened by 200 ppm of its age.
 
 **The 11 reason codes** (`clock_state` `code`, healthz `clock_code`), the
-first that applies: `helper_stale` (no `state.json`, or stale or malformed),
+first that applies: `helper_stale` (no `state.json`, or malformed, or its
+`mono_ns` over 60 s old or over 1 s in the future),
 the helper's own state when it is not `ok` (`starting`, `boot_refused`,
 `cap_exceeded`, `chronyd_gone`, `nsm_stale`, `nsm_error`), `nsm_stale` (no
 good sample for 120 s), `kms_proof`, `nsm_node_proof`, `unc_high`, else
@@ -870,7 +880,8 @@ good sample for 120 s), `kms_proof`, `nsm_node_proof`, `unc_high`, else
 **Boot rule** (step 2b, §10.2). Node waits up to 180 s, reading
 `state.json` and probing the KMS endpoint's Date every 5 s, until the helper
 says `ok` and `synced`, `|nsm_skew_ms|` ≤ 500, two KMS ranges taken since
-then are each at most 2.5 s wide and inside ±2.5 s, and `clock.ok()` holds.
+then are each at most 2.5 s wide and inside ±2.5 s, and `clock.ok()` holds
+(the gate's first opening, so `clock_unc_ms` under 1000).
 Otherwise `boot_failed` `clock_unknown` and exit 78; `entrypoint.sh`
 restarts Node with its backoff, and the helper keeps running.
 
@@ -895,20 +906,29 @@ trouble) stay open; any other path keeps its 404. ACME keeps running.
 the one per address, since the NSM and the vCPU are shared with
 nsm-timefeed.
 
-**What the operator sees.** On the health line, `clock_ok` false, and
-`clock_unc_ms`, `nsm_skew_ms` and the ledger fields; the events
-`clock_state` (with the code), `clock_sources_disagree` and
-`clock_kms_inconsistent`; at boot, `clock_wait`, then `boot_failed`
-`clock_unknown` every 180 s or so. Go sees `state` `clock_unknown` and
-`clock_code` on healthz, logs the WARN `an attested reader is not ready`,
-and mails the operator (§5.1). Clients get 503 `clock_unknown` on `/mcp`.
-`/attestation` still answers. The alarms and the clock runbook are in the
-operations runbook.
+**What the operator sees.** At boot, step 2b runs before any listener
+(§10.2, step 8), so a reader stuck there answers nothing: the log shows
+`clock_wait`, then `boot_failed` `clock_unknown` about every 4 minutes
+(180 s of waiting, the earlier boot steps, and `entrypoint.sh`'s backoff of
+5 s doubling to 60 s, reset only by a run of 300 s or more). Go's health
+checks fail (the clock alerts' DOWN, §5.1), and `/attestation` does not
+answer either. At runtime, when a running reader's clock goes bad: on the
+health line, `clock_ok` false, and `clock_unc_ms`, `nsm_skew_ms` and the
+ledger fields; the events `clock_state` (with the code),
+`clock_sources_disagree` and `clock_kms_inconsistent`. Go sees `state`
+`clock_unknown` and `clock_code` on healthz, logs the WARN `an attested
+reader is not ready`, and mails the operator (§5.1). Clients get 503
+`clock_unknown` on `/mcp`. `/attestation` still answers. The alarms and the
+clock runbook are in the operations runbook.
 
 **Evidence.** The fault-injection probe (`deploy/enclave/clockprobe`, never
-released, not in the image) ran P0 and S1 to S9 on a separate parent on
-2026-11-21, and every one passed: no fallback, and the constants P0 settles
-unchanged (`deploy/enclave/clockprobe/RESULTS-2026-11-21.md`).
+released, not in the image) ran P0 and S1 to S9 on a separate parent from
+2026-11-20 23:56Z to 2026-11-21 03:39Z, on this branch at 2ae2037 to
+4e46a17, and every one passed: no fallback, and the constants P0 settles
+unchanged (`deploy/enclave/clockprobe/RESULTS-2026-11-21.md`). The release
+commit differs from 4e46a17 in measured inputs only in `constants.mjs`
+(`READER_VERSION` and a comment; `git diff 4e46a17 a9b06bc`); the clock's
+code is the same.
 `deploy/enclave/chrony/test-chrony.sh` checks the sign of the feed and
 chronyd's step, `maxchange` exits and boot gate on every built image (CI's
 `enclave-image` job).
@@ -3511,11 +3531,19 @@ same consents. Go goes first: wappie-api reads the clock fields of healthz
 and its 503 `clock_unknown`, and mails the clock alerts (§5.1); a 0.6.0
 reader sends none of them and is never tracked. The public PR
 (`READER_VERSION` 0.6.1, nsm-timefeed, chrony and `wappie-clock-start` in
-the image, `clock.mjs` and the gate) ran the clock probe on its head before
-it merged (`deploy/enclave/clockprobe/RESULTS-2026-11-21.md`). Then: the
-build from the merge commit, checked by the `v061-clock` kit, which also
-asserts that `READER_VERSION` equals the tag; the release `reader-v0.6.1`,
-whose `measurements.json` names chrony's tarball under `sources`; the
+the image, `clock.mjs` and the gate) ran the clock probe
+(`deploy/enclave/clockprobe/RESULTS-2026-11-21.md`) on 2ae2037 to 4e46a17,
+whose reader differs from the release's only in `constants.mjs`
+(`READER_VERSION` and a comment). The plan
+had the probe image built from the release commit's reader image; that
+difference is the only one, so the evidence stands. Besides the clock,
+0.6.1 measures what main changed since 0.6.0's 2b540ba: `main.mjs`
+(711465a) and `build.sh` (91fab1d), and release A's client (c9ec561) in
+place of 2b540ba's (`README.md` and `dist/api/auth.js`, `client.js` and
+`protocol.js`: `platform_sub`, the keepalive `signOut` and the protocol's
+additions). Then: the build from the merge commit, checked by the
+`v061-clock` check-build kit; the release `reader-v0.6.1`, whose
+`measurements.json` names chrony's tarball under `dependencies.sources`; the
 private PR with the console allowlist {0.6.0, 0.6.1}; the owner's KMS
 transition policies on both keys, where only `ImageSha384` changes; the
 deploy, after which Go shows `version=0.6.1` and `clock_ok=true`, and every
@@ -3523,10 +3551,11 @@ connection answers `reconsent_required` until its owner renews it. The
 deploy waits for a health line with `clock_ok=true` after `enclave_ready`,
 since a boot can take up to 180 s at step 2b. A 24 h soak follows:
 `clock_ok` true throughout, `|nsm_skew_ms|` p99 under 50 ms,
-`clock_corr_day_ms` under 3000 after the first day, the KMS range always
-containing 0, no `clock_state` change and `clock_steps` at most 1. After
-7 days the owner applies the steady policies, and the console lists 0.6.1
-alone. Rollback is `deploy-enclave.sh rollback` to the 0.6.0 EIF while the
+`clock_freq_ppm` settling near −17, `clock_corr_day_ms` under 3000 after
+the first day, the KMS range always containing 0, no `clock_state` change
+and `clock_steps` at most 1. After 7 days, with the residual under 500 ms
+and the frequency settled, the owner applies the steady policies, and the
+console lists 0.6.1 alone. Rollback is `deploy-enclave.sh rollback` to the 0.6.0 EIF while the
 transition policy is on: 0.6.0 has no clock gate and runs on whatever time
 the enclave boots with, as before.
 

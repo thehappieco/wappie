@@ -141,9 +141,9 @@ jobs:
         working-directory: packages/client
       # The attested reader's image measures packages/client's build into
       # PCR0: what it keeps of the client must equal release A's (c9ec561),
-      # or the change needs a reader release. Type-only edits pass. c9ec561
-      # is the gate's fixed point, not the pilot's image: reader 0.6.0 was
-      # built from 2b540ba, whose client differs.
+      # or the change needs a reader release. Type-only edits pass. Reader
+      # 0.6.1 (a9b06bc) measures c9ec561's client, so the gate equals the
+      # release's client; 0.6.0 was built from 2b540ba, whose client differs.
       - name: The reader's measured client is release A's
         run: |
           git fetch --no-tags --depth=1 origin c9ec561ca2cc669cdec12d5d90523269c3c2396a
