@@ -600,9 +600,21 @@ environment. The Dockerfile sets only `NODE_ENV=production`.
 most 16 KiB, exactly one key. An extra key, a missing key, a non-object value
 or bad base64 refuses the boot (`boot_json_invalid`).
 
+Before Node starts, `entrypoint.sh` runs `wappie-clock-start` (from 0.6.1,
+§10.5). It starts chronyd and nsm-timefeed in restart loops and returns at
+once.
+
 **Boot order:**
 1. Read `boot.json`.
-2. Read the credentials (7000) and generate the RSA key.
+2. Read the credentials (7000) and generate the RSA key. One attestation
+   document with no fields gives the reader its PCR0.
+
+   2b. From 0.6.1, wait for a trusted clock (§10.5): log `clock_wait`, then
+   wait up to 180 s for the clock's boot rule. Nothing before this step keeps
+   or compares a time; everything after it does (the relay secret's
+   signatures, the sealed state, the key policy's freshness, ACME, every
+   token). A clock that is not trusted by then refuses the boot
+   (`clock_unknown`).
 3. `Decrypt` the relay secret (boot key) into `{current: S}`.
 4. `GetKeyPolicy`. A failure here is not fatal.
 5. Load the four state collections (§8).
@@ -660,6 +672,172 @@ alarm threshold is 2 s. It is not in `/internal/healthz`; Go's view of the
 same clock is the skew it reads off the reader's signed requests (§4), and
 from 0.6.1 the clock fields of the health object (§5.1). `uncaughtException` and `unhandledRejection` write
 `{"event":"fatal","code":"uncaught"}` and exit with code 70.
+
+**The clock on the line** (from 0.6.1, §10.5). `uptime_s` is on the
+monotonic clock, so a step of the system clock does not move it. The line
+adds these fields, each left out when unknown:
+
+| Field | Value |
+|---|---|
+| `clock_ok` | whether the reader trusts its clock now (§10.5 runtime rule) |
+| `clock_unc_ms` | the clock's uncertainty, rounded up |
+| `nsm_skew_ms` | the system clock minus NSM time at the helper's last good sample |
+| `go_skew_ms` | the median of our clock minus the timestamps of Go's verified requests over 10 minutes (1 s resolution; reported, never a source) |
+| `kms_skew_lo_ms`, `kms_skew_hi_ms` | the KMS check's range for our clock minus true time |
+| `clock_corr_hour_ms`, `clock_corr_day_ms` | the helper's ledger: the range of corrections over the last hour and the last day |
+| `clock_freq_ppm` | the kernel's frequency correction, to two decimals |
+| `clock_steps` | steps of the system clock over 100 ms this boot, the boot step included |
+| `clock_refused` | calls to Go the clock refused since the last line (reset by each line) |
+
+The reason is not on the line. The event `clock_state` carries it as `code`
+(one of the 11 codes of §10.5), with `clock_unc_ms` when known, once per
+change; `/internal/healthz` carries it as `clock_code` (§5.1). The other
+clock events: `clock_wait` (step 2b begins), `clock_sources_disagree` with
+`code` `kms_proof` or `nsm_node_proof` (a proof contradicts the helper; once
+per proof), and `clock_kms_inconsistent` (the KMS ranges in the window have
+no point in common; once until they agree again). A boot without a trusted
+clock writes `boot_failed` with `code` `clock_unknown`.
+
+### 10.5 Clock (from reader 0.6.1)
+
+The enclave's system clock is the only one Node reads, and the reader keeps
+and compares times everywhere: tokens, codes, consents, the relay's
+signatures (a 60 s window), the sealed state, ACME and local expiry. Before
+0.6.1 nothing set that clock. From 0.6.1 chronyd steers it to the Nitro
+Secure Module's time, and the reader checks it against KMS before it
+trusts it. The root of time is NSM, cross-checked against KMS Date ranges.
+The hypervisor and NSM are trusted for time, as they already are for
+isolation. The parent's own clock never reaches the enclave (the probe's
+S8).
+
+**Sources.**
+
+- **NSM, through nsm-timefeed** (`deploy/enclave/nsm-attest`,
+  `/usr/local/bin/nsm-timefeed`). Every 4 s it asks the NSM for 3
+  attestation documents and keeps the one with the smallest round trip. A
+  round trip over 500 ms, or over twice the smallest of the last 15
+  cycles, is not used. A document must decode (COSE, tagged or not), carry a
+  SHA384 digest, a `module_id` and our nonce, keep the boot's PCR0, and
+  have a timestamp after 2026-11-01 and before 2100. Between two samples
+  NSM time must advance with MONOTONIC_RAW to within 1 s + 200 ppm of the
+  time between them; a new level counts only once 3 samples in a row agree
+  on it. The offset is taken at the request's midpoint and fed to chronyd's
+  SOCK reference clock (`/run/chrony/nsm.sock`). Every cycle writes
+  `/run/wappie-clock/state.json` atomically.
+- **chronyd** (chrony 4.9, built static from the vendored tarball in
+  `deploy/enclave/chrony`, recorded under `sources` in `measurements.json`).
+  One reference clock, `NSM`, and nothing else: no server, pool, peer or
+  allow line, `cmdport 0`, `port 0`, and no `chronyc` in the image. The first
+  run uses `boot.conf` (`makestep 0.5 1`: one step, at the first update
+  only; `maxchange 5 1 0`); every restart uses `run.conf` (`maxchange 5 0 0`,
+  no makestep), so a restart never steps. Both cap the slew at 60 ppm
+  (`maxslewrate`) and the frequency at 50 ppm (`maxdrift`).
+- **`wappie-clock-start`** (`/usr/local/sbin`, measured with the image).
+  `entrypoint.sh` runs it once per enclave boot, before the bridges. It makes
+  `/run/chrony` and `/run/wappie-clock` (mode 0700) and loops chronyd (30 s
+  between runs, its pidfile removed before each) and nsm-timefeed (5 s
+  between runs) in the background.
+- **KMS Date ranges** (Node, `clock.mjs`). Every KMS answer, through a
+  middleware of the SDK client, and the health line's `GET` of the KMS
+  endpoint (§10.4) give a range for θ = our clock minus true time:
+  `[sent − (D + 1000), received − D]`, `D` being the Date header. Our own TLS
+  means the parent can delay an answer, which widens the range, but cannot
+  forge it. A range whose wall and monotonic durations differ by over 5 ms
+  (the clock stepped meanwhile) is dropped.
+- **NSM seen by Node**. Every document `nsm-attest` makes gives the same
+  kind of range at 1 ms. It reads the same NSM as the helper, so it checks
+  our own pipeline (sign, units, staleness), not NSM.
+- **Go's signed timestamps** give `go_skew_ms` (§10.4). Go's host clock is
+  never a source.
+
+**Caps.**
+
+- **Boot**: the first good sample of an enclave boot more than 600 s from
+  the system clock refuses the boot (`boot_refused`, sticky for the boot,
+  nothing fed). The decision is kept in `/run/wappie-clock/boot`, so a
+  restarted helper does not decide again.
+- **Running**: after the boot step chrony only slews, at most about
+  110 ppm (about 0.4 s an hour, 9.5 s a day). A correction over 5 s makes
+  chronyd exit (`maxchange`), and its restart never steps.
+- **Ledger**: nsm-timefeed watches REALTIME − MONOTONIC_RAW from its first
+  sample within 1 s of NSM time, so the boot step is left out. It keeps 25
+  hourly buckets in `/run/wappie-clock/ledger`. Corrections over 5 s within
+  an hour or 10 s within a day give `cap_exceeded`, sticky for the boot, and
+  feeding stops. `clock_steps` counts changes over 100 ms between cycles.
+
+**Helper states** (`state.json` `state`): `ok`; `starting` (no good sample
+yet, also after a restart of nsm-timefeed); `boot_refused`;
+`cap_exceeded`; `chronyd_gone` (nothing reached chronyd for 30 s);
+`nsm_stale` (no good sample for 120 s); `nsm_error` (3 cycles in a row with
+every attempt failing). `synced` is true once every good sample has been
+within 500 ms of NSM time for 64 s.
+
+**Runtime rule.** `clock.ok()` is true only when the helper's state is `ok`,
+`state.json` is at most 60 s old on CLOCK_MONOTONIC, the last good sample
+is at most 120 s old, neither the KMS check nor the NSM check holds a
+proof, and `clock_unc_ms` is at most 5000:
+
+`clock_unc_ms = |nsm_skew_ms| + ceil(rtt/2) + 1 + age_of_last_good_sample × 200 ppm`
+
+Once closed, the gate reopens only below 1000 ms. A proof is two ranges in
+the last 10 minutes wholly beyond ±5 s (KMS) or ±2 s (NSM). It is sticky:
+missing or wide samples never set or clear one, and only two ranges in a
+row, each at most 2.5 s wide and inside the threshold, clear it. Each range is moved with any
+step of the clock since it was taken and widened by 200 ppm of its age.
+
+**The 11 reason codes** (`clock_state` `code`, healthz `clock_code`), the
+first that applies: `helper_stale` (no `state.json`, or stale or malformed),
+the helper's own state when it is not `ok` (`starting`, `boot_refused`,
+`cap_exceeded`, `chronyd_gone`, `nsm_stale`, `nsm_error`), `nsm_stale` (no
+good sample for 120 s), `kms_proof`, `nsm_node_proof`, `unc_high`, else
+`ok`. `starting` is the helper's state, unrelated to the `/internal` 503
+`starting`.
+
+**Boot rule** (step 2b, §10.2). Node waits up to 180 s, reading
+`state.json` and probing the KMS endpoint's Date every 5 s, until the helper
+says `ok` and `synced`, `|nsm_skew_ms|` ≤ 500, two KMS ranges taken since
+then are each at most 2.5 s wide and inside ±2.5 s, and `clock.ok()` holds.
+Otherwise `boot_failed` `clock_unknown` and exit 78; `entrypoint.sh`
+restarts Node with its backoff, and the helper keeps running.
+
+**The gate.** While `clock.ok()` is false:
+
+- `/mcp` and every `/mcp/*` path answer **503** `{"code":"clock_unknown"}`
+  with `Cache-Control: no-store` and `Retry-After: 60`.
+- The internal routes (5444) check the signature first: a missing or bad one
+  stays 401. A valid one gets 503 `clock_unknown`, except
+  `/internal/healthz`, which answers 200 with `state` `clock_unknown`. A
+  valid signature whose timestamp is stale by our clock gets 503
+  `clock_unknown`, with the health object on healthz (§5.1).
+- The relay to Go refuses every call before signing it (`clock_unknown`,
+  counted in `clock_refused`). A send refused this way never left, is not
+  counted and may be tried again (`send_failed`).
+- The local expiry sweeps skip their turn.
+
+The discovery documents, the icons, `/`, `robots.txt` and `/attestation`
+(its timestamp is the NSM's, and it is how an operator looks at a reader in
+trouble) stay open; any other path keeps its 404. ACME keeps running.
+`/attestation` has a limit for all addresses together (60 a minute) besides
+the one per address, since the NSM and the vCPU are shared with
+nsm-timefeed.
+
+**What the operator sees.** On the health line, `clock_ok` false, and
+`clock_unc_ms`, `nsm_skew_ms` and the ledger fields; the events
+`clock_state` (with the code), `clock_sources_disagree` and
+`clock_kms_inconsistent`; at boot, `clock_wait`, then `boot_failed`
+`clock_unknown` every 180 s or so. Go sees `state` `clock_unknown` and
+`clock_code` on healthz, logs the WARN `an attested reader is not ready`,
+and mails the operator (§5.1). Clients get 503 `clock_unknown` on `/mcp`.
+`/attestation` still answers. The alarms and the clock runbook are in the
+operations runbook.
+
+**Evidence.** The fault-injection probe (`deploy/enclave/clockprobe`, never
+released, not in the image) ran P0 and S1 to S9 on a separate parent on
+2026-11-21, and every one passed: no fallback, and the constants P0 settles
+unchanged (`deploy/enclave/clockprobe/RESULTS-2026-11-21.md`).
+`deploy/enclave/chrony/test-chrony.sh` checks the sign of the feed and
+chronyd's step, `maxchange` exits and boot gate on every built image (CI's
+`enclave-image` job).
 
 ## 11. Signatures that cross module boundaries
 
@@ -3252,6 +3430,31 @@ sentence and link, and neither shown as a failed call; then
 the connector's icon on claude.ai and ChatGPT (§13 says what to expect).
 Rollback is the 0.4.1 EIF, allowlisted for 7 days: its refusals are tool
 errors again and it serves no icon.
+
+**Reader 0.6.1** (the clock, §10.5) is released the same way, with no
+consent change: `READER_CAPABILITIES` stay 0.6.0's, so the console seals the
+same consents. Go goes first: wappie-api reads the clock fields of healthz
+and its 503 `clock_unknown`, and mails the clock alerts (§5.1); a 0.6.0
+reader sends none of them and is never tracked. The public PR
+(`READER_VERSION` 0.6.1, nsm-timefeed, chrony and `wappie-clock-start` in
+the image, `clock.mjs` and the gate) ran the clock probe on its head before
+it merged (`deploy/enclave/clockprobe/RESULTS-2026-11-21.md`). Then: the
+build from the merge commit, checked by the `v061-clock` kit, which also
+asserts that `READER_VERSION` equals the tag; the release `reader-v0.6.1`,
+whose `measurements.json` names chrony's tarball under `sources`; the
+private PR with the console allowlist {0.6.0, 0.6.1}; the owner's KMS
+transition policies on both keys, where only `ImageSha384` changes; the
+deploy, after which Go shows `version=0.6.1` and `clock_ok=true`, and every
+connection answers `reconsent_required` until its owner renews it. The
+deploy waits for a health line with `clock_ok=true` after `enclave_ready`,
+since a boot can take up to 180 s at step 2b. A 24 h soak follows:
+`clock_ok` true throughout, `|nsm_skew_ms|` p99 under 50 ms,
+`clock_corr_day_ms` under 3000 after the first day, the KMS range always
+containing 0, no `clock_state` change and `clock_steps` at most 1. After
+7 days the owner applies the steady policies, and the console lists 0.6.1
+alone. Rollback is `deploy-enclave.sh rollback` to the 0.6.0 EIF while the
+transition policy is on: 0.6.0 has no clock gate and runs on whatever time
+the enclave boots with, as before.
 
 **The ChatGPT tab** of "Add Wappie to your assistant" (CONSOLE, five
 locales, the owner's steps as they worked): on ChatGPT, desktop app or web,

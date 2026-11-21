@@ -417,8 +417,8 @@ test('the health line\'s memory minimum: sampled, the lowest of the window, roun
   assert.equal(off.take(), undefined)
 })
 
-test('the release: reader 0.6.0 declares consent versions 2 to 4, media, drafts, AI on request and any client, and not direct send (§17.2 rule 9, §18.14, §19.3)', () => {
-  assert.equal(READER_VERSION, '0.6.0')
+test('the release: reader 0.6.1 declares consent versions 2 to 4, media, drafts, AI on request and any client, and not direct send, as 0.6.0 did (§17.2 rule 9, §18.14, §19.3, §10.5)', () => {
+  assert.equal(READER_VERSION, '0.6.1')
   assert.deepEqual(READER_CAPABILITIES, ['consent_v2', 'media', 'consent_v3', 'send_draft_v1', 'ai_v1',
     'any_client_v1', 'descriptor_attest_v2', 'consent_v4', 'client_limits_v1', 'live_list_v1', 'console_token_v1'])
   assert.equal(READER_CAPABILITIES.includes('send_direct_v1'), false)
