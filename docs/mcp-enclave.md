@@ -7622,8 +7622,9 @@ The steps:
 **What this section settles beyond the plan** (the annex's text is otherwise
 carried over, with its line references replaced by function and file names):
 
-- The token ships in 0.6.0 with `console_token_v1`. The annex's 0.6.1 is not
-  a release, and its P3 folds into P2.
+- The token ships in 0.6.0 with `console_token_v1`. The annex's token
+  release 0.6.1 was never made, and its P3 folds into P2. Reader 0.6.1 is
+  the clock (§10.5).
 - `TESTED_CLIENTS` is written with D3's candidate entries and marked pending
   baseline B in the code (§19.3); the lead fills the exact pinned redirect
   URIs and client ids from the baseline's record.

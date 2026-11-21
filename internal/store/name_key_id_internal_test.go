@@ -14,7 +14,8 @@ import (
 // needs from testdata/contact-name-key-ids.json, as nameKeyID does for
 // the per-name ids the server sends (DS50). The readers that open names
 // with their own code read the same file: wappie-cloud's web tests from
-// the core checkout its CI pins, and packages/client's at reader 0.6.1.
+// the core checkout its CI pins, and packages/client's at reader 0.6.2
+// (the release after 0.6.1, the clock).
 // So the server's ids and every reader's cannot drift.
 func TestContactNameKeyIDVectors(t *testing.T) {
 	raw, err := os.ReadFile("testdata/contact-name-key-ids.json")

@@ -2850,6 +2850,13 @@ lender's fingerprint is checked against the vectors file.
 that `wsctl grant` sends it. `packages/client`'s own tests for it are on
 `codex/reader-061`.
 
+**Update, 2026-11-21 (plan D1).** Reader 0.6.1 is the clock release
+(`codex/reader-clock`, docs/mcp-enclave.md §10.5), shipped alone. The
+branch `codex/reader-061` (c2fc4b9 and 09b1754) becomes **reader 0.6.2**.
+Where this entry and DS50 say "reader 0.6.1" for that work, read 0.6.2;
+the release that moves both checks' baselines for it is 0.6.2's. The text
+above is kept as it was decided.
+
 **DS50. A contact's names each name their own content key** (from the
 review of DS49; the platform: names that become unreadable are a defect,
 to fix in (b)'s release if it is ready).
@@ -3036,6 +3043,13 @@ checks `resolve_contact` makes one keys request for names off the row's
 key. The Go frames fixture (`internal/wsapi/testdata/frames.json`) is
 the kit's copy (`TestFixturesMatchTheKit`), so it is not regenerated for
 this.
+
+**Update, 2026-11-21 (plan D1).** The attested reader and the local MCP
+reader get this at **reader 0.6.2**, `codex/reader-061` (09b1754), not
+0.6.1: 0.6.1 is the clock release (DS49's update). Where this entry says
+0.6.1, read 0.6.2. The reader-inputs baseline named above has moved
+since, from f7babbe to a9b06bc, reader 0.6.1's release commit; 0.6.1
+measures c9ec561's client (release A's), the client-dist gate's baseline.
 
 **DS51. A message that fills a placeholder is sealed to the
 placeholder's uid** (from the contact-names review, X1).
