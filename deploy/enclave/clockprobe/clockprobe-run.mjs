@@ -106,7 +106,11 @@ async function p0(args, timeoutMs = 120_000) {
 
 /** One request to the parent's control server, or null when it does not answer. */
 async function control(request, timeoutMs = 120_000) {
-  const r = await run('socat', ['-t', '5', '-T', String(Math.ceil(timeoutMs / 1000)), '-', `VSOCK-CONNECT:${PARENT_CID}:${CONTROL_PORT}`],
+  // -t is how long socat waits for the answer once the request is sent: as
+  // long as the request may take (parent restore sleeps 5 s, then makestep;
+  // kms unblock retries the proxy), never a fixed 5 s that drops the answer.
+  const secs = String(Math.ceil(timeoutMs / 1000))
+  const r = await run('socat', ['-t', secs, '-T', secs, '-', `VSOCK-CONNECT:${PARENT_CID}:${CONTROL_PORT}`],
     { input: `${request}\n`, timeoutMs: timeoutMs + 5000 })
   try { return JSON.parse(r.stdout.trim().split('\n').pop()) } catch { return null }
 }
