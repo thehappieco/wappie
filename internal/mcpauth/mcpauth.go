@@ -169,6 +169,9 @@ type Handler struct {
 	// MailRenewal sends a renewal notice to one address (renewals.go); nil
 	// sends none, and the console's banner alone says it.
 	MailRenewal func(ctx context.Context, to string, n mailer.MCPRenewal) error
+	// ClockAlerts mails the operator when an attested reader cannot vouch
+	// for its clock (clock_alerts.go); nil mails nothing.
+	ClockAlerts *ClockAlerts
 	// LiveListLimits bounds the attested live list per workspace, and
 	// RevokeLinkLimits the revoke-only link per address. Nil allows
 	// everything, for tests.
