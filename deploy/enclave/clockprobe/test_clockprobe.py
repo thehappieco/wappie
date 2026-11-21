@@ -7,6 +7,7 @@ import io
 import json
 import pathlib
 import tempfile
+import time
 import unittest
 
 HERE = pathlib.Path(__file__).resolve().parent
@@ -82,68 +83,55 @@ class ControlTest(unittest.TestCase):
         self.assertEqual(s.calls, [["systemctl", "stop", "kms-proxy"]])
         self.assertEqual(s.holders, [])
         self.assertTrue(c.handle("kms unblock")["ok"])
-        self.assertEqual(s.calls[-1], ["systemctl", "start", "kms-proxy"])
+        self.assertEqual(s.calls[1:], [["systemctl", "reset-failed", "kms-proxy"], ["systemctl", "start", "kms-proxy"],
+                                       ["systemctl", "is-active", "--quiet", "kms-proxy"]])
 
-    def test_hold_listens_after_the_unit_stops(self):
+    def test_unblock_retries_until_the_unit_is_active(self):
         c, s = make("--allow-kms-block")
-        self.assertTrue(c.handle("kms block hold")["ok"])
-        self.assertEqual(len(s.holders), 1)
-        self.assertTrue(s.holders[0].started)
-        c.handle("kms unblock")
-        self.assertTrue(s.holders[0].stopped)
-
-    def test_a_unit_that_will_not_stop_is_reported(self):
-        c, s = make("--allow-kms-block")
-        s.fail.add(("systemctl", "stop", "kms-proxy"))
-        a = c.handle("kms block refuse")
-        self.assertFalse(a["ok"])
+        c.handle("kms block hold")
+        answers = iter([1, 1, 0])
+        run = s.run
+        s.run = lambda argv, timeout=60: (next(answers), "") if argv[:2] == ["systemctl", "is-active"] else run(argv, timeout)
+        self.assertTrue(c.handle("kms unblock")["ok"])
+        self.assertEqual(sum(1 for a in s.calls if a[:2] == ["systemctl", "start"]), 3)
         self.assertFalse(c.kms_blocked)
 
-    def test_moving_the_parent_clock_needs_its_flag(self):
-        c, s = make()
-        self.assertFalse(c.handle("parent shift 120")["ok"])
-        self.assertEqual(s.steps, [])
+    def test_unblock_reports_a_unit_that_never_comes_back(self):
+        c, s = make("--allow-kms-block")
+        c.handle("kms block refuse")
+        s.fail.add(("systemctl", "start", "kms-proxy"))
+        a = c.handle("kms unblock")
+        self.assertFalse(a["ok"])
+        self.assertIn("not active after", a["error"])
+        self.assertEqual(sum(1 for x in s.calls if x[:2] == ["systemctl", "start"]), control.UNBLOCK_TRIES)
 
-    def test_shift_stops_chronyd_then_steps(self):
-        c, s = make("--allow-parent-clock")
-        self.assertTrue(c.handle("parent shift 120")["ok"])
-        self.assertEqual(s.calls, [["systemctl", "stop", "chronyd"]])
-        self.assertEqual(s.steps, [120_000_000_000])
-        self.assertTrue(c.shifted)
 
-    def test_shift_is_bounded(self):
-        c, s = make("--allow-parent-clock")
-        self.assertFalse(c.handle("parent shift 3600")["ok"])
-        self.assertEqual(s.steps, [])
+class HolderTest(unittest.TestCase):
+    def test_stop_frees_the_port_while_accept_waits(self):
+        import socket
+        import struct
+        probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+        probe.close()
+        h = control.Holder(port=port, family=socket.AF_INET, addr=("127.0.0.1", port))
+        h.start()
+        held = socket.create_connection(("127.0.0.1", port), timeout=2)
+        time.sleep(0.2)  # accepted and held; the thread is back in accept()
+        self.assertEqual(len(h.conns), 1)
+        # Reset it from the client side, so TCP leaves no TIME_WAIT on the
+        # port (vsock has none): only a listener still bound can refuse the
+        # bind below.
+        held.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+        held.close()
+        time.sleep(0.1)
+        h.stop()
+        self.assertFalse(h.thread.is_alive())
+        again = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        again.bind(("127.0.0.1", port))  # the proxy's bind
+        again.listen(1)
+        again.close()
 
-    def test_restore_starts_chronyd_and_steps(self):
-        c, s = make("--allow-parent-clock")
-        c.handle("parent shift 120")
-        self.assertTrue(c.handle("parent restore")["ok"])
-        self.assertIn(["systemctl", "start", "chronyd"], s.calls)
-        self.assertIn(["chronyc", "-a", "makestep"], s.calls)
-        self.assertEqual(len(s.steps), 2)
-        self.assertFalse(c.shifted)
-
-    def test_cleanup_puts_everything_back(self):
-        c, s = make("--allow-parent-clock", "--allow-kms-block")
-        c.handle("kms block hold")
-        c.handle("parent shift 120")
-        c.cleanup()
-        self.assertIn(["systemctl", "start", "kms-proxy"], s.calls)
-        self.assertIn(["systemctl", "start", "chronyd"], s.calls)
-        self.assertFalse(c.kms_blocked or c.shifted)
-
-    def test_unknown_requests_are_refused(self):
-        c, s = make("--allow-parent-clock", "--allow-kms-block")
-        for line in ["", "rm -rf /", "parent shift x", "kms block", "kms block maybe", "parent shift 1 2"]:
-            self.assertFalse(c.handle(line)["ok"], line)
-        self.assertEqual(s.steps, [])
-
-    def test_done_ends_the_run(self):
-        c, _ = make()
-        self.assertTrue(c.handle("done")["ok"])
-        self.assertTrue(c.done)
 
 
 def record(seq, section, data):

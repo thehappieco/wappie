@@ -46,6 +46,7 @@ PORT = 9103
 KMS_PORT = 8000
 PROBE_CID = 30
 VMADDR_CID_ANY = 0xFFFFFFFF
+UNBLOCK_TRIES = 5
 
 
 def offset_ns():
@@ -57,16 +58,17 @@ class Holder:
     """Listens on vsock 8000 and holds every connection open, silent: KMS
     neither answers nor refuses."""
 
-    def __init__(self, port=KMS_PORT, family=None):
+    def __init__(self, port=KMS_PORT, family=None, addr=None):
         self.port = port
         self.family = family if family is not None else getattr(socket, "AF_VSOCK", None)
+        self.addr = addr if addr is not None else (VMADDR_CID_ANY, port)
         self.sock = None
         self.conns = []
         self.thread = None
 
     def start(self):
         self.sock = socket.socket(self.family, socket.SOCK_STREAM)
-        self.sock.bind((VMADDR_CID_ANY, self.port))
+        self.sock.bind(self.addr)
         self.sock.listen(64)
         self.thread = threading.Thread(target=self._accept, daemon=True)
         self.thread.start()
@@ -80,7 +82,17 @@ class Holder:
             self.conns.append(conn)
 
     def stop(self):
+        # close() alone does not free the port: the accept thread still holds
+        # the file and the listener stays bound, so the KMS proxy's restart
+        # fails to bind vsock 8000 (probe run 20261121T000250Z). shutdown()
+        # wakes accept(); the thread returns and the close then frees it.
         if self.sock is not None:
+            try:
+                self.sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            if self.thread is not None:
+                self.thread.join(timeout=5)
             try:
                 self.sock.close()
             except OSError:
@@ -158,10 +170,22 @@ class Control:
             self.holder.stop()
             self.holder = None
         if self.kms_blocked and self.args.kms_unit:
-            self.sys.sleep(1)
-            rc, out = self.sys.run(["systemctl", "start", self.args.kms_unit])
-            if rc != 0:
-                return {"ok": False, "error": f"systemctl start {self.args.kms_unit}: {out}"}
+            # A start that fails on a port still bound counts against the
+            # unit's start limit: clear it, start, and wait until it is
+            # active, else report the unblock as failed (never a silent
+            # proxy that stays down for the rest of the run).
+            unit = self.args.kms_unit
+            for attempt in range(UNBLOCK_TRIES):
+                self.sys.sleep(1)
+                self.sys.run(["systemctl", "reset-failed", unit])
+                rc, out = self.sys.run(["systemctl", "start", unit])
+                if rc == 0:
+                    self.sys.sleep(1)
+                    rc, out = self.sys.run(["systemctl", "is-active", "--quiet", unit])
+                    if rc == 0:
+                        break
+            else:
+                return {"ok": False, "error": f"systemctl start {unit}: not active after {UNBLOCK_TRIES} tries: {out}"}
         self.kms_blocked = False
         return {"ok": True}
 
