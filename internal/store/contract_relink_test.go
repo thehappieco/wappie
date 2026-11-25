@@ -73,9 +73,10 @@ func undelivered(t *testing.T, c *store.Contract, id uuid.UUID) (store.ContractR
 }
 
 // TestJudgeRelink: the number live (a deleted one not_found), then
-// item_busy while it pairs here or a move holds it, before the role, then
-// owners and admins only; a number that passes leaves the act open, with
-// nothing written.
+// item_busy while it pairs here, then workspace_busy while a move out of
+// the workspace runs, both before the role, then owners and admins only;
+// a finished move's pause holds nothing; a number that passes leaves the
+// act open, with nothing written.
 func TestJudgeRelink(t *testing.T) {
 	ctx := context.Background()
 	w := newRelinkWorld(t)
@@ -91,13 +92,21 @@ func TestJudgeRelink(t *testing.T) {
 	if act.Result.RetryAfter != 42 {
 		t.Fatalf("item_busy's wait %d", act.Result.RetryAfter)
 	}
-	w.execOne(t, `UPDATE devices SET paused = true, pause_cause = 'move' WHERE id = $1`, w.item)
-	act, err = w.c.JudgeRelink(ctx, w.command(t, kc.OpItemRelink, member, memberSub), w.item, nil)
-	refusedWith(t, "a move's pause", act, err, kc.CodeItemBusy)
-	if act.Result.RetryAfter != int(wa.PairWindow/time.Second) {
-		t.Fatalf("a move's wait %d", act.Result.RetryAfter)
+	release, err := w.devices.HoldMove(ctx, w.tenant)
+	if err != nil {
+		t.Fatal(err)
 	}
-	w.execOne(t, `UPDATE devices SET pause_cause = 'person' WHERE id = $1`, w.item)
+	defer release()
+	act, err = w.c.JudgeRelink(ctx, w.command(t, kc.OpItemRelink, member, memberSub), w.item, busy)
+	refusedWith(t, "a pairing here, before a move", act, err, kc.CodeItemBusy)
+	act, err = w.c.JudgeRelink(ctx, w.command(t, kc.OpItemRelink, member, memberSub), w.item, nil)
+	refusedWith(t, "a move running, before the role", act, err, kc.CodeWorkspaceBusy)
+	if act.Result.RetryAfter != int(store.MoveBusyRetry/time.Second) {
+		t.Fatalf("workspace_busy's wait %d", act.Result.RetryAfter)
+	}
+	release()
+	// The move ended and left its pause: nothing holds the number.
+	w.execOne(t, `UPDATE devices SET paused = true, pause_cause = 'move' WHERE id = $1`, w.item)
 	act, err = w.c.JudgeRelink(ctx, w.command(t, kc.OpItemRelink, member, memberSub), w.item, nil)
 	refusedWith(t, "a member", act, err, kc.CodeNotAuthorized)
 
@@ -162,18 +171,38 @@ func TestStartRelinkCommand(t *testing.T) {
 		t.Fatalf("a pause the console drew: %+v %v", act, err)
 	}
 
-	// A move's pause since the Check: item_busy with WhatsApp's whole
-	// window (DS56), before the state_changed its pause_seq would give.
+	// A move that started since the Check and still runs: workspace_busy
+	// (DS56), before the state_changed its pause's pause_seq would give.
 	seen = w.seen(t, w.item)
+	release, err := w.devices.HoldMove(ctx, w.tenant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
 	w.execOne(t, `UPDATE devices SET pause_cause = 'move', pause_seq = pause_seq + 1 WHERE id = $1`, w.item)
 	run = w.command(t, kc.OpItemRelink, w.user, w.sub)
 	act, err = w.c.StartRelinkCommand(ctx, run, w.item, seen, nil)
-	refusedWith(t, "a move's pause since the Check", act, err, kc.CodeItemBusy)
-	if act.Result.RetryAfter != int(wa.PairWindow/time.Second) {
-		t.Fatalf("a move's wait %d", act.Result.RetryAfter)
+	refusedWith(t, "a move running, its pause since the Check", act, err, kc.CodeWorkspaceBusy)
+	wait := int(store.MoveBusyRetry / time.Second)
+	if act.Result.RetryAfter != wait {
+		t.Fatalf("workspace_busy's wait %d", act.Result.RetryAfter)
 	}
-	if l := w.ledger(t, run.ID); l.retryAfter == nil || *l.retryAfter != int(wa.PairWindow/time.Second) || l.seq == nil {
-		t.Fatalf("a move's ledger %+v", l)
+	if l := w.ledger(t, run.ID); l.retryAfter == nil || *l.retryAfter != wait || l.seq == nil {
+		t.Fatalf("workspace_busy's ledger %+v", l)
+	}
+	release()
+	// Once it ended: its pause since the Check is a pause later than the
+	// start, state_changed; the same pause seen at the Check, older than
+	// based_on, is no change, and the attach lifts it.
+	act, err = w.c.StartRelinkCommand(ctx, w.command(t, kc.OpItemRelink, w.user, w.sub), w.item, seen, nil)
+	refusedWith(t, "a finished move's pause since the Check", act, err, kc.CodeStateChanged)
+	w.scoped(t, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `SELECT floor(extract(epoch FROM paused_at) * 1000)::bigint FROM devices WHERE id = $1`,
+			w.item).Scan(&pausedAt)
+	})
+	act, err = w.c.StartRelinkCommand(ctx, w.command(t, kc.OpItemRelink, w.user, w.sub), w.item, w.seen(t, w.item), &pausedAt)
+	if err != nil || act.Result.Outcome != store.CommandInProgress {
+		t.Fatalf("a finished move's pause the console drew: %+v %v", act, err)
 	}
 	w.execOne(t, `UPDATE devices SET pause_cause = 'person' WHERE id = $1`, w.item)
 
@@ -435,5 +464,29 @@ func TestNumbersRelinkColumns(t *testing.T) {
 	}
 	if !store.HoldsAccount(it.PN, "", wa.Identity{PN: w.id.PN.ToNonAD()}) || store.HoldsAccount("", it.LID, wa.Identity{PN: w.id.PN}) {
 		t.Error("HoldsAccount compares by halves")
+	}
+	if it.MoveRunning {
+		t.Error("a move with none running")
+	}
+
+	// A move out of the workspace that runs: every row says so (its
+	// can_relink), until it ends.
+	release, err := w.devices.HoldMove(ctx, w.tenant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	n = w.numbers(ctx, t, w.c)
+	for _, it := range n.Items {
+		if !it.MoveRunning {
+			t.Errorf("%s: no move running", it.ID)
+		}
+	}
+	release()
+	n = w.numbers(ctx, t, w.c)
+	for _, it := range n.Items {
+		if it.MoveRunning {
+			t.Errorf("%s: a move running once it ended", it.ID)
+		}
 	}
 }

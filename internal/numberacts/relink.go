@@ -33,13 +33,15 @@ const PairingAheadMax = kc.MaxPairingAhead - 5*time.Second
 // Relink is item.relink (kit v0.11.0; the spec's 14.13): a logged-out
 // number linked again with a new QR into the same row, the QR shown on the
 // console's page. Every check comes before any QR, in this order: the
-// number live (not_found), item_busy while this process pairs it or a
-// move holds it, the actor an owner or admin (not_authorized; no step-up:
-// the platform asked a sign-in at most 10 minutes old), expired past the
-// command's expires_at (state_seq null), then the relink's own table
-// (relink.Service.Check: state_changed, item_busy, read_only, no_reader,
-// number_held), and last a pause later than based_on or since the Check
-// (state_changed). Then in_progress is written in the transaction that
+// number live (not_found), item_busy while this process pairs it,
+// workspace_busy while a move out of the workspace runs (a move that has
+// ended holds nothing: the relink lifts its pause), the actor an owner or
+// admin (not_authorized; no step-up: the platform asked a sign-in at most
+// 10 minutes old), expired past the command's expires_at (state_seq
+// null), then the relink's own table (relink.Service.Check: item_busy,
+// workspace_busy, state_changed, item_busy for a hold, read_only,
+// no_reader, number_held), and last a move since, then a pause later than
+// based_on or since the Check (workspace_busy, then state_changed). Then in_progress is written in the transaction that
 // starts the act, at the act's seq, so the workspace's next command runs
 // while the person scans, and the pairing starts; the act returns at once.
 //
@@ -50,7 +52,8 @@ const PairingAheadMax = kc.MaxPairingAhead - 5*time.Second
 // writes the final result when
 // the pairing ends: ran in the attach's own transaction, else the end's
 // code (other_account, link_timeout, connect_failed, number_held,
-// storage_paused, state_changed for a stop, a deletion or a transfer meanwhile)
+// storage_paused, state_changed for a stop, a deletion or a number moved
+// away meanwhile, workspace_busy for a move that still runs)
 // over the in_progress (store.Contract.FinishInProgress). A QR is never
 // logged.
 func (r *Runner) Relink(ctx context.Context, run Run, item uuid.UUID, cmd RelinkCmd) (store.ContractAct, error) {
@@ -60,7 +63,7 @@ func (r *Runner) Relink(ctx context.Context, run Run, item uuid.UUID, cmd Relink
 	}
 	refused := func(code string, wait time.Duration) (store.ContractAct, error) {
 		res := store.CommandResult{Outcome: store.CommandRefused, Code: code}
-		if code == kc.CodeItemBusy {
+		if code == kc.CodeItemBusy || code == kc.CodeWorkspaceBusy {
 			res.RetryAfter = retrySeconds(wait)
 		}
 		return r.Store.FinishAct(ctx, run.contract(), res)
@@ -271,7 +274,7 @@ func (r *Runner) stillRelinkable(ctx context.Context, run Run, recheck func(cont
 	rctx, cancel := detached(ctx)
 	defer cancel()
 	err := recheck(rctx)
-	if errors.Is(err, store.ErrRelinkStateChanged) || errors.Is(err, store.ErrRelinkMoveHeld) || errors.Is(err, store.ErrStoragePaused) {
+	if errors.Is(err, store.ErrRelinkStateChanged) || errors.Is(err, store.ErrRelinkWorkspaceBusy) || errors.Is(err, store.ErrStoragePaused) {
 		r.log().Info("relink: the number changed while it paired; the pairing ends", "id", run.Command)
 		return false
 	}
@@ -292,7 +295,7 @@ func (r *Runner) finish(ctx context.Context, run Run, end error) {
 	var refusal *relink.Refusal
 	if errors.As(end, &refusal) {
 		res.Code = refusal.Code
-		if refusal.Code == kc.CodeItemBusy {
+		if refusal.Code == kc.CodeItemBusy || refusal.Code == kc.CodeWorkspaceBusy {
 			res.RetryAfter = retrySeconds(refusal.RetryAfter)
 		}
 	}
@@ -327,8 +330,8 @@ func (r *Runner) finish(ctx context.Context, run Run, end error) {
 	}
 }
 
-// retrySeconds is item_busy's retry_after: wait in whole seconds, 1 to
-// kc.MaxRetryAfter.
+// retrySeconds is item_busy's and workspace_busy's retry_after: wait in
+// whole seconds, 1 to kc.MaxRetryAfter.
 func retrySeconds(wait time.Duration) int {
 	return min(max(1, int(math.Ceil(wait.Seconds()))), kc.MaxRetryAfter)
 }

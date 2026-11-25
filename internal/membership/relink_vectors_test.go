@@ -39,7 +39,8 @@ func (b mapBook) LIDFor(context.Context, types.JID) (types.JID, bool)   { return
 // since; false for a deleted number, one online or banned, half an
 // identity (true once whatsmeow's map fills it), no epoch, nobody holding
 // its key, its account live as another number, a pairing of it now, or a
-// move's pause; and with no looks. A hold of the process reads as passing.
+// move out of its workspace that runs (a move that has ended holds
+// nothing: true, the relink resumes its pause); and with no looks. A hold of the process reads as passing.
 // Every row of a section carries it, true or false, never null.
 func TestNumbersCanRelink(t *testing.T) {
 	ls := looks{pairing: map[string]time.Time{}, held: map[string]bool{}}
@@ -74,7 +75,7 @@ func TestNumbersCanRelink(t *testing.T) {
 		"no phone number":    func(n *store.ContractNumber) { n.PN = "" },
 		"no epoch":           func(n *store.ContractNumber) { n.Epoch = 0 },
 		"no key holder":      func(n *store.ContractNumber) { n.KeyHeld = false },
-		"a move's pause":     func(n *store.ContractNumber) { n.Paused, n.PauseCause = true, store.PauseForMove },
+		"a move running":     func(n *store.ContractNumber) { n.MoveRunning = true },
 	} {
 		n := base
 		change(&n)
@@ -86,6 +87,10 @@ func TestNumbersCanRelink(t *testing.T) {
 	paused.Paused, paused.PauseCause = true, store.PauseByPerson
 	if !can(paused) {
 		t.Error("a person's pause: the relink resumes it")
+	}
+	paused.PauseCause = store.PauseForMove
+	if !can(paused) {
+		t.Error("a finished move's pause: the relink resumes it")
 	}
 	other.Status = "online"
 	if can(base, other) {

@@ -7,11 +7,12 @@ import (
 )
 
 // Running is the process's console relinks (item.relink), by number: the
-// command each one answers and its session. A sync stop, a deletion and
-// Wappie's own transfer of the number cancel its relink through it, and
-// the leader cancels them all when it stops leading, since a relink's
-// pairing never outlives the process that answers its command (the
-// spec's 14.6: the next leader answers the row). The zero value is ready.
+// command each one answers and its session. A sync stop and a deletion
+// cancel its relink through it; Wappie's own transfer of the number is
+// refused while one runs (Has, DS56). The leader cancels them all when it
+// stops leading, since a relink's pairing never outlives the process that
+// answers its command (the spec's 14.6: the next leader answers the row).
+// The zero value is ready.
 type Running struct {
 	mu sync.Mutex
 	m  map[uuid.UUID]*run

@@ -79,8 +79,9 @@ func (sw *settingsWork) execute(ctx context.Context) {
 // sweepRelinks answers each item.relink row left in_progress whose
 // pairing runs nowhere (the spec's 14.6: after a restart, or when another
 // process took over the commands, once it holds the number again):
-// state_changed for a number deleted or no longer logged out, else
-// connect_failed. One this process pairs, as a console relink or any
+// workspace_busy for a number a move that still runs has paused (the
+// relink's own end would say so: DS56), state_changed for a number
+// deleted or no longer logged out, else connect_failed. One this process pairs, as a console relink or any
 // pairing of its number, or whose number another process's registry
 // holds (pg.AdvisoryHeld on wa.DeviceLockKey: an old leader still
 // pairing it), waits for a later sweep. A started relink is never run
@@ -122,22 +123,25 @@ func (sw *settingsWork) sweepRelinks(ctx context.Context) {
 				continue
 			}
 		}
-		code := kc.CodeConnectFailed
+		res := store.CommandResult{Outcome: store.CommandRefused, Code: kc.CodeConnectFailed}
 		if acts.Devices != nil {
 			number, err := acts.Devices.RelinkRow(ctx, row.Workspace, row.Device)
 			switch {
 			case errors.Is(err, store.ErrNotFound):
-				code = kc.CodeStateChanged
+				res.Code = kc.CodeStateChanged
 			case err != nil:
 				if ctx.Err() == nil {
 					l.log().Warn("contract: could not read a relink's number", "id", row.ID, "error", err)
 				}
 				continue
+			case number.MoveRunning && number.PauseCause == store.PauseForMove:
+				res.Code, res.RetryAfter = kc.CodeWorkspaceBusy, int(store.MoveBusyRetry/time.Second)
 			case number.Status != wa.StatusLoggedOut:
-				code = kc.CodeStateChanged
+				res.Code = kc.CodeStateChanged
 			}
 		}
-		err := c.FinishInProgress(ctx, row.ID, store.CommandResult{Outcome: store.CommandRefused, Code: code})
+		code := res.Code
+		err := c.FinishInProgress(ctx, row.ID, res)
 		switch {
 		case errors.Is(err, store.ErrCommandFinished):
 		case err != nil:

@@ -115,33 +115,30 @@ func (c *Contract) FinishInProgress(ctx context.Context, id uuid.UUID, r Command
 // JudgeRelink is item.relink's judgement before the relink's own checks,
 // writing nothing when it passes (the act goes on): the number live (a
 // deleted one not recovered is not_found), then item_busy while this
-// process pairs it (busy's retry_after, in seconds) or a move holds it,
-// judged before the role as the spec's 14.6 orders it, then the actor's
-// RuleAdmin (owners and admins).
+// process pairs it (busy's retry_after, in seconds), then workspace_busy
+// while a move out of the workspace runs (MoveBusyRetry; the spec's
+// 14.13, DS56), both judged before the role as the spec's 14.6 orders
+// them, then the actor's RuleAdmin (owners and admins). A move that has
+// ended holds nothing: its pause is one the relink lifts.
 func (c *Contract) JudgeRelink(ctx context.Context, run ContractRun, item uuid.UUID, busy func(uuid.UUID) (int, bool)) (ContractAct, error) {
 	return c.numbersAct(ctx, run, func(tx pgx.Tx) (actWrite, error) {
-		var cause string
-		err := tx.QueryRow(ctx, `SELECT coalesce(pause_cause, '') FROM devices WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL FOR UPDATE`,
-			item, run.Workspace).Scan(&cause)
-		if errors.Is(err, pgx.ErrNoRows) {
-			return refusedWith(kc.CodeNotFound), nil
-		}
+		tag, err := tx.Exec(ctx, `SELECT 1 FROM devices WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL FOR UPDATE`,
+			item, run.Workspace)
 		if err != nil {
 			return actWrite{}, err
 		}
-		wait, held := 0, false
+		if tag.RowsAffected() == 0 {
+			return refusedWith(kc.CodeNotFound), nil
+		}
 		if busy != nil {
-			wait, held = busy(item)
+			if wait, held := busy(item); held {
+				w := refusedWith(kc.CodeItemBusy)
+				w.result.RetryAfter = min(max(wait, 1), kc.MaxRetryAfter)
+				return w, nil
+			}
 		}
-		if !held && cause == PauseForMove {
-			// A move's pause: the relink's Check answers it so too, with
-			// WhatsApp's whole window (the platform's question 1's default).
-			wait, held = int(wa.PairWindow/time.Second), true
-		}
-		if held {
-			w := refusedWith(kc.CodeItemBusy)
-			w.result.RetryAfter = min(max(wait, 1), kc.MaxRetryAfter)
-			return w, nil
+		if w, busy, err := moveBusyTx(ctx, tx, run.Workspace); err != nil || busy {
+			return w, err
 		}
 		roles, err := actorRolesTx(ctx, tx, run, &item)
 		if err != nil {
@@ -156,42 +153,55 @@ func (c *Contract) JudgeRelink(ctx context.Context, run ContractRun, item uuid.U
 
 // StartRelinkCommand writes item.relink's in_progress, at the act's seq
 // (the state it judged on), in the transaction that starts the act: the
-// number still live (not_found), not held by a move (item_busy, WhatsApp's
-// whole window, DS56), still logged out and paused no more since the
-// relink's Check (seen) (state_changed), and no
-// pause later than the command's based_on.state_seq (state_changed, the
-// pause kept: the spec's 14.13), compared in milliseconds on the clock the
-// workspace's seq counts on. basedOn nil compares nothing. A started relink
-// is never run again: the row is in_progress before the pairing starts.
+// number still live (not_found), no move out of the workspace running
+// (workspace_busy, MoveBusyRetry, DS56), still logged out and paused no
+// more since the relink's Check (seen) (state_changed), and no pause later
+// than the command's based_on.state_seq (state_changed, the pause kept:
+// the spec's 14.13), compared in milliseconds on the clock the
+// workspace's seq counts on. basedOn nil compares nothing. A finished
+// move's pause the Check saw is neither: it is older than the command's
+// based_on (the console drew the number paused), and the attach lifts it.
+// A started relink is never run again: the row is in_progress before the
+// pairing starts.
 func (c *Contract) StartRelinkCommand(ctx context.Context, run ContractRun, item uuid.UUID, seen RelinkSeen, basedOn *int64) (ContractAct, error) {
 	return c.numbersAct(ctx, run, func(tx pgx.Tx) (actWrite, error) {
-		var status, cause string
+		var status string
 		var pauseSeq int64
 		var pausedLater bool
-		err := tx.QueryRow(ctx, `SELECT status, pause_seq, coalesce(pause_cause, ''),
+		err := tx.QueryRow(ctx, `SELECT status, pause_seq,
 				coalesce(paused AND paused_at IS NOT NULL AND $3::bigint IS NOT NULL
 				  AND floor(extract(epoch FROM paused_at) * 1000)::bigint > $3::bigint, false)
 			FROM devices WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL FOR UPDATE`,
-			item, run.Workspace, basedOn).Scan(&status, &pauseSeq, &cause, &pausedLater)
+			item, run.Workspace, basedOn).Scan(&status, &pauseSeq, &pausedLater)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return refusedWith(kc.CodeNotFound), nil
 		}
 		if err != nil {
 			return actWrite{}, err
 		}
-		if cause == PauseForMove {
-			// A move's pause since the Check: item_busy with WhatsApp's
-			// whole window, as JudgeRelink answers it (DS56), judged before
-			// state_changed (the move's pause counted a pause_seq).
-			w := refusedWith(kc.CodeItemBusy)
-			w.result.RetryAfter = min(int(wa.PairWindow/time.Second), kc.MaxRetryAfter)
-			return w, nil
+		// A move since the Check: workspace_busy, as JudgeRelink answers
+		// it (DS56), judged before state_changed (the move's pause counted
+		// a pause_seq).
+		if w, busy, err := moveBusyTx(ctx, tx, run.Workspace); err != nil || busy {
+			return w, err
 		}
 		if status != string(wa.StatusLoggedOut) || pauseSeq != seen.PauseSeq || pausedLater {
 			return refusedWith(kc.CodeStateChanged), nil
 		}
 		return actWrite{result: CommandResult{Outcome: CommandInProgress}}, nil
 	})
+}
+
+// moveBusyTx is workspace_busy, with MoveBusyRetry, while a move out of
+// workspace runs (MoveHoldKey).
+func moveBusyTx(ctx context.Context, tx pgx.Tx, workspace uuid.UUID) (actWrite, bool, error) {
+	running, err := moveRunningTx(ctx, tx, workspace)
+	if err != nil || !running {
+		return actWrite{}, false, err
+	}
+	w := refusedWith(kc.CodeWorkspaceBusy)
+	w.result.RetryAfter = int(MoveBusyRetry / time.Second)
+	return w, true, nil
 }
 
 // AttachRelinkCommand writes a relink's new link into the number and its

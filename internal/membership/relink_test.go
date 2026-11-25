@@ -532,17 +532,56 @@ func TestRelinkEnds(t *testing.T) {
 		t.Fatalf("after the stop: paused %v, %s", d.Paused, d.Status)
 	}
 
-	// Wappie's own transfer while it pairs: its pause, then its cancel
-	// (wsapi's cancelDevicePairing). A retry, item_busy with WhatsApp's
-	// whole window, never the final state_changed (DS56).
+	// A move of Wappie's own that another process started as the pairing
+	// began: its hold, its pause, then the pairing's end (its registry's
+	// stop). While the move runs, a retry, workspace_busy, never
+	// state_changed or item_busy (DS56).
 	device, id, _ = start()
-	if _, err := store.NewDevices(w.pool).PauseForMove(ctx, w.team, device); err != nil {
+	devices := store.NewDevices(w.pool)
+	release, err := devices.HoldMove(ctx, w.team)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	if _, err := devices.PauseForMove(ctx, w.team, device); err != nil {
 		t.Fatal(err)
 	}
 	rig.running.Cancel(device)
-	if res := w.resultKept(t, id, kc.OutcomeRefused, kc.CodeItemBusy); res.RetryAfter == nil ||
-		*res.RetryAfter != int64(wa.PairWindow/time.Second) {
+	if res := w.resultKept(t, id, kc.OutcomeRefused, kc.CodeWorkspaceBusy); res.RetryAfter == nil ||
+		*res.RetryAfter != int64(store.MoveBusyRetry/time.Second) {
 		t.Fatalf("a move's wait %v", res.RetryAfter)
+	}
+	release()
+
+	// A move that has ended and left its pause (paused_by app) holds
+	// nothing: the relink runs, and ran resumes capture (the spec's
+	// 14.13).
+	n++
+	moved, movedID := w.loggedOut(t, w.team, "Movido", n, w.owner)
+	if _, err := devices.PauseForMove(ctx, w.team, moved); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, soon, "the move's pause sent", func() bool {
+		row, _, ok := w.numberRowSent(w.team, moved)
+		return ok && row.Capture == "paused" && row.PausedBy != nil && row.PausedBy.Kind == kc.ActorApp
+	})
+	w.canRelinkSent(t, w.team, moved, true)
+	id = w.issueRelink(t, w.team, moved, w.sub)
+	sp = rig.p.next(t)
+	w.resultKept(t, id, kc.OutcomeInProgress, "")
+	linked := newLink(movedID)
+	w.sessionFor(t, linked)
+	if err := sp.scan(linked); err != nil {
+		t.Fatal(err)
+	}
+	ran := w.resultKept(t, id, kc.OutcomeRan, "")
+	eventually(t, soon, "capture on after ran", func() bool {
+		doc, ok := w.fake.Settings("wappie", w.team.String(), kc.SectionNumbers)
+		row, _, found := w.numberRowSent(w.team, moved)
+		return ok && found && doc.StateSeq >= *ran.StateSeq && row.Capture == "on" && row.PausedBy == nil
+	})
+	if d := row(moved); d.Paused || d.PauseCause != "" {
+		t.Fatalf("after ran: paused %v, cause %q", d.Paused, d.PauseCause)
 	}
 
 	device, id, _ = start()
@@ -557,8 +596,9 @@ func TestRelinkEnds(t *testing.T) {
 
 // TestRelinkLeftInProgressAtStart: a relink row a leader left in_progress
 // (a restart, a takeover) is answered by the next leader's sweep before
-// any row runs, once nothing pairs its number here: connect_failed, or
-// state_changed for a number deleted or no longer logged out.
+// any row runs, once nothing pairs its number here: connect_failed,
+// state_changed for a number deleted or no longer logged out, or
+// workspace_busy for a number a move that still runs has paused.
 func TestRelinkLeftInProgressAtStart(t *testing.T) {
 	w := newEventWorld(t)
 	ctx := context.Background()
@@ -568,10 +608,11 @@ func TestRelinkLeftInProgressAtStart(t *testing.T) {
 	online, _ := w.loggedOut(t, w.team, "Online", 32, w.owner)
 	gone, _ := w.loggedOut(t, w.team, "Apagado", 33, w.owner)
 	pairing, _ := w.loggedOut(t, w.team, "Pareando", 34, w.owner)
+	moving, _ := w.loggedOut(t, w.team, "Movendo", 35, w.owner)
 	docs := map[uuid.UUID]int64{w.sub: w.version(t, w.sub)}
 	expires := time.Now().Add(5 * time.Minute)
 	ids := map[uuid.UUID]uuid.UUID{}
-	for _, device := range []uuid.UUID{orphan, online, gone, pairing} {
+	for _, device := range []uuid.UUID{orphan, online, gone, pairing, moving} {
 		id := w.take(t, row{kind: kc.OpItemRelink, ws: &w.team, actor: w.sub, target: item(device), docs: docs, expires: &expires})
 		w.exec(ctx, t, `UPDATE contract_commands SET outcome = 'in_progress', state_seq = 1, result_at = clock_timestamp() WHERE id = $1`, id)
 		ids[device] = id
@@ -582,10 +623,21 @@ func TestRelinkLeftInProgressAtStart(t *testing.T) {
 	if _, err := store.NewDevices(w.pool).Quarantine(ctx, w.team, w.owner, gone, []uuid.UUID{w.owner}); err != nil {
 		t.Fatal(err)
 	}
+	// A number a move that still runs has paused: workspace_busy, as the
+	// relink's own end would say (DS56).
+	release, err := store.NewDevices(w.pool).HoldMove(ctx, w.team)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	if _, err := store.NewDevices(w.pool).PauseForMove(ctx, w.team, moving); err != nil {
+		t.Fatal(err)
+	}
 	rig := w.relinkRig(t, logs)
 	rig.p.since[pairing.String()] = time.Now()
 	run(t, w.settingsLeader(w.members, logs, rig.cfg))
-	for device, code := range map[uuid.UUID]string{orphan: kc.CodeConnectFailed, online: kc.CodeStateChanged, gone: kc.CodeStateChanged} {
+	for device, code := range map[uuid.UUID]string{orphan: kc.CodeConnectFailed, online: kc.CodeStateChanged, gone: kc.CodeStateChanged,
+		moving: kc.CodeWorkspaceBusy} {
 		eventually(t, soon, "the sweep's "+code, func() bool {
 			r, _ := w.ledgerRow(t, ids[device].String())
 			return r.outcome == store.CommandRefused && r.code == code && r.stateSeq != nil
@@ -593,6 +645,11 @@ func TestRelinkLeftInProgressAtStart(t *testing.T) {
 	}
 	if r, _ := w.ledgerRow(t, ids[pairing].String()); r.outcome != store.CommandInProgress {
 		t.Fatalf("a relink whose number pairs here was answered: %+v", r)
+	}
+	var retryAfter *int
+	if err := w.pool.QueryRow(ctx, `SELECT retry_after FROM contract_commands WHERE id = $1`, ids[moving]).Scan(&retryAfter); err != nil ||
+		retryAfter == nil || *retryAfter != int(store.MoveBusyRetry/time.Second) {
+		t.Fatalf("the sweep's workspace_busy waits %v (%v)", retryAfter, err)
 	}
 }
 
@@ -644,11 +701,38 @@ func TestRelinkOrder(t *testing.T) {
 	rig.p.mu.Lock()
 	delete(rig.p.since, device.String())
 	rig.p.mu.Unlock()
+	// A move out of the workspace that runs: workspace_busy, by a member
+	// (before the role) and before the storage pause (the spec's 14.13,
+	// DS56); with its wait.
+	release, err := store.NewDevices(w.pool).HoldMove(ctx, w.team)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	check("a move running, by a member", device, w.secondSub, nil, kc.CodeWorkspaceBusy, true)
+	if _, err := w.pool.Exec(ctx, `UPDATE tenants SET storage_paused_at = now() WHERE id = $1`, w.team); err != nil {
+		t.Fatal(err)
+	}
+	moving := w.take(t, row{kind: kc.OpItemRelink, ws: &w.team, actor: w.sub, target: item(device), docs: docs(), expires: &later})
+	w.runNext(t, sw)
+	var retryAfter *int
+	if err := w.pool.QueryRow(ctx, `SELECT retry_after FROM contract_commands WHERE id = $1`, moving).Scan(&retryAfter); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := w.ledgerRow(t, moving.String()); got.outcome != store.CommandRefused || got.code != kc.CodeWorkspaceBusy ||
+		retryAfter == nil || *retryAfter != int(store.MoveBusyRetry/time.Second) {
+		t.Fatalf("a move running, before the storage pause: %+v, retry_after %v", got, retryAfter)
+	}
+	release()
+	if _, err := w.pool.Exec(ctx, `UPDATE tenants SET storage_paused_at = NULL WHERE id = $1`, w.team); err != nil {
+		t.Fatal(err)
+	}
+	// The move ended and left its pause: it holds nothing.
 	w.inWorkspace(t, w.team, func(tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, `UPDATE devices SET paused = true, pause_cause = 'move' WHERE id = $1`, device)
 		return err
 	})
-	check("a move's pause, by a member", device, w.secondSub, nil, kc.CodeItemBusy, true)
+	check("a finished move's pause, by a member", device, w.secondSub, nil, kc.CodeNotAuthorized, true)
 	w.inWorkspace(t, w.team, func(tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, `UPDATE devices SET paused = false WHERE id = $1`, device)
 		return err

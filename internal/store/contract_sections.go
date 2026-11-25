@@ -81,6 +81,9 @@ type ContractNumber struct {
 	// KeyHeld is Devices.KeyHeld's answer, read only for a live number
 	// logged out (false for any other): its can_relink.
 	KeyHeld bool
+	// MoveRunning: a move out of the workspace ran when the section was
+	// measured (MoveHoldKey), the same for every row: its can_relink.
+	MoveRunning bool
 }
 
 // ContractNumbers is what Wappie's own tables say of one platform
@@ -202,6 +205,10 @@ func (c *Contract) NumbersOf(ctx context.Context, workspace uuid.UUID) (Contract
 // visible. The predicate is the snapshot's (snapshotItemsTx), so a row and
 // the snapshot's item join by id.
 func numbersItemsTx(ctx context.Context, tx pgx.Tx, workspace uuid.UUID, out *ContractNumbers) error {
+	moving, err := moveRunningTx(ctx, tx, workspace)
+	if err != nil {
+		return err
+	}
 	rows, err := tx.Query(ctx, `SELECT d.id, d.status, coalesce(d.logout_cause, ''), coalesce(d.pause_cause, ''),
 			d.deleted_at IS NOT NULL, d.paused, d.lid IS NOT NULL OR d.pn IS NOT NULL,
 			coalesce(d.deleted_at IS NOT NULL AND d.purge_after > clock_timestamp() AND d.purge_started_at IS NULL, false),
@@ -221,6 +228,7 @@ func numbersItemsTx(ctx context.Context, tx pgx.Tx, workspace uuid.UUID, out *Co
 			&n.LastConnectedAt, &n.PausedAt, &n.PausedByKind, &n.PausedBySub, &n.Epoch, &n.PN, &n.LID, &n.KeyHeld); err != nil {
 			return err
 		}
+		n.MoveRunning = moving
 		out.Items = append(out.Items, n)
 		return nil
 	})

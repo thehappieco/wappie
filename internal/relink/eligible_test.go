@@ -33,7 +33,7 @@ func TestJudgeTable(t *testing.T) {
 		{"a pairing here", func(f *relink.Facts) { f.Pairing, f.PairingSince = true, now.Add(-100*time.Second) }, relink.CodeItemBusy, 75 * time.Second},
 		{"a pairing at its end", func(f *relink.Facts) { f.Pairing, f.PairingSince = true, now.Add(-time.Hour) }, relink.CodeItemBusy, time.Second},
 		{"a pairing just started", func(f *relink.Facts) { f.Pairing, f.PairingSince = true, now }, relink.CodeItemBusy, wa.PairWindow},
-		{"a move's pause", func(f *relink.Facts) { f.PauseCause = wstore.PauseForMove }, relink.CodeItemBusy, wa.PairWindow},
+		{"a move running", func(f *relink.Facts) { f.MoveRunning = true }, relink.CodeWorkspaceBusy, wstore.MoveBusyRetry},
 		{"online", func(f *relink.Facts) { f.Status = wa.StatusOnline }, relink.CodeStateChanged, 0},
 		{"banned", func(f *relink.Facts) { f.Status = wa.StatusBanned }, relink.CodeStateChanged, 0},
 		{"a hold that is not stale", func(f *relink.Facts) { f.Held = true }, relink.CodeItemBusy, wa.PairWindow},
@@ -45,9 +45,10 @@ func TestJudgeTable(t *testing.T) {
 		{"the account is another number", func(f *relink.Facts) { f.HeldElsewhere = true }, relink.CodeNumberHeld, 0},
 		// The order: each check before the next.
 		{"a pairing before a move", func(f *relink.Facts) {
-			f.Pairing, f.PairingSince, f.PauseCause = true, now, wstore.PauseForMove
+			f.Pairing, f.PairingSince, f.MoveRunning = true, now, true
 		}, relink.CodeItemBusy, wa.PairWindow},
-		{"a move before not logged out", func(f *relink.Facts) { f.PauseCause, f.Status = wstore.PauseForMove, wa.StatusOnline }, relink.CodeItemBusy, wa.PairWindow},
+		{"a move before not logged out", func(f *relink.Facts) { f.MoveRunning, f.Status = true, wa.StatusOnline }, relink.CodeWorkspaceBusy, wstore.MoveBusyRetry},
+		{"a move before a hold", func(f *relink.Facts) { f.MoveRunning, f.Held = true, true }, relink.CodeWorkspaceBusy, wstore.MoveBusyRetry},
 		{"not logged out before a hold", func(f *relink.Facts) { f.Status, f.Held = wa.StatusOnline, true }, relink.CodeStateChanged, 0},
 		{"a hold before read_only", func(f *relink.Facts) { f.Held, f.LID = true, types.JID{} }, relink.CodeItemBusy, wa.PairWindow},
 		{"read_only before no_reader", func(f *relink.Facts) { f.LID, f.KeyHeld = types.JID{}, false }, relink.CodeReadOnly, 0},

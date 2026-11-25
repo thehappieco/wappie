@@ -6,7 +6,6 @@ import (
 
 	"go.mau.fi/whatsmeow/types"
 
-	"whatserver2/internal/store"
 	"whatserver2/internal/wa"
 )
 
@@ -16,8 +15,11 @@ import (
 // hold; the numbers section reads them with none (its can_relink), so the
 // two give one answer from one table (Judge).
 type Facts struct {
-	Status     wa.Status
-	PauseCause string
+	Status wa.Status
+	// MoveRunning: a move out of the number's workspace runs now
+	// (store.MoveHoldKey). A move that has ended holds nothing: the pause
+	// it left is one the relink lifts.
+	MoveRunning bool
 	// Pairing: this process pairs the number now, since PairingSince.
 	Pairing      bool
 	PairingSince time.Time
@@ -37,10 +39,12 @@ type Facts struct {
 }
 
 // Judge is the table of a relink's checks before any QR, in spec 14.13's
-// order: item_busy (a pairing of the number, then a move's pause) before
-// state_changed (not logged out), then item_busy for a hold that is not
-// stale, read_only (no full identity), no_reader (no key or nobody holds
-// it) and number_held. Nil when the number may be linked again now.
+// order: item_busy (a pairing of the number), then workspace_busy (a move
+// out of the workspace runs; before the storage pause, which the start
+// judges), both before state_changed (not logged out), then item_busy for
+// a hold that is not stale, read_only (no full identity), no_reader (no
+// key or nobody holds it) and number_held. Nil when the number may be
+// linked again now.
 func Judge(f Facts) *Refusal {
 	if r := judgeEntry(f); r != nil {
 		return r
@@ -59,7 +63,7 @@ func Judge(f Facts) *Refusal {
 }
 
 // judgeEntry is Judge's first three checks, which a stale hold's release
-// waits for: a pairing of the number, a move's pause, not logged out.
+// waits for: a pairing of the number, a running move, not logged out.
 func judgeEntry(f Facts) *Refusal {
 	now := f.Now
 	if now.IsZero() {
@@ -68,8 +72,8 @@ func judgeEntry(f Facts) *Refusal {
 	switch {
 	case f.Pairing:
 		return busy(min(busyElsewhere, f.PairingSince.Add(wa.RelinkWindow).Sub(now)), "entry")
-	case f.PauseCause == store.PauseForMove:
-		return busy(busyElsewhere, "entry")
+	case f.MoveRunning:
+		return moveBusy("entry")
 	case f.Status != wa.StatusLoggedOut:
 		return refuse(CodeStateChanged, "entry")
 	}

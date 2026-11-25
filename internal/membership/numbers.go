@@ -41,7 +41,8 @@ type NumberLooks interface {
 // 14 lets an app list a kind only then), and the person's two. A
 // contract item.move_out has no runner here: once it has one, it answers
 // item_busy, judged before state_changed, while a relink of its number
-// pairs (Runner.busy's retry_after), and a relink meanwhile workspace_busy.
+// pairs (Runner.busy's retry_after), and a relink meanwhile workspace_busy,
+// as Wappie's own transfer has it (DS56).
 var runs = map[string][]string{
 	kc.SectionNumbers: {kc.OpItemRename, kc.OpItemSyncStop, kc.OpItemSyncResume, kc.OpItemSyncNow, kc.OpItemRegistrationDelete,
 		kc.OpItemFlagsRaise, kc.OpItemFlagsDrop, kc.OpItemAccessRemove, kc.OpItemRelink},
@@ -116,8 +117,10 @@ func numberRow(n store.ContractNumber, items []store.ContractNumber, looks Numbe
 // number again now, by the relink's own table (relink.Judge), from what
 // the section read with no side effect: the number live (a deleted one
 // not recovered is false; a logged_out_deletion one recovered since may be
-// true, the spec allowing it), not paired now and not held by a move
-// (false while a pairing runs: a retry on time, not a "cannot"), logged
+// true, the spec allowing it), not paired now and no move out of the
+// workspace running (false while either runs: a retry on time, not a
+// "cannot"; a move that has ended holds nothing, and its pause is one the
+// relink lifts), logged
 // out, both halves of its identity (a missing half filled from whatsmeow's
 // map before, fillIdentities, as Check fills it), a key a person holds,
 // and its account held by no other live number of the section that is
@@ -130,7 +133,7 @@ func canRelink(n store.ContractNumber, items []store.ContractNumber, looks Numbe
 		return false
 	}
 	pn, lid := jidOf(n.PN), jidOf(n.LID)
-	f := relink.Facts{Status: wa.Status(n.Status), PauseCause: n.PauseCause, PN: pn, LID: lid, Epoch: n.Epoch, KeyHeld: n.KeyHeld}
+	f := relink.Facts{Status: wa.Status(n.Status), MoveRunning: n.MoveRunning, PN: pn, LID: lid, Epoch: n.Epoch, KeyHeld: n.KeyHeld}
 	f.PairingSince, f.Pairing = looks.PairingSince(n.ID.String())
 	if relink.FullIdentity(pn, lid) {
 		account := wa.Identity{PN: pn, LID: lid}

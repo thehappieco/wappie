@@ -1,0 +1,92 @@
+package store
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+
+	"whatserver2/internal/pg"
+	"whatserver2/internal/wa"
+)
+
+// A move of a number out of a workspace (Wappie's own transfer to
+// Personal) holds the workspace while it runs: the spec's 14.6 ("item.move_out
+// holds the workspace") and 14.13 (a relink meanwhile is workspace_busy,
+// judged before the storage pause). The hold is a shared advisory lock on
+// the workspace (MoveHoldKey), taken before the move's pause and released
+// once the move has ended, committed or undone. Shared, so two moves of a
+// workspace run as before; a lock, so a process that dies ends its hold
+// with its connection, and a pause_cause move it left behind is a finished
+// move's pause, which a relink lifts. Any process sees it (pg.AdvisoryHeld).
+
+// MoveBusyRetry is workspace_busy's retry_after for a relink that meets a
+// move: a move takes seconds, at most its handler's 2 minutes, and a retry
+// that finds it still running waits again.
+const MoveBusyRetry = 10 * time.Second
+
+// MoveHoldKey is the advisory lock a move out of workspace holds shared.
+func MoveHoldKey(workspace uuid.UUID) string { return "move:" + workspace.String() }
+
+// moveRunningTx reports whether a move out of workspace runs now, in any
+// process.
+func moveRunningTx(ctx context.Context, q pg.Querier, workspace uuid.UUID) (bool, error) {
+	return pg.AdvisoryHeld(ctx, q, MoveHoldKey(workspace))
+}
+
+// MoveRunning reports whether a move out of workspace runs now, in any
+// process.
+func (d *Devices) MoveRunning(ctx context.Context, workspace uuid.UUID) (bool, error) {
+	return moveRunningTx(ctx, d.pool, workspace)
+}
+
+// HoldMove takes workspace's move hold for a move about to start. release
+// ends it, then tells the workspace's sections to measure again
+// (contract_settings_mark's channel): a numbers section measured while the
+// move ran shows can_relink false.
+func (d *Devices) HoldMove(ctx context.Context, workspace uuid.UUID) (release func(), err error) {
+	unlock, ok, err := pg.NewLocker(d.pool).TryLockShared(ctx, MoveHoldKey(workspace))
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		// Nothing takes the key exclusively.
+		return nil, errors.New("store: the workspace's move hold is taken exclusively")
+	}
+	return func() {
+		unlock()
+		nctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		//nolint:errcheck // the sections measure again on their own schedule
+		_, _ = d.pool.Exec(nctx, `SELECT pg_notify('wappie_contract_settings', $1)`, workspace.String())
+	}, nil
+}
+
+// RelinkLook is what a move reads of a number before its pause: whether
+// it is logged out, and whether a registry holds its device lock
+// (wa.DeviceLockKey), in any process. A logged-out number whose lock is
+// held is paired by a relink, or held by a process that has yet to let a
+// logged-out client go.
+func (d *Devices) RelinkLook(ctx context.Context, tenant, device uuid.UUID) (loggedOut, locked bool, err error) {
+	err = pg.InTenantTx(ctx, d.pool, tenant.String(), func(tx pgx.Tx) error {
+		var status string
+		err := tx.QueryRow(ctx, `SELECT status FROM devices WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL`,
+			device, tenant).Scan(&status)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		loggedOut = status == string(wa.StatusLoggedOut)
+		locked, err = pg.AdvisoryHeld(ctx, tx, wa.DeviceLockKey(device.String()))
+		return err
+	})
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		err = fmt.Errorf("store: look at a number before its move: %w", err)
+	}
+	return loggedOut, locked, err
+}

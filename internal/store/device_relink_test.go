@@ -293,6 +293,70 @@ func TestAttachRelinkLiftsThePause(t *testing.T) {
 	}
 }
 
+// A pause a finished move left (pause_cause move, its hold gone), seen at
+// the relink's start, holds nothing: the attach lifts it as a person's
+// (the spec's 14.13, DS56). Another number's move that still runs leaves
+// the attach alone.
+func TestAttachRelinkLiftsAMovesPause(t *testing.T) {
+	ctx := context.Background()
+	w := newDelWorld(t)
+	sessionStore(t, w.pool)
+	device, id := w.loggedOutNumber(t, "Loja", "155501000411", "100000000000411")
+	if _, err := w.devices.PauseForMove(ctx, w.tenant, device); err != nil {
+		t.Fatal(err)
+	}
+	seen := w.seen(t, device)
+	if err := w.devices.RelinkStartCheck(ctx, w.tenant, device, seen, id); err != nil {
+		t.Fatalf("a finished move's pause at the start = %v", err)
+	}
+	release, err := w.devices.HoldMove(ctx, w.tenant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	if err := w.devices.RelinkStartCheck(ctx, w.tenant, device, seen, id); !errors.Is(err, store.ErrRelinkWorkspaceBusy) {
+		t.Fatalf("a move running at the start = %v", err)
+	}
+	other, _ := w.loggedOutNumber(t, "Outro", "155501000412", "100000000000412")
+	otherSeen := w.seen(t, other)
+	if err := w.devices.RelinkState(ctx, w.tenant, other, otherSeen); err != nil {
+		t.Fatalf("another number's move, while it pairs = %v", err)
+	}
+	// The hold is another move's: this number's pause is a finished
+	// move's, which the attach lifts while the other move runs.
+	inTenantTx(ctx, t, w.pool, w.tenant, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `UPDATE devices SET pause_cause = 'person' WHERE id = $1`, device)
+		return err
+	})
+	if err := w.devices.RelinkState(ctx, w.tenant, device, seen); err != nil {
+		t.Fatalf("a person's pause seen at the start, a move running = %v", err)
+	}
+	inTenantTx(ctx, t, w.pool, w.tenant, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `UPDATE devices SET pause_cause = 'move' WHERE id = $1`, device)
+		return err
+	})
+	if err := w.devices.RelinkState(ctx, w.tenant, device, seen); !errors.Is(err, store.ErrRelinkWorkspaceBusy) {
+		t.Fatalf("a move's pause, a move running = %v", err)
+	}
+	release()
+	linked := newLink(id)
+	w.putSession(t, linked.PN.String())
+	got, err := w.devices.AttachRelink(ctx, w.tenant, device, seen, linked)
+	if err != nil {
+		t.Fatalf("the attach once the move ended = %v", err)
+	}
+	if !got.ResumedPause {
+		t.Fatal("the attach did not say it lifted the move's pause")
+	}
+	row, err := w.devices.RelinkRow(ctx, w.tenant, device)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row.Paused || row.PauseCause != "" || row.MoveRunning {
+		t.Fatalf("after the attach paused=%v cause=%q moving=%v", row.Paused, row.PauseCause, row.MoveRunning)
+	}
+}
+
 // The attach deletes no session. A row under the old link's JID may be
 // another workspace's live link, since WhatsApp can give the account's freed
 // device number to a new link and number_held asks this workspace only: it
@@ -363,12 +427,28 @@ func TestAttachRelinkRefuses(t *testing.T) {
 				t.Fatal(err)
 			}
 		}, want: store.ErrRelinkStateChanged},
-		"a move's pause": {change: func(t *testing.T, w *delWorld, device uuid.UUID, _ wa.Identity) {
-			inTenantTx(ctx, t, w.pool, w.tenant, func(tx pgx.Tx) error {
-				_, err := tx.Exec(ctx, `UPDATE devices SET paused = true, pause_cause = 'move', pause_seq = pause_seq + 1 WHERE id = $1`, device)
-				return err
-			})
-		}, want: store.ErrRelinkMoveHeld},
+		// A move another process started during the pairing, still
+		// running: workspace_busy (DS56), judged before the storage pause
+		// and the pause_seq its pause counted.
+		"a move that still runs": {change: func(t *testing.T, w *delWorld, device uuid.UUID, _ wa.Identity) {
+			release, err := w.devices.HoldMove(ctx, w.tenant)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(release)
+			if _, err := w.devices.PauseForMove(ctx, w.tenant, device); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := w.pool.Exec(ctx, `UPDATE tenants SET storage_paused_at = now() WHERE id = $1`, w.tenant); err != nil {
+				t.Fatal(err)
+			}
+		}, want: store.ErrRelinkWorkspaceBusy},
+		// One that ended: its pause since the start is state_changed.
+		"a move's pause, the move ended": {change: func(t *testing.T, w *delWorld, device uuid.UUID, _ wa.Identity) {
+			if _, err := w.devices.PauseForMove(ctx, w.tenant, device); err != nil {
+				t.Fatal(err)
+			}
+		}, want: store.ErrRelinkStateChanged},
 		"the workspace suspended": {change: func(t *testing.T, w *delWorld, _ uuid.UUID, _ wa.Identity) {
 			if _, err := w.pool.Exec(ctx, `UPDATE tenants SET status = 'suspended' WHERE id = $1`, w.tenant); err != nil {
 				t.Fatal(err)

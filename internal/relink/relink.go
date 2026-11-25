@@ -37,11 +37,13 @@ const (
 	CodeCapacityReached = "capacity_reached"
 	CodeStoragePaused   = "storage_paused"
 	CodeItemBusy        = "item_busy"
+	CodeWorkspaceBusy   = "workspace_busy"
 	CodeStateChanged    = "state_changed"
 )
 
 // Refusal is a relink's end other than linked: a code, a fixed English
-// message that names no account, and for item_busy the time to wait.
+// message that names no account, and for item_busy and workspace_busy the
+// time to wait.
 type Refusal struct {
 	Code       string
 	Message    string
@@ -63,7 +65,8 @@ var messages = map[string]string{
 	CodeNoReader:        "nobody holds this number's key",
 	CodeCapacityReached: "there is no free place for this number to sync",
 	CodeStoragePaused:   "the workspace's storage is paused",
-	CodeItemBusy:        "this number is being linked or moved already",
+	CodeItemBusy:        "this number is being linked already",
+	CodeWorkspaceBusy:   "a number is being moved out of this workspace",
 	CodeStateChanged:    "this number is no longer one to link again, or it changed meanwhile",
 }
 
@@ -78,6 +81,18 @@ const busyElsewhere = wa.PairWindow
 func busy(wait time.Duration, stage string) *Refusal {
 	r := refuse(CodeItemBusy, stage)
 	r.RetryAfter = max(time.Second, wait)
+	return r
+}
+
+// MoveBusy is the entry's workspace_busy, for a caller that judges a
+// running move before its own gates (the socket's storage gate).
+func MoveBusy() *Refusal { return moveBusy("entry") }
+
+// moveBusy is workspace_busy: a move out of the number's workspace runs
+// (store.ErrRelinkWorkspaceBusy), a retry after store.MoveBusyRetry.
+func moveBusy(stage string) *Refusal {
+	r := refuse(CodeWorkspaceBusy, stage)
+	r.RetryAfter = store.MoveBusyRetry
 	return r
 }
 
@@ -154,8 +169,8 @@ func (s *Service) log() *slog.Logger {
 }
 
 // Check makes the checks of the number before any QR, in the order of spec
-// 14.13: item_busy before state_changed, then read_only, no_reader and
-// number_held. A number with no live row is store.ErrNotFound, the caller's
+// 14.13: item_busy, then workspace_busy, before state_changed, then
+// read_only, no_reader and number_held. A number with no live row is store.ErrNotFound, the caller's
 // not_found. A refusal is a *Refusal.
 func (s *Service) Check(ctx context.Context, tenant, device uuid.UUID) (Target, error) {
 	row, err := s.Devices.RelinkRow(ctx, tenant, device)
@@ -171,10 +186,11 @@ func (s *Service) Check(ctx context.Context, tenant, device uuid.UUID) (Target, 
 	}
 
 	// Judge's table, its facts read in its order: a stale hold is
-	// released only for a logged-out number nothing pairs or moves, and a
+	// released only for a logged-out number nothing pairs and in a
+	// workspace no move holds, and a
 	// read a check before it refuses is never made. A fact not read yet is
 	// the passing one, so a refusal at a stage is the whole table's.
-	f := Facts{Status: row.Status, PauseCause: row.PauseCause, Epoch: row.Epoch, KeyHeld: true}
+	f := Facts{Status: row.Status, MoveRunning: row.MoveRunning, Epoch: row.Epoch, KeyHeld: true}
 	f.PairingSince, f.Pairing = s.Pairer.PairingSince(id)
 	if r := judgeEntry(f); r != nil {
 		return refused(r)
@@ -286,8 +302,10 @@ func (s *Service) Start(ctx context.Context, t Target, who Actor, attach AttachF
 	}
 	sess := &Session{svc: s, target: t, actor: who, pair: pair, events: make(chan wa.PairEvent, 8), cause: make(chan error, 1)}
 	// The check above ran before the device lock: read once more now that
-	// the pairing holds it, as a new number's pairing does.
-	if err := s.Devices.RelinkRecheck(ctx, t.Tenant, t.Device, t.Seen, t.Expect); err != nil {
+	// the pairing holds it, as a new number's pairing does, any move of
+	// the workspace included (RelinkStartCheck: a move that started
+	// meanwhile either saw this lock or is seen here).
+	if err := s.Devices.RelinkStartCheck(ctx, t.Tenant, t.Device, t.Seen, t.Expect); err != nil {
 		sess.cause <- err
 		pair.Cancel()
 	}
@@ -332,9 +350,9 @@ func (s *Session) run(ctx context.Context) {
 
 // classify names a pairing's end. A window that closed, or a link that
 // failed, is first set against the number as it is now: a cancel by a
-// pause, a deletion, a move or a storage stop is its cause. A move's pause
-// is item_busy (ErrRelinkMoveHeld), a number the move has moved away
-// state_changed.
+// pause, a deletion, a move or a storage stop is its cause. A move that
+// still runs is workspace_busy (ErrRelinkWorkspaceBusy, DS56), a number
+// the move has moved away state_changed.
 func (s *Service) classify(ctx context.Context, t Target, err error) *Refusal {
 	var other *wa.OtherAccount
 	switch {
@@ -346,8 +364,8 @@ func (s *Service) classify(ctx context.Context, t Target, err error) *Refusal {
 		return refuse(CodeOtherAccount, "scan")
 	case errors.Is(err, store.ErrRelinkNumberHeld):
 		return refuse(CodeNumberHeld, "attach")
-	case errors.Is(err, store.ErrRelinkMoveHeld):
-		return busy(busyElsewhere, "attach")
+	case errors.Is(err, store.ErrRelinkWorkspaceBusy):
+		return moveBusy("attach")
 	case errors.Is(err, store.ErrRelinkStateChanged):
 		return refuse(CodeStateChanged, "attach")
 	case errors.Is(err, store.ErrStoragePaused):
@@ -356,11 +374,11 @@ func (s *Service) classify(ctx context.Context, t Target, err error) *Refusal {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	switch now := s.Devices.RelinkState(ctx, t.Tenant, t.Device, t.Seen); {
-	case errors.Is(now, store.ErrRelinkMoveHeld):
-		// A move's pause met the pairing (Wappie's own transfer cancels
-		// it): a retry, item_busy with WhatsApp's whole window, as at the
-		// entry (DS56), never the final state_changed.
-		return busy(busyElsewhere, "end")
+	case errors.Is(now, store.ErrRelinkWorkspaceBusy):
+		// A move's pause met the pairing while the move runs (a move
+		// another process started as this pairing began): a retry,
+		// workspace_busy, as at the entry (DS56), never state_changed.
+		return moveBusy("end")
 	case errors.Is(now, store.ErrRelinkStateChanged):
 		return refuse(CodeStateChanged, "end")
 	case errors.Is(now, store.ErrStoragePaused):
