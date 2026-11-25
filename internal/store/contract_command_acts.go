@@ -271,10 +271,11 @@ func actSectionDueTx(ctx context.Context, tx pgx.Tx, workspace uuid.UUID) error 
 // the number live, the actor's RuleManage, params.before against the label
 // Wappie publishes (label.Contract, never the one stored: state_changed),
 // a label Wappie would set aside, as typed or as cleaned (a placeholder,
-// an id, the number itself: not_authorized, nothing stored, DS10), the new
-// label as the contract cleans it (label_changed with the cleaned text
-// otherwise), then the label stored as the frame stores it. The snapshot
-// and the numbers section are due now.
+// an id, the number itself: label_changed with a null cleaned, nothing
+// stored, kit v0.11.0; DS10's not_authorized before it), the new label as
+// the contract cleans it (label_changed with the cleaned text otherwise),
+// then the label stored as the frame stores it. The snapshot and the
+// numbers section are due now.
 func (c *Contract) RunRename(ctx context.Context, run ContractRun, item uuid.UUID, before *string, after string) (ContractAct, error) {
 	return c.numbersAct(ctx, run, func(tx pgx.Tx) (actWrite, error) {
 		var stored, pn string
@@ -307,13 +308,15 @@ func (c *Contract) RunRename(ctx context.Context, run ContractRun, item uuid.UUI
 			// the rename done and the number unnamed. As typed first, as
 			// the spec's 8.1 sets aside before the cleaning: the number
 			// itself ("+55 11 90000-0001") and an id of digits clean to
-			// "…" and four digits ("…0001"), which a label_changed would
-			// offer where the frame's copy of the same text publishes
-			// null. label_changed cannot say null (its detail.cleaned is
-			// a label the kit's ValidLabel takes), so it is Wappie's rule
-			// that refuses it (the spec's 8.1 and 14.9, DS10), before a
-			// label_changed that would offer it.
-			return refusedWith(kc.CodeNotAuthorized), nil
+			// "…" and four digits ("…0001"), which a label_changed with
+			// that text would offer where the frame's copy of the same
+			// text publishes null. Since kit v0.11.0 label_changed says so
+			// with a null cleaned (the spec's 14.9: the app keeps no name
+			// of the one asked for), which ValidateFor allows on an
+			// item.rename only.
+			w := refusedWith(kc.CodeLabelChanged)
+			w.result.Detail = json.RawMessage(`{"cleaned":null}`)
+			return w, nil
 		case cleaned != after:
 			w := refusedWith(kc.CodeLabelChanged)
 			w.result.Detail, err = json.Marshal(map[string]string{"cleaned": cleaned})
@@ -569,6 +572,14 @@ func (c *Contract) JudgeSyncNow(ctx context.Context, run ContractRun, item uuid.
 // spec's 14.6), at a new seq, the numbers section due now. ErrCommandFinished
 // when another leader answered it meanwhile.
 func (c *Contract) FinishSyncNow(ctx context.Context, run ContractRun, r CommandResult) (ContractAct, error) {
+	return c.FinishAct(ctx, run, r)
+}
+
+// FinishAct answers a row an act's judgement left open with r, at a new
+// seq (its state_seq), the numbers section due now: a sync now once its
+// start was tried, a relink refused by its checks before the pairing.
+// ErrCommandFinished when another leader answered it meanwhile.
+func (c *Contract) FinishAct(ctx context.Context, run ContractRun, r CommandResult) (ContractAct, error) {
 	var out ContractAct
 	err := retryDeadlock(ctx, func() error {
 		out = ContractAct{}

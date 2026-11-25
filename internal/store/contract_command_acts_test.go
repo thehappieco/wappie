@@ -168,9 +168,9 @@ func ranAct(t *testing.T, what string, act store.ContractAct, err error) {
 // workspace's clock passed, and makes the numbers section and the
 // snapshot due now. A label Wappie sets aside, as typed or as the
 // contract cleans it (a placeholder, an id, the number's own digits), is
-// not_authorized and
-// stores nothing, before a label_changed that would offer it: the snapshot
-// would publish null, which label_changed cannot say (DS10).
+// label_changed with a null cleaned (kit v0.11.0) and stores nothing,
+// before a label_changed that would offer the cleaned text: the snapshot
+// would publish null for it.
 func TestRunRename(t *testing.T) {
 	ctx := context.Background()
 	w := newActWorld(t)
@@ -247,8 +247,11 @@ func TestRunRename(t *testing.T) {
 		"Loja" + user7[:3] + "Rua" + user7[3:]}, typed...) {
 		cmd := w.command(t, kc.OpItemRename, user, sub)
 		act, err = w.c.RunRename(ctx, cmd, device, &vendasSP, aside)
-		refusedWith(t, "a rename to "+aside, act, err, kc.CodeNotAuthorized)
-		if l := w.ledger(t, cmd.ID); l.detail != "" {
+		refusedWith(t, "a rename to "+aside, act, err, kc.CodeLabelChanged)
+		if string(act.Result.Detail) != `{"cleaned":null}` {
+			t.Fatalf("a rename to %s: the act's detail %s", aside, act.Result.Detail)
+		}
+		if l := w.ledger(t, cmd.ID); l.detail != `{"cleaned": null}` {
 			t.Fatalf("a rename to %s: the detail %s", aside, l.detail)
 		}
 		if got := w.device(t, device).Label; got != vendasSP {

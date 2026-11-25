@@ -749,12 +749,32 @@ func (c *Contract) UndeliveredResults(ctx context.Context, limit int) ([]Contrac
 
 // ContractResultOutcome is what became of one result posted: the
 // platform's answer (Answer: accepted, duplicate or rejected with Code),
-// or, with Failed, the class of a post that got no answer for it.
+// or, with Failed, the class of a post that got no answer for it. ResultAt
+// is the result's time as UndeliveredResults read it (ContractResult.At):
+// the answer settles that result only, never a later one that replaced it
+// meanwhile (an item.relink's final result after its in_progress). Zero
+// settles the row's result whatever its time.
 type ContractResultOutcome struct {
-	ID     uuid.UUID
-	Answer string
-	Code   string
-	Failed string
+	ID       uuid.UUID
+	Answer   string
+	Code     string
+	Failed   string
+	ResultAt time.Time
+}
+
+// ContractResultRef names one result: its command and its time as read.
+type ContractResultRef struct {
+	ID uuid.UUID
+	At time.Time
+}
+
+// resultAtOrAny is a result's time for the settle's compare-and-set: nil
+// for a zero one, which compares nothing.
+func resultAtOrAny(at time.Time) *time.Time {
+	if at.IsZero() {
+		return nil
+	}
+	return &at
 }
 
 // The rejection codes the contract answers a result with (S 14.9).
@@ -764,7 +784,9 @@ var rejectCodes = []string{"invalid_request", "not_found", "conflict"}
 var rejectCodeShape = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
 
 // ResultsPosted records the answers to results posted, each by
-// compare-and-set on its being undelivered: accepted and duplicate settle
+// compare-and-set on its being undelivered, and on its result_at being the
+// one posted (an in_progress whose final result replaced it while its post
+// was in flight leaves the final undelivered): accepted and duplicate settle
 // it, a rejection parks it with its code (only invalid_request is
 // Wappie's to look at; conflict and not_found are the platform's), and a
 // failed post counts a try and keeps its class. A rejection with a code
@@ -822,7 +844,8 @@ func (c *Contract) ResultsPosted(ctx context.Context, outcomes []ContractResultO
 		for _, o := range sorted {
 			if o.Failed != "" {
 				if _, err := tx.Exec(ctx, `UPDATE contract_commands SET post_tries = post_tries + 1, post_error = $2
-					WHERE id = $1 AND outcome IS NOT NULL AND delivery IS NULL`, o.ID, o.Failed); err != nil {
+					WHERE id = $1 AND outcome IS NOT NULL AND delivery IS NULL
+					  AND ($3::timestamptz IS NULL OR result_at = $3)`, o.ID, o.Failed, resultAtOrAny(o.ResultAt)); err != nil {
 					return err
 				}
 				continue
@@ -832,7 +855,8 @@ func (c *Contract) ResultsPosted(ctx context.Context, outcomes []ContractResultO
 				code = &o.Code
 			}
 			if _, err := tx.Exec(ctx, `UPDATE contract_commands SET delivery = $2, reject_code = $3, delivered_at = clock_timestamp(),
-				post_error = $4 WHERE id = $1 AND outcome IS NOT NULL AND delivery IS NULL`, o.ID, o.Answer, code, o.note); err != nil {
+				post_error = $4 WHERE id = $1 AND outcome IS NOT NULL AND delivery IS NULL
+				  AND ($5::timestamptz IS NULL OR result_at = $5)`, o.ID, o.Answer, code, o.note, resultAtOrAny(o.ResultAt)); err != nil {
 				return err
 			}
 		}
@@ -842,12 +866,20 @@ func (c *Contract) ResultsPosted(ctx context.Context, outcomes []ContractResultO
 
 // ResultsParked parks results Wappie would not post (they fail the kit's
 // check: Wappie's bug): rejected with RejectLocalInvalid, why kept as
-// post_error, never sent.
-func (c *Contract) ResultsParked(ctx context.Context, ids []uuid.UUID, why string) error {
+// post_error, never sent. Each is the result read at its time (a zero time
+// any): a final result that replaced it meanwhile stays to be posted.
+func (c *Contract) ResultsParked(ctx context.Context, refs []ContractResultRef, why string) error {
+	ids := make([]uuid.UUID, len(refs))
+	ats := make([]*time.Time, len(refs))
+	for i, r := range refs {
+		ids[i], ats[i] = r.ID, resultAtOrAny(r.At)
+	}
 	_, err := c.pool.Exec(ctx, `UPDATE contract_commands c SET delivery = 'rejected', reject_code = 'local_invalid',
-		delivered_at = clock_timestamp(), post_error = $2
-		FROM (SELECT id FROM contract_commands WHERE id = ANY ($1) AND outcome IS NOT NULL AND delivery IS NULL ORDER BY id FOR UPDATE) l
-		WHERE c.id = l.id`, ids, why)
+		delivered_at = clock_timestamp(), post_error = $3
+		FROM (SELECT d.id FROM contract_commands d JOIN unnest($1::uuid[], $2::timestamptz[]) AS q(id, at) ON q.id = d.id
+		      WHERE d.outcome IS NOT NULL AND d.delivery IS NULL AND (q.at IS NULL OR d.result_at = q.at)
+		      ORDER BY d.id FOR UPDATE OF d) l
+		WHERE c.id = l.id`, ids, ats, why)
 	return err
 }
 
