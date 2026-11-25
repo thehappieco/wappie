@@ -3390,7 +3390,16 @@ the process reads as passing, where the check would release a stale one
 or answer `item_busy`. It is `false` while a pairing of the number runs or
 a move's pause holds it (the platform's question 2's default), which are
 retries on time; the pairing look re-sends the section when such a
-pairing starts or ends.
+pairing starts or ends, and when whatsmeow's map learns a half of a
+logged-out number's identity it could not fill at the last send (every
+look, 10 s, asks the map again for those rows only), so a fill that makes
+the check pass shows as `can_relink` `true` with no row change. A section
+that leaves out a row the wire refuses judges `can_relink` over every row
+it measured, the one left out included. The pairing a row's `can_relink`
+reads is the leader's process's: a pairing that runs in another process
+(Wappie's own sheet on another process during an overlap of two deploys)
+shows `can_relink` `true`, and the relink is then `item_busy` at its
+start, the registry's lock refusing it.
 
 **DS56. A move's pause is item_busy.** Core answers a relink of a number
 paused for a move `item_busy` with WhatsApp's whole window, before the
@@ -3416,8 +3425,13 @@ runner comes, it answers `item_busy` while a relink of its number pairs
 **DS57. A result in two steps.** `in_progress` is written in the
 transaction that starts the act, at the act's seq (always a value: the
 platform's question 6's default), before the pairing starts and before
-any QR (question 5's default), so a started relink is never run again and
-the workspace's next command runs while the person scans. The final
+any QR, so a started relink is never run again and the workspace's next
+command runs while the person scans. The first PUT goes only once the
+`in_progress` was posted (question 5's default): the QR pump holds the
+newest QR, asks the ledger every 250 ms whether the platform answered the
+`in_progress`, drops a held QR once it is stale, and sends none once a
+final result replaced it; a results poster in backoff delays the QRs, never
+the order. The final
 result replaces it by compare-and-set: `ran` in the attach's own
 transaction (record, command, wseq, scope, tenants, number), any other
 end over the `in_progress` with the judged seq. The settle of an answer
@@ -3433,7 +3447,18 @@ each ledger trim, once no pairing of its number runs in its process:
 its process's console relinks when it stops leading, so their ends are
 written at once; an old process whose pairing outlived its leadership and
 is scanned after the sweep fails the attach's compare-and-set, and the
-link is discarded.
+link is discarded. "Once it holds the number again" is read across
+processes: a row whose number this process pairs waits, and so does one
+whose number another process's registry holds (its advisory lock, looked
+at in `pg_locks` with `pg.AdvisoryHeld`, never taken), since an old
+leader still pairs it until it sees its lock go; a later sweep answers
+it. A relink's final result that cannot be written is tried five times,
+the wait doubling from a second, before the sweep is left to answer it
+`connect_failed`. Processes are not assumed single: a stop, a deletion
+or a storage stop handled by a process that is not the leader cancels no
+pairing there, so each QR's rotation reads the number again
+(`RelinkState`) and ends the pairing that finds it changed, within a
+rotation and before its QR goes.
 
 **DS59. The QRs.** Each QR goes with its own expiry, capped at 85 seconds
 ahead of Wappie's clock (the kit allows 90 on the platform's; question
@@ -3463,6 +3488,10 @@ Tests: `TestJudgeTable`, `TestCheckTable` (unchanged),
 `TestRelinkFromTheConsole`, `TestRelinkQRPump`, `TestRelinkEnds`,
 `TestRelinkLeftInProgressAtStart`, `TestRelinkOrder`,
 `TestDeleteRecoverRelink`, `TestRelinkDeletedWhilePairing`,
+`TestRelinkFirstQRAfterInProgress`, `TestRelinkPumpRechecks`,
+`TestRelinkEndsAtStartAndAttach`, `TestRelinkLeaderStops`,
+`TestRelinkSweepWaitsForTheNumber`, `TestNumbersCanRelinkLearnsTheMap`,
+`TestSectionLeavesOutRefusedRowsCanRelink`, `TestAdvisoryHeld`,
 `TestNumbersCanRelink`, `TestRelinkResultsValidate`, and the vectors of
 `wire-pairing.json` and `wire-v011.json` (`TestPairingVectors`,
 `TestV011Vectors`).

@@ -927,7 +927,7 @@ check that fails answering it with the seq it was judged on (DS5, DS15):
 | `item.sync_resume` | owner or admin by role | owner or admin | `state_changed` (not paused, or a number that cannot run: no identity, logged out, banned) | `device.start` on a paused number, a move's pause included; its pause notices marked resumed in the lifting transaction; a start that fails, or runs past the start bound, keeps the pause lifted, and the supervisor starts the number (DS9) |
 | `item.registration_delete` | owner or admin | owner or admin | `state_changed` (it linked) | `device.delete` of a registration: its pairing cancelled and stopped first, the row deleted |
 | `item.sync_now` | Read, for a person, as the socket's own sync now asks it (a key keeps Manage) | any role | `item_busy` while this process pairs the number (a relink, the console's or Wappie's own; judged before the role and the rest, with the seconds left in WhatsApp's window), `paused`, `storage_paused`, `not_linked`, `read_only`, `connect_failed` (a start past the start bound too), `rate_limited` within the failed start wait (no start) | `device.start` on a number not paused (DS13): an owner or admin who does not read the number may not |
-| `item.relink` | owner or admin by role | owner or admin | in this order, every one before any QR: `not_found` (a deleted number not recovered), `item_busy` (this process pairs it, or a move's pause holds it; before the role), `not_authorized`, `expired` (past its `expires_at` by Wappie's clock, no `state_seq`), `state_changed` (not logged out), `item_busy` (a hold that is not stale), `read_only` (no full identity), `no_reader`, `number_held`, `state_changed` (a pause later than `based_on.state_seq`, or since the check); after the pairing starts, `other_account`, `link_timeout`, `connect_failed`, `number_held`, `storage_paused`, `state_changed` (a stop, a deletion, a transfer or a pause meanwhile); never `app_only` | Wappie's own relink (`relink.Service`, the socket's pair frame with `relink`), with no step-up (the platform asks a sign-in at most 10 minutes old): `in_progress` at once, each QR to the pairing route, then `ran` in the attach's transaction (the number and snapshot due, capture on, the pause lifted, offline until its client connects, no `linked` event) or the end's code over the `in_progress` (DS54 to DS60) |
+| `item.relink` | owner or admin by role | owner or admin | in this order, every one before any QR: `not_found` (a deleted number not recovered), `item_busy` (this process pairs it, or a move's pause holds it; before the role), `not_authorized`, `expired` (past its `expires_at` by Wappie's clock, no `state_seq`), `state_changed` (not logged out), `item_busy` (a hold that is not stale), `read_only` (no full identity), `no_reader`, `number_held`, `item_busy` (a move's pause since the check), `state_changed` (a pause later than `based_on.state_seq`, or since the check); after the pairing starts, `other_account`, `link_timeout`, `connect_failed`, `number_held`, `storage_paused`, `item_busy` (Wappie's own transfer paused it meanwhile, DS56), `state_changed` (a stop, a deletion, a move that moved it away or a pause meanwhile); never `app_only` | Wappie's own relink (`relink.Service`, the socket's pair frame with `relink`), with no step-up (the platform asks a sign-in at most 10 minutes old): `in_progress` at once, each QR to the pairing route, then `ran` in the attach's transaction (the number and snapshot due, capture on, the pause lifted, offline until its client connects, no `linked` event) or the end's code over the `in_progress` (DS54 to DS60) |
 | `item.flags_raise` | owner or admin by role; an owner's flags only an owner's (Q58) | owner or admin; an owner's flags only an owner's | `state_changed` (`before` is not the stored flags, compared as a set; or the number was deleted since), `not_found` (the number gone or another workspace's; the target not an active member here) | `PUT …/permissions` with flags added: the flags written, never a key; `grant_needed` is never answered (send and manage need no seal, and the kit refuses a raise of read); the snapshot is due too |
 | `item.flags_drop` | as the raise | as the raise | `last_reader` (the number, a deleted one included, would be left with no reader) | the flags `before` has and `after` has not are taken from the stored ones, so one raised since stays; a drop of read deletes every grant of the person on the number at every epoch, even when the flag was already gone; when Read goes or no flag is left (a drop of send or manage that takes the last one, with Read gone already, too: it deletes no grant), it ends whole (`access_lost`) every MCP connection of the person, metadata or content, and every AI integration they created that held the number, one holding other numbers too, and tells their readers after the commit (DS47, the platform's 0061); it runs on a deleted number of the workspace (DS21); a person with no membership row at all is `ran`, a suspended one's flags and grants go all the same (DS22) |
 | `item.access_remove` | as the raise | as the raise | `last_reader` | every flag false with the row kept, so a key shared later gives no read or send; every grant of the person on the number deleted, a key holder's without read too; the person's own MCP connections and AI integrations that held the number end whole, as a drop of read's (DS47); the number and the membership as the drop's (DS20) |
@@ -941,15 +941,20 @@ the same row, as Wappie's own relink does: the same checks
 pairing, the same same-account check before anything of the link is
 stored. Its QRs go to `PUT /contract/v1/commands/{id}/pairing`
 (`{"seq", "qr", "expires_at"}`) as WhatsApp gives them, at the leader's
-pace: the first within seconds, then one each rotation (about every 20
-seconds), `seq` rising with every QR, sent or not (a QR stale while it
-waited is never sent), each `expires_at` the QR's own, capped at 85
-seconds ahead of Wappie's clock (the kit allows 90 on the platform's;
-DS59) and at the window's end. `{"accepted": false}` is delivered, never
-sent again; a signed `not_found` stops the PUTs and the pairing waits on;
-any other failure is a WARN and the next rotation is tried. A stop
-(`item.sync_stop`, which runs), a deletion, Wappie's own transfer and the
-end of leadership cancel it; it ends `state_changed`, the pause kept.
+pace, the first only once the `in_progress` was posted (the newest QR
+held until then, DS57): the first within seconds, then one each rotation
+(about every 20 seconds), `seq` rising with every QR, sent or not (a QR
+stale while it waited is never sent), each `expires_at` the QR's own,
+capped at 85 seconds ahead of Wappie's clock (the kit allows 90 on the
+platform's; DS59) and at the window's end. `{"accepted": false}` is
+delivered, never sent again; a signed `not_found` stops the PUTs and the
+pairing waits on; any other failure is a WARN and the next rotation is
+tried. A stop (`item.sync_stop`, which runs), a deletion and the end of
+leadership cancel it; it ends `state_changed`, the pause kept. Each
+rotation reads the number again, so one paused, deleted or whose storage
+stopped by another process ends at the next QR, which is not sent.
+Wappie's own transfer cancels it too, and it ends `item_busy`, a retry
+(DS56).
 While it pairs, a second relink and a sync now of the number are
 `item_busy`. A contract `item.move_out` has no runner here yet: once it
 has, it answers `item_busy` while a relink of its number pairs, and a
