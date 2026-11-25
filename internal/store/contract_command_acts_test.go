@@ -521,7 +521,8 @@ func TestRegistrationDelete(t *testing.T) {
 }
 
 // TestJudgeSyncNow: item_busy while this process pairs a linked number (a
-// relink: the spec's 14.6 holds its number, judged first), then the
+// relink: the spec's 14.6 holds its number, judged first, before the
+// role), then the
 // frame's order of refusals, then the act left open and answered at a new
 // seq.
 func TestJudgeSyncNow(t *testing.T) {
@@ -542,6 +543,13 @@ func TestJudgeSyncNow(t *testing.T) {
 	if l := w.ledger(t, cmd.ID); l.retryAfter == nil || *l.retryAfter != 42 {
 		t.Fatalf("item_busy's retry_after: %+v", l)
 	}
+	// Before the role, as item.relink's: a member who does not read the
+	// number is item_busy while it pairs, not_authorized otherwise.
+	strangerUser, strangerSub := w.actor(t, "member", "member")
+	act, _, err = w.c.JudgeSyncNow(ctx, w.command(t, kc.OpItemSyncNow, strangerUser, strangerSub), device, busy)
+	refusedWith(t, "a number pairing, by a member who does not read it", act, err, kc.CodeItemBusy)
+	act, _, err = w.c.JudgeSyncNow(ctx, w.command(t, kc.OpItemSyncNow, strangerUser, strangerSub), device, nil)
+	refusedWith(t, "a member who does not read it", act, err, kc.CodeNotAuthorized)
 	cmd, act, err = judge(nil)
 	if err != nil || !act.Open {
 		t.Fatalf("a number that may connect: %+v %v", act, err)

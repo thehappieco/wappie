@@ -3452,7 +3452,8 @@ that ran ahead of the clock (`seq + 1`) could let a pause a few
 milliseconds later pass, which the attach's `pause_seq` compare-and-set
 still catches when the pause came after the check. A sync now of a number
 this process pairs is `item_busy`, judged before its other refusals, as
-the spec's 14.6 holds a relink's number.
+the spec's 14.6 holds a relink's number, and before the role, as the
+relink's own `item_busy` and as the reference app judges both.
 
 Tests: `TestJudgeTable`, `TestCheckTable` (unchanged),
 `TestStartUsesGivenAttach`, `TestRunning`; the store's
