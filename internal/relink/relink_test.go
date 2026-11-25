@@ -129,6 +129,7 @@ type fakePairer struct {
 	stale    map[string]bool
 	startErr error
 	started  []*fakePairing
+	opts     []wa.PairOptions
 }
 
 type fakePairing struct {
@@ -160,7 +161,7 @@ func (f *fakePairer) ReleaseStale(_ context.Context, id string) bool {
 	}
 	return false
 }
-func (f *fakePairer) StartPairing(context.Context, string, string, wa.ReceiptPolicy, wa.PairOptions) (relink.Pairing, error) {
+func (f *fakePairer) StartPairing(_ context.Context, _, _ string, _ wa.ReceiptPolicy, opts wa.PairOptions) (relink.Pairing, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.startErr != nil {
@@ -168,6 +169,7 @@ func (f *fakePairer) StartPairing(context.Context, string, string, wa.ReceiptPol
 	}
 	p := &fakePairing{events: make(chan wa.PairEvent, 8)}
 	f.started = append(f.started, p)
+	f.opts = append(f.opts, opts)
 	return p, nil
 }
 
@@ -313,7 +315,7 @@ func TestEndNamesTheCause(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			sess, err := svc.Start(ctx, target, relink.Actor{Kind: "person", ID: w.owner})
+			sess, err := svc.Start(ctx, target, relink.Actor{Kind: "person", ID: w.owner}, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -435,7 +437,7 @@ func TestRelinkThroughTheRegistry(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		sess, err := rig.svc.Start(ctx, target, relink.Actor{Kind: "person", ID: rig.w.owner})
+		sess, err := rig.svc.Start(ctx, target, relink.Actor{Kind: "person", ID: rig.w.owner}, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -487,7 +489,7 @@ func TestRelinkThroughTheRegistry(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		sess, err := rig.svc.Start(ctx, target, relink.Actor{Kind: "person", ID: rig.w.owner})
+		sess, err := rig.svc.Start(ctx, target, relink.Actor{Kind: "person", ID: rig.w.owner}, nil)
 		if err != nil {
 			t.Fatal(err)
 		}

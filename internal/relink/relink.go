@@ -170,54 +170,39 @@ func (s *Service) Check(ctx context.Context, tenant, device uuid.UUID) (Target, 
 		return Target{}, r
 	}
 
-	if since, ok := s.Pairer.PairingSince(id); ok {
-		return refused(busy(min(busyElsewhere, time.Until(since.Add(wa.RelinkWindow))), "entry"))
-	}
-	if row.PauseCause == store.PauseForMove {
-		return refused(busy(busyElsewhere, "entry"))
-	}
-	if row.Status != wa.StatusLoggedOut {
-		return refused(refuse(CodeStateChanged, "entry"))
+	// Judge's table, its facts read in its order: a stale hold is
+	// released only for a logged-out number nothing pairs or moves, and a
+	// read a check before it refuses is never made. A fact not read yet is
+	// the passing one, so a refusal at a stage is the whole table's.
+	f := Facts{Status: row.Status, PauseCause: row.PauseCause, Epoch: row.Epoch, KeyHeld: true}
+	f.PairingSince, f.Pairing = s.Pairer.PairingSince(id)
+	if r := judgeEntry(f); r != nil {
+		return refused(r)
 	}
 	// A number logged out while this process held it keeps a stopped
 	// entry and its lock until something releases them. Any other hold of
 	// a logged-out number (a deletion's logout, a start) is busy.
-	if s.Pairer.Holds(id) && !s.Pairer.ReleaseStale(ctx, id) {
-		return refused(busy(busyElsewhere, "entry"))
+	f.Held = s.Pairer.Holds(id) && !s.Pairer.ReleaseStale(ctx, id)
+	f.PN, f.LID, t.FromMap = FillIdentity(ctx, s.LIDs, row.Identity.PN, row.Identity.LID)
+	if r := Judge(f); r != nil {
+		return refused(r)
 	}
+	t.Expect = wa.Identity{PN: f.PN, LID: f.LID}
 
-	pn, lid := row.Identity.PN.ToNonAD(), row.Identity.LID.ToNonAD()
-	if pn.IsEmpty() && !lid.IsEmpty() && s.LIDs != nil {
-		if found, ok := s.LIDs.PhoneFor(ctx, lid); ok {
-			pn, t.FromMap = found.ToNonAD(), true
-		}
-	}
-	if lid.IsEmpty() && !pn.IsEmpty() && s.LIDs != nil {
-		if found, ok := s.LIDs.LIDFor(ctx, pn); ok {
-			lid, t.FromMap = found.ToNonAD(), true
-		}
-	}
-	if pn.Server != types.DefaultUserServer || pn.User == "" || lid.Server != types.HiddenUserServer || lid.User == "" {
-		return refused(refuse(CodeReadOnly, "entry"))
-	}
-	t.Expect = wa.Identity{PN: pn, LID: lid}
-
-	if row.Epoch < 1 {
-		return refused(refuse(CodeNoReader, "entry"))
-	}
 	held, err := s.Devices.KeyHeld(ctx, tenant, device)
 	if err != nil {
 		return Target{}, err
 	}
-	if !held {
-		return refused(refuse(CodeNoReader, "entry"))
+	if f.KeyHeld = held; !held {
+		return refused(Judge(f))
 	}
 	elsewhere, err := s.Devices.HeldElsewhere(ctx, tenant, device, t.Expect)
 	if err != nil {
 		return Target{}, err
 	}
-	if elsewhere {
-		return refused(refuse(CodeNumberHeld, "entry"))
+	f.HeldElsewhere = elsewhere
+	if r := Judge(f); r != nil {
+		return refused(r)
 	}
 	return t, nil
 }
@@ -246,9 +231,22 @@ func (s *Session) Cancel() { s.pair.Cancel() }
 // valid after Events closed.
 func (s *Session) Result() error { return s.result }
 
-// Start starts the pairing of a number Check passed. Its error is a
-// *Refusal; the end comes through Session.Result.
-func (s *Service) Start(ctx context.Context, t Target, who Actor) (*Session, error) {
+// AttachFunc writes the new link into the number, once WhatsApp confirmed
+// the link of its own account: a compare-and-set on what the relink saw
+// at its start (store.Devices.AttachRelink). The console's command writes
+// its final result in the same transaction (store.Contract's
+// AttachRelinkCommand).
+type AttachFunc func(ctx context.Context, linked wa.Identity) (store.Attached, error)
+
+// Start starts the pairing of a number Check passed, attaching the new
+// link with attach (nil: Devices.AttachRelink). Its error is a *Refusal;
+// the end comes through Session.Result.
+func (s *Service) Start(ctx context.Context, t Target, who Actor, attach AttachFunc) (*Session, error) {
+	if attach == nil {
+		attach = func(ctx context.Context, linked wa.Identity) (store.Attached, error) {
+			return s.Devices.AttachRelink(ctx, t.Tenant, t.Device, t.Seen, linked)
+		}
+	}
 	s.log().Info("relink started", "device", t.Device, "tenant", t.Tenant, "actor_kind", who.Kind, "actor", who.ID,
 		"paused", t.Paused, "identity_from_map", t.FromMap)
 	rl := &wa.Relink{
@@ -257,7 +255,7 @@ func (s *Service) Start(ctx context.Context, t Target, who Actor) (*Session, err
 			return s.Devices.RelinkRecheck(ctx, t.Tenant, t.Device, t.Seen, t.Expect)
 		},
 		Attach: func(ctx context.Context, linked wa.Identity) error {
-			a, err := s.Devices.AttachRelink(ctx, t.Tenant, t.Device, t.Seen, linked)
+			a, err := attach(ctx, linked)
 			if err == nil {
 				s.log().Info("relink attached", "device", t.Device, "tenant", t.Tenant, "actor", who.ID,
 					"resumed_pause", a.ResumedPause, "old_session_left", a.OldSessionLeft)
