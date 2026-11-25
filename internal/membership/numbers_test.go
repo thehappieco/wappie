@@ -284,11 +284,11 @@ func TestSettingsEncoding(t *testing.T) {
 		}
 		// read lists no kind; on the numbers kinds the commands releases
 		// run, item.sync_now among them since the frame asks Read too (DS13),
-		// and the three flags kinds (DS46).
+		// the three flags kinds (DS46), and item.relink (DS54).
 		want := []string{}
 		if mode == store.SettingsOn {
 			want = []string{kc.OpItemRename, kc.OpItemSyncStop, kc.OpItemSyncResume, kc.OpItemSyncNow, kc.OpItemRegistrationDelete,
-				kc.OpItemFlagsRaise, kc.OpItemFlagsDrop, kc.OpItemAccessRemove}
+				kc.OpItemFlagsRaise, kc.OpItemFlagsDrop, kc.OpItemAccessRemove, kc.OpItemRelink}
 		}
 		if doc.Accepts == nil || !slices.Equal(doc.Accepts, want) {
 			t.Errorf("%s: accepts %#v", mode, doc.Accepts)
