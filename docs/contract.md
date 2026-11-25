@@ -534,7 +534,7 @@ transaction):
 | `mcp.connect`, `mcp.token`, `ai.connect` | `RequireWidening` | the person, `IfStale` |
 | `mcp.renew` | `RequireWidening` | the person, `Always` |
 | `grant.revoke`, `permission.withhold_read` | `RequireBackups` | the number's other key holders |
-| the console's `item.sync_stop`, `item.sync_resume` | `RequireFresh` | the actor, `IfStale` |
+| the console's `item.sync_stop`, `item.sync_resume`, `item.relink` | `RequireFresh` | the actor, `IfStale` (the relink as the socket's relink asks `freshPairing`) |
 | the console's `item.flags_raise` | `RequireWidening` | the actor and the target, `IfStale` (a target not active locally is `not_found` before it) |
 | the console's `item.flags_drop` of read, `item.access_remove` | `RequireBackups` | the number's other key holders, when the target reads the number or holds its key |
 

@@ -793,7 +793,8 @@ func TestContractDocsMatchTheCode(t *testing.T) {
 			"feed backoff", "feed silent", "warn", "round failing", "debounce", "snapshot", "snapshot backoff", "labels",
 			"event backoff", "event scan", "load retry", "load retry for", "load retry late", "hot path", "hot path bound",
 			"command long-poll", "command backoff", "reset floor", "section debounce", "connection debounce", "section",
-			"section backoff", "pairing look", "results backoff", "settings idle", "ledger trim", "behind retry"}
+			"section backoff", "pairing look", "results backoff", "settings idle", "ledger trim", "behind retry",
+			"relink window", "relink session", "QR ahead", "pairing hold"}
 		for name, want := range ours {
 			if got := rows[name]; len(got) == 0 || got[0] != want {
 				t.Errorf("docs/contract.md's timing %q is %q, the code's is %q", name, got, want)
