@@ -254,8 +254,8 @@ func TestResultsPostedKeepsALaterFinal(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			run, _ := w.inProgress(t)
-			posted, ok := undelivered(t, w.c, run.ID)
+			run, _ := w.inProgress(t)                 //nolint:contextcheck // the world's helpers run on a context of their own
+			posted, ok := undelivered(t, w.c, run.ID) //nolint:contextcheck // the world's helpers run on a context of their own
 			if !ok || posted.Outcome != store.CommandInProgress {
 				t.Fatalf("the in_progress: %+v %v", posted, ok)
 			}
@@ -265,7 +265,7 @@ func TestResultsPostedKeepsALaterFinal(t *testing.T) {
 			if err := settle(posted); err != nil {
 				t.Fatal(err)
 			}
-			final, ok := undelivered(t, w.c, run.ID)
+			final, ok := undelivered(t, w.c, run.ID) //nolint:contextcheck // the world's helpers run on a context of their own
 			if !ok || final.Outcome != store.CommandRefused || final.Code != kc.CodeOtherAccount || final.PostTries != 0 {
 				t.Fatalf("the final result after the in_progress settled: %+v %v", final, ok)
 			}
@@ -273,7 +273,7 @@ func TestResultsPostedKeepsALaterFinal(t *testing.T) {
 			if err := settle(final); err != nil {
 				t.Fatal(err)
 			}
-			if d, _ := w.delivery(t, run.ID); name != "failed" && d == "" {
+			if d, _ := w.delivery(t, run.ID); name != "failed" && d == "" { //nolint:contextcheck // the world's helpers run on a context of their own
 				t.Fatalf("the final result's own answer left it undelivered")
 			}
 		})

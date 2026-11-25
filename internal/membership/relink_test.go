@@ -472,12 +472,10 @@ func TestRelinkEnds(t *testing.T) {
 	}
 	row := func(device uuid.UUID) store.Device {
 		t.Helper()
-		var d store.Device
-		w.inWorkspace(t, w.team, func(pgx.Tx) error {
-			var err error
-			d, err = store.NewDevices(w.pool).Get(ctx, w.team.String(), device.String())
-			return err
-		})
+		d, err := store.NewDevices(w.pool).Get(ctx, w.team.String(), device.String())
+		if err != nil {
+			t.Fatal(err)
+		}
 		return d
 	}
 
