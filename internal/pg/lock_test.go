@@ -499,3 +499,43 @@ func TestTryLockShared(t *testing.T) {
 	}
 	exclusive()
 }
+
+// TryLockShared takes all its keys on one connection, or none: a key
+// another session holds exclusively leaves the others untaken.
+func TestTryLockSharedKeys(t *testing.T) {
+	pool := pgtest.Connect(t)
+	ctx := context.Background()
+	other, err := pgxpool.New(ctx, pgtest.DSN())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Close()
+	first, second := "move:keys-"+uuid.NewString(), "move:keys-"+uuid.NewString()
+	release, ok, err := pg.NewLocker(pool).TryLockShared(ctx, first, second)
+	if err != nil || !ok {
+		t.Fatalf("both keys: %v %v", ok, err)
+	}
+	for _, key := range []string{first, second} {
+		if held, err := pg.AdvisoryHeld(ctx, pool, key); err != nil || !held {
+			t.Fatalf("%s held: %v %v", key, held, err)
+		}
+	}
+	release()
+	for _, key := range []string{first, second} {
+		if held, err := pg.AdvisoryHeld(ctx, pool, key); err != nil || held {
+			t.Fatalf("%s after the release: %v %v", key, held, err)
+		}
+	}
+	exclusive, ok, err := pg.NewLocker(other).TryLock(ctx, second)
+	if err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	defer exclusive()
+	if _, ok, err := pg.NewLocker(pool).TryLockShared(ctx, first, second); err != nil || ok {
+		t.Fatalf("a key held exclusively: %v %v", ok, err)
+	}
+	if held, err := pg.AdvisoryHeld(ctx, pool, first); err != nil || held {
+		t.Fatalf("the first key stayed held: %v %v", held, err)
+	}
+	exclusive()
+}

@@ -230,7 +230,7 @@ func TestCheckTable(t *testing.T) {
 	}
 	// While a move out of the workspace runs, any number's relink is
 	// workspace_busy, before not logged out and before a hold.
-	release, err := w.devices.HoldMove(ctx, w.tenant)
+	release, err := w.devices.HoldMove(ctx, w.tenant, uuid.New())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -331,7 +331,7 @@ func TestEndNamesTheCause(t *testing.T) {
 		// A move another process started as the pairing began: while it
 		// runs, workspace_busy (DS56), never state_changed or item_busy.
 		"a move that still runs": {change: func(t *testing.T, w *world, device uuid.UUID) {
-			release, err := w.devices.HoldMove(ctx, w.tenant)
+			release, err := w.devices.HoldMove(ctx, w.tenant, device)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -349,7 +349,7 @@ func TestEndNamesTheCause(t *testing.T) {
 		}, end: wa.ErrLinkFailed, want: relink.CodeStateChanged},
 		// Another number's move leaves the pairing alone: its own end.
 		"another number's move": {change: func(t *testing.T, w *world, _ uuid.UUID) {
-			release, err := w.devices.HoldMove(ctx, w.tenant)
+			release, err := w.devices.HoldMove(ctx, w.tenant, uuid.New())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -401,7 +401,7 @@ func TestStartSeesAMove(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	release, err := w.devices.HoldMove(ctx, w.tenant)
+	release, err := w.devices.HoldMove(ctx, w.tenant, device)
 	if err != nil {
 		t.Fatal(err)
 	}

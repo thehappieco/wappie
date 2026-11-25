@@ -112,8 +112,9 @@ or from the number's own account under another phone number; nothing was
 stored), `link_timeout` (WhatsApp's window, about 160 seconds from the first QR,
 closed with no scan), `connect_failed` (the link did not start or did not finish: a socket
 drop, a passkey step, a client WhatsApp refuses), `number_held`,
-`storage_paused`, `workspace_busy` (a move another process started as the
-pairing began, which paused the number and still runs) and `state_changed`
+`storage_paused`, `workspace_busy` (a move of the number another process
+started as the pairing began, which paused it and still runs; another
+number's move ends no pairing) and `state_changed`
 (the number was paused, deleted or moved meanwhile, or its workspace stopped
 being active). A move of a number a relink pairs is refused `item_busy`,
 before its pause, and the relink runs on (DS56). `capacity_reached` is

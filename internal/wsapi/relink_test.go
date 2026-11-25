@@ -323,7 +323,7 @@ func TestRelinkDuringAMove(t *testing.T) {
 		t.Fatal(err)
 	}
 	device := c.loggedOut(t, owner.UserID)
-	release, err := c.devices.HoldMove(ctx, c.tenant)
+	release, err := c.devices.HoldMove(ctx, c.tenant, uuid.MustParse(device))
 	if err != nil {
 		t.Fatal(err)
 	}

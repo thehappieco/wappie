@@ -295,8 +295,9 @@ func TestAttachRelinkLiftsThePause(t *testing.T) {
 
 // A pause a finished move left (pause_cause move, its hold gone), seen at
 // the relink's start, holds nothing: the attach lifts it as a person's
-// (the spec's 14.13, DS56). Another number's move that still runs leaves
-// the attach alone.
+// (the spec's 14.13, DS56). Another number's move that still runs ends no
+// pairing, even of a number that shows such a pause: only a move of the
+// number itself does, while it runs.
 func TestAttachRelinkLiftsAMovesPause(t *testing.T) {
 	ctx := context.Background()
 	w := newDelWorld(t)
@@ -309,7 +310,9 @@ func TestAttachRelinkLiftsAMovesPause(t *testing.T) {
 	if err := w.devices.RelinkStartCheck(ctx, w.tenant, device, seen, id); err != nil {
 		t.Fatalf("a finished move's pause at the start = %v", err)
 	}
-	release, err := w.devices.HoldMove(ctx, w.tenant)
+	other, _ := w.loggedOutNumber(t, "Outro", "155501000412", "100000000000412")
+	otherSeen := w.seen(t, other)
+	release, err := w.devices.HoldMove(ctx, w.tenant, other)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -317,37 +320,43 @@ func TestAttachRelinkLiftsAMovesPause(t *testing.T) {
 	if err := w.devices.RelinkStartCheck(ctx, w.tenant, device, seen, id); !errors.Is(err, store.ErrRelinkWorkspaceBusy) {
 		t.Fatalf("a move running at the start = %v", err)
 	}
-	other, _ := w.loggedOutNumber(t, "Outro", "155501000412", "100000000000412")
-	otherSeen := w.seen(t, other)
 	if err := w.devices.RelinkState(ctx, w.tenant, other, otherSeen); err != nil {
-		t.Fatalf("another number's move, while it pairs = %v", err)
+		t.Fatalf("the moved number's own pairing, its move not paused it = %v", err)
 	}
-	// The hold is another move's: this number's pause is a finished
-	// move's, which the attach lifts while the other move runs.
-	inTenantTx(ctx, t, w.pool, w.tenant, func(tx pgx.Tx) error {
-		_, err := tx.Exec(ctx, `UPDATE devices SET pause_cause = 'person' WHERE id = $1`, device)
-		return err
-	})
+	// The hold is another number's move: this number's pause is a
+	// finished move's, which the pairing keeps and the attach lifts while
+	// the other move runs.
 	if err := w.devices.RelinkState(ctx, w.tenant, device, seen); err != nil {
-		t.Fatalf("a person's pause seen at the start, a move running = %v", err)
+		t.Fatalf("a finished move's pause, another number's move running = %v", err)
 	}
-	inTenantTx(ctx, t, w.pool, w.tenant, func(tx pgx.Tx) error {
-		_, err := tx.Exec(ctx, `UPDATE devices SET pause_cause = 'move' WHERE id = $1`, device)
-		return err
-	})
+	if err := w.devices.RelinkRecheck(ctx, w.tenant, device, seen, id); err != nil {
+		t.Fatalf("the recheck, a finished move's pause, another number's move running = %v", err)
+	}
+	if row, err := w.devices.RelinkRow(ctx, w.tenant, device); err != nil || !row.MoveRunning || row.NumberMoving {
+		t.Fatalf("another number's move: running %v, this number's %v (%v)", row.MoveRunning, row.NumberMoving, err)
+	}
+	// A move of this number that runs, its pause shown: workspace_busy.
+	own, err := w.devices.HoldMove(ctx, w.tenant, device)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := w.devices.RelinkState(ctx, w.tenant, device, seen); !errors.Is(err, store.ErrRelinkWorkspaceBusy) {
-		t.Fatalf("a move's pause, a move running = %v", err)
+		t.Fatalf("this number's move running, its pause shown = %v", err)
 	}
-	release()
+	if row, err := w.devices.RelinkRow(ctx, w.tenant, device); err != nil || !row.NumberMoving {
+		t.Fatalf("this number's move: %v (%v)", row.NumberMoving, err)
+	}
+	own()
 	linked := newLink(id)
 	w.putSession(t, linked.PN.String())
 	got, err := w.devices.AttachRelink(ctx, w.tenant, device, seen, linked)
 	if err != nil {
-		t.Fatalf("the attach once the move ended = %v", err)
+		t.Fatalf("the attach, another number's move running = %v", err)
 	}
 	if !got.ResumedPause {
 		t.Fatal("the attach did not say it lifted the move's pause")
 	}
+	release()
 	row, err := w.devices.RelinkRow(ctx, w.tenant, device)
 	if err != nil {
 		t.Fatal(err)
@@ -431,7 +440,7 @@ func TestAttachRelinkRefuses(t *testing.T) {
 		// running: workspace_busy (DS56), judged before the storage pause
 		// and the pause_seq its pause counted.
 		"a move that still runs": {change: func(t *testing.T, w *delWorld, device uuid.UUID, _ wa.Identity) {
-			release, err := w.devices.HoldMove(ctx, w.tenant)
+			release, err := w.devices.HoldMove(ctx, w.tenant, device)
 			if err != nil {
 				t.Fatal(err)
 			}

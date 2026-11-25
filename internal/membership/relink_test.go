@@ -538,7 +538,7 @@ func TestRelinkEnds(t *testing.T) {
 	// state_changed or item_busy (DS56).
 	device, id, _ = start()
 	devices := store.NewDevices(w.pool)
-	release, err := devices.HoldMove(ctx, w.team)
+	release, err := devices.HoldMove(ctx, w.team, device)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -598,7 +598,8 @@ func TestRelinkEnds(t *testing.T) {
 // (a restart, a takeover) is answered by the next leader's sweep before
 // any row runs, once nothing pairs its number here: connect_failed,
 // state_changed for a number deleted or no longer logged out, or
-// workspace_busy for a number a move that still runs has paused.
+// workspace_busy for a number a move of it that still runs has paused. A
+// pause a finished move left is no hold while another number's move runs.
 func TestRelinkLeftInProgressAtStart(t *testing.T) {
 	w := newEventWorld(t)
 	ctx := context.Background()
@@ -609,10 +610,11 @@ func TestRelinkLeftInProgressAtStart(t *testing.T) {
 	gone, _ := w.loggedOut(t, w.team, "Apagado", 33, w.owner)
 	pairing, _ := w.loggedOut(t, w.team, "Pareando", 34, w.owner)
 	moving, _ := w.loggedOut(t, w.team, "Movendo", 35, w.owner)
+	leftover, _ := w.loggedOut(t, w.team, "Sobra", 36, w.owner)
 	docs := map[uuid.UUID]int64{w.sub: w.version(t, w.sub)}
 	expires := time.Now().Add(5 * time.Minute)
 	ids := map[uuid.UUID]uuid.UUID{}
-	for _, device := range []uuid.UUID{orphan, online, gone, pairing, moving} {
+	for _, device := range []uuid.UUID{orphan, online, gone, pairing, moving, leftover} {
 		id := w.take(t, row{kind: kc.OpItemRelink, ws: &w.team, actor: w.sub, target: item(device), docs: docs, expires: &expires})
 		w.exec(ctx, t, `UPDATE contract_commands SET outcome = 'in_progress', state_seq = 1, result_at = clock_timestamp() WHERE id = $1`, id)
 		ids[device] = id
@@ -623,9 +625,13 @@ func TestRelinkLeftInProgressAtStart(t *testing.T) {
 	if _, err := store.NewDevices(w.pool).Quarantine(ctx, w.team, w.owner, gone, []uuid.UUID{w.owner}); err != nil {
 		t.Fatal(err)
 	}
-	// A number a move that still runs has paused: workspace_busy, as the
-	// relink's own end would say (DS56).
-	release, err := store.NewDevices(w.pool).HoldMove(ctx, w.team)
+	// A finished move's pause (its process died before the undo).
+	if _, err := store.NewDevices(w.pool).PauseForMove(ctx, w.team, leftover); err != nil {
+		t.Fatal(err)
+	}
+	// A number a move of it that still runs has paused: workspace_busy,
+	// as the relink's own end would say (DS56).
+	release, err := store.NewDevices(w.pool).HoldMove(ctx, w.team, moving)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -637,7 +643,7 @@ func TestRelinkLeftInProgressAtStart(t *testing.T) {
 	rig.p.since[pairing.String()] = time.Now()
 	run(t, w.settingsLeader(w.members, logs, rig.cfg))
 	for device, code := range map[uuid.UUID]string{orphan: kc.CodeConnectFailed, online: kc.CodeStateChanged, gone: kc.CodeStateChanged,
-		moving: kc.CodeWorkspaceBusy} {
+		moving: kc.CodeWorkspaceBusy, leftover: kc.CodeConnectFailed} {
 		eventually(t, soon, "the sweep's "+code, func() bool {
 			r, _ := w.ledgerRow(t, ids[device].String())
 			return r.outcome == store.CommandRefused && r.code == code && r.stateSeq != nil
@@ -704,7 +710,7 @@ func TestRelinkOrder(t *testing.T) {
 	// A move out of the workspace that runs: workspace_busy, by a member
 	// (before the role) and before the storage pause (the spec's 14.13,
 	// DS56); with its wait.
-	release, err := store.NewDevices(w.pool).HoldMove(ctx, w.team)
+	release, err := store.NewDevices(w.pool).HoldMove(ctx, w.team, device)
 	if err != nil {
 		t.Fatal(err)
 	}

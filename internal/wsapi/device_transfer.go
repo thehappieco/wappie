@@ -113,7 +113,7 @@ func (s *session) handleDeviceTransfer(ctx context.Context, f Frame) {
 	// who manage it by role, are told it is gone once it moved; nobody else
 	// can be reading it.
 	viewers := s.srv.viewersOf(ctx, source, device)
-	releaseHold, err := s.srv.cfg.Devices.HoldMove(ctx, source)
+	releaseHold, err := s.srv.cfg.Devices.HoldMove(ctx, source, device)
 	if err != nil {
 		s.transferError(f.ReqID, err)
 		return

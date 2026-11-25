@@ -92,7 +92,7 @@ func TestJudgeRelink(t *testing.T) {
 	if act.Result.RetryAfter != 42 {
 		t.Fatalf("item_busy's wait %d", act.Result.RetryAfter)
 	}
-	release, err := w.devices.HoldMove(ctx, w.tenant)
+	release, err := w.devices.HoldMove(ctx, w.tenant, w.item)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -174,7 +174,7 @@ func TestStartRelinkCommand(t *testing.T) {
 	// A move that started since the Check and still runs: workspace_busy
 	// (DS56), before the state_changed its pause's pause_seq would give.
 	seen = w.seen(t, w.item)
-	release, err := w.devices.HoldMove(ctx, w.tenant)
+	release, err := w.devices.HoldMove(ctx, w.tenant, w.item)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -471,7 +471,7 @@ func TestNumbersRelinkColumns(t *testing.T) {
 
 	// A move out of the workspace that runs: every row says so (its
 	// can_relink), until it ends.
-	release, err := w.devices.HoldMove(ctx, w.tenant)
+	release, err := w.devices.HoldMove(ctx, w.tenant, w.item)
 	if err != nil {
 		t.Fatal(err)
 	}

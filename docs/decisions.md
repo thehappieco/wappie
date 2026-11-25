@@ -3412,12 +3412,16 @@ How core tells a running move from a finished one. The transfer's pause
 (`pause_cause` move) stays on the number once the move has moved it, and
 a crash between the pause and its undo leaves it too, so the pause alone
 says nothing of a move that runs. The transfer handler holds the
-workspace from before its pause to its end (`Devices.HoldMove`): a shared
-advisory lock, `move:` and the workspace's id, on a connection of its
-own. Any process sees it (`pg.AdvisoryHeld`, `store.MoveHoldKey`); a
-process that dies ends it with its connection; two moves of a workspace
-run as before. A move ends its hold once it committed or undid its pause,
-and the release makes the workspace's sections measure again.
+workspace and the number from before its pause to its end
+(`Devices.HoldMove`): two shared advisory locks, `move:` and the
+workspace's id (`store.MoveHoldKey`), and the same with the number's id
+after it (`store.NumberMoveKey`). Both sit on one connection of the API
+pool, kept for the move, so each running move takes one connection out
+of that pool until it ends, as a device lock does. Any process sees them
+(`pg.AdvisoryHeld`); a process that dies ends them with its connection;
+two moves of a workspace run as before. A move ends its hold once it
+committed or undid its pause, and the release makes the workspace's
+sections measure again.
 
 The relink's answers. At its entry (`relink.Judge` with `MoveRunning`,
 `JudgeRelink` after `item_busy` and before the role,
@@ -3427,10 +3431,11 @@ lock, `RelinkStartCheck`), any move of the workspace is `workspace_busy`,
 the handler's 2 minutes, and a retry that finds it still running waits
 again; the kit allows 1 to 3600). While it pairs (each QR's recheck, the
 attach, the pairing's end, the leader's sweep of a row left
-`in_progress`), only a move whose pause the number shows is
-`workspace_busy` (`ErrRelinkWorkspaceBusy`, judged before the storage
-pause and before the `pause_seq` the move counted), so another number's
-move never ends a scan. It is never `state_changed` or `item_busy` while
+`in_progress`), only a move of the number itself that runs
+(`NumberMoveKey`) and whose pause the number shows is `workspace_busy`
+(`ErrRelinkWorkspaceBusy`, judged before the storage pause and before the
+`pause_seq` the move counted). So another number's move never ends a
+scan, even of a number that shows a pause a finished move left. It is never `state_changed` or `item_busy` while
 the move runs. A number the move has moved away is no longer the
 workspace's: `state_changed`, as README 14.13 step 5 has it for a deleted
 number. `can_relink` is `false` while a move of the workspace runs, as
