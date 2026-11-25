@@ -40,6 +40,9 @@ type scriptPairer struct {
 	live    map[string]*scriptPairing
 	started chan *scriptPairing
 	stops   int
+	// fail is what the next StartPairing answers, once, instead of a
+	// pairing.
+	fail error
 }
 
 func newScriptPairer() *scriptPairer {
@@ -68,6 +71,10 @@ func (p *scriptPairer) StartPairing(_ context.Context, _, device string, _ wa.Re
 	defer p.mu.Unlock()
 	if _, ok := p.since[device]; ok {
 		return nil, wa.ErrAlreadyRunning
+	}
+	if err := p.fail; err != nil {
+		p.fail = nil
+		return nil, err
 	}
 	sp := &scriptPairing{p: p, device: device, events: make(chan wa.PairEvent, 32), opts: opts}
 	p.since[device] = time.Now()
@@ -420,17 +427,20 @@ func TestRelinkQRPump(t *testing.T) {
 	puts := w.fake.Count(contracttest.CallPairing)
 	sp.qr(qrCode(1), time.Now().Add(20*time.Second))
 	eventually(t, soon, "QR 1 answered accepted false", func() bool { return w.fake.Count(contracttest.CallPairing) == puts+1 })
-	time.Sleep(200 * time.Millisecond)
-	if n := w.fake.Count(contracttest.CallPairing); n != puts+1 {
-		t.Fatalf("QR 1 sent %d times", n-puts)
-	}
 	if q, ok := w.fake.Pairing("wappie", id); !ok || q.Seq != 100 {
 		t.Fatalf("held %d", q.Seq)
 	}
 
+	// QR 2 refused not_found: the PUT that follows QR 1's is QR 2's, so QR 1
+	// was never sent again.
 	w.fake.RefuseAlways(contracttest.CallPairing, kc.CodeNotFound)
 	sp.qr(qrCode(2), time.Now().Add(20*time.Second))
-	eventually(t, soon, "QR 2 refused not_found", func() bool { return w.fake.Count(contracttest.CallPairing) == puts+2 })
+	eventually(t, soon, "QR 2 refused not_found", func() bool {
+		return len(logs.Lines("relink: the platform takes no more QRs for the command")) == 1
+	})
+	if n := w.fake.Count(contracttest.CallPairing); n != puts+2 {
+		t.Fatalf("%d PUTs for QR 1 and QR 2", n-puts)
+	}
 	w.fake.RefuseAlways(contracttest.CallPairing, "")
 	for i := 3; i < 12; i++ {
 		sp.qr(qrCode(i), time.Now().Add(20*time.Second))
@@ -681,9 +691,15 @@ func TestRelinkOrder(t *testing.T) {
 	}
 	check("a pause later than based_on", device, w.sub, nil, kc.CodeStateChanged, true)
 
-	// Drawn after the pause: it starts.
+	// Drawn after the pause: it starts. based_on is the pause's own time,
+	// on the database's clock that stamped it (Go's may run behind it).
+	var pausedAt int64
+	w.inWorkspace(t, w.team, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `SELECT floor(extract(epoch FROM paused_at) * 1000)::bigint FROM devices WHERE id = $1`,
+			device).Scan(&pausedAt)
+	})
 	id := w.take(t, row{kind: kc.OpItemRelink, ws: &w.team, actor: w.sub, target: item(device), docs: docs(), expires: &later,
-		basedOn: time.Now().Add(time.Second).UnixMilli()})
+		basedOn: pausedAt})
 	w.runNext(t, sw)
 	if got, _ := w.ledgerRow(t, id.String()); got.outcome != store.CommandInProgress || got.stateSeq == nil {
 		t.Fatalf("a relink that passes: %+v", got)
@@ -816,4 +832,300 @@ func TestRelinkDeletedWhilePairing(t *testing.T) {
 		t.Fatalf("a scan after the deletion = %v", err)
 	}
 	w.resultKept(t, id, kc.OutcomeRefused, kc.CodeStateChanged)
+}
+
+// TestRelinkFirstQRAfterInProgress: the in_progress goes first, then the
+// first PUT (the platform's question 5's default): while the results
+// cannot be posted, the first QR is held, never sent; once the in_progress
+// is posted, the newest QR held goes, after it.
+func TestRelinkFirstQRAfterInProgress(t *testing.T) {
+	w := newEventWorld(t)
+	logs := &membershiptest.Logs{}
+	w.settingsOn(t, store.SettingsOn)
+	device, _ := w.loggedOut(t, w.team, "Loja", 71, w.owner)
+	rig := w.relinkRig(t, logs)
+	rig.cfg.Acts.PostedPoll = 20 * time.Millisecond
+	run(t, w.settingsLeader(w.members, logs, rig.cfg))
+	w.canRelinkSent(t, w.team, device, true)
+
+	w.fake.RefuseAlways(contracttest.CallResults, kc.CodeRateLimited)
+	results := w.fake.Count(contracttest.CallResults)
+	id := w.issueRelink(t, w.team, device, w.sub)
+	sp := rig.p.next(t)
+	// Every PUT finds the in_progress kept already.
+	var early sync.Once
+	var first error
+	w.fake.Before(contracttest.CallPairing, func(string) {
+		if _, ok := w.fake.CommandResult("wappie", id); !ok {
+			early.Do(func() { first = errors.New("a QR went before the in_progress") })
+		}
+	})
+	sp.qr(qrCode(1), time.Now().Add(60*time.Second))
+	eventually(t, soon, "the in_progress refused twice", func() bool { return w.fake.Count(contracttest.CallResults) >= results+2 })
+	if n := w.fake.Count(contracttest.CallPairing); n != 0 {
+		t.Fatalf("%d PUTs before the in_progress was posted", n)
+	}
+	w.fake.RefuseAlways(contracttest.CallResults, "")
+	w.resultKept(t, id, kc.OutcomeInProgress, "")
+	eventually(t, soon, "QR 1 held after the in_progress", func() bool {
+		q, ok := w.fake.Pairing("wappie", id)
+		return ok && q.Seq == 1
+	})
+	w.fake.Before(contracttest.CallPairing, nil)
+	if first != nil {
+		t.Fatal(first)
+	}
+	sp.end(wa.PairEvent{Kind: wa.PairEventTimeout, Err: wa.ErrLinkTimeout})
+	w.resultKept(t, id, kc.OutcomeRefused, kc.CodeLinkTimeout)
+}
+
+// TestRelinkPumpRechecks: a change no process's cancel reached (a stop
+// another process ran, a storage stop) ends the pairing at the next QR,
+// which is never sent, and the end names it: state_changed for a pause,
+// storage_paused for the storage.
+func TestRelinkPumpRechecks(t *testing.T) {
+	w := newEventWorld(t)
+	ctx := context.Background()
+	logs := &membershiptest.Logs{}
+	w.settingsOn(t, store.SettingsOn)
+	rig := w.relinkRig(t, logs)
+	run(t, w.settingsLeader(w.members, logs, rig.cfg))
+	for i, c := range []struct {
+		what   string
+		change func(device uuid.UUID)
+		undo   func()
+		code   string
+	}{
+		{"a pause no cancel reached", func(device uuid.UUID) {
+			if _, err := store.NewDevices(w.pool).Pause(ctx, w.team, device, store.PauseActor{User: w.owner}); err != nil {
+				t.Fatal(err)
+			}
+		}, nil, kc.CodeStateChanged},
+		{"the storage stopped", func(uuid.UUID) {
+			w.exec(ctx, t, `UPDATE tenants SET storage_paused_at = clock_timestamp() WHERE id = $1`, w.team)
+		}, func() { w.exec(ctx, t, `UPDATE tenants SET storage_paused_at = NULL WHERE id = $1`, w.team) }, kc.CodeStoragePaused},
+	} {
+		device, _ := w.loggedOut(t, w.team, "Loja", 80+i, w.owner)
+		w.canRelinkSent(t, w.team, device, true)
+		id := w.issueRelink(t, w.team, device, w.sub)
+		sp := rig.p.next(t)
+		w.resultKept(t, id, kc.OutcomeInProgress, "")
+		puts := w.fake.Count(contracttest.CallPairing)
+		c.change(device)
+		sp.qr(qrCode(80+i), time.Now().Add(20*time.Second))
+		w.resultKept(t, id, kc.OutcomeRefused, c.code)
+		if n := w.fake.Count(contracttest.CallPairing); n != puts {
+			t.Fatalf("%s: %d QRs sent", c.what, n-puts)
+		}
+		if c.undo != nil {
+			c.undo()
+		}
+	}
+}
+
+// TestRelinkEndsAtStartAndAttach: the ends the start and the attach give,
+// each a final result over the in_progress, the number as it was: a
+// pairing that cannot start (connect_failed; storage_paused for a storage
+// stop), the account taken by another number before the scan
+// (number_held), and a scan whose session was not stored (connect_failed).
+func TestRelinkEndsAtStartAndAttach(t *testing.T) {
+	w := newEventWorld(t)
+	ctx := context.Background()
+	logs := &membershiptest.Logs{}
+	w.settingsOn(t, store.SettingsOn)
+	rig := w.relinkRig(t, logs)
+	run(t, w.settingsLeader(w.members, logs, rig.cfg))
+	n := 90
+	number := func() (uuid.UUID, wa.Identity) {
+		t.Helper()
+		n++
+		device, ident := w.loggedOut(t, w.team, "Loja", n, w.owner)
+		w.canRelinkSent(t, w.team, device, true)
+		return device, ident
+	}
+	ledgerOf := func(id string) ledgerRow {
+		t.Helper()
+		r, _ := w.ledgerRow(t, id)
+		return r
+	}
+
+	for _, c := range []struct {
+		fail error
+		code string
+	}{
+		{errors.New("the pairing could not start"), kc.CodeConnectFailed},
+		{store.ErrStoragePaused, kc.CodeStoragePaused},
+	} {
+		device, _ := number()
+		rig.p.mu.Lock()
+		rig.p.fail = c.fail
+		rig.p.mu.Unlock()
+		id := w.issueRelink(t, w.team, device, w.sub)
+		w.resultKept(t, id, kc.OutcomeRefused, c.code)
+		if r := ledgerOf(id); r.outcome != store.CommandRefused || r.stateSeq == nil {
+			t.Fatalf("a start that failed %s: %+v", c.code, r)
+		}
+		if rig.running.Has(device) {
+			t.Fatalf("a start that failed %s is still running", c.code)
+		}
+	}
+
+	// Another number takes the account between the start and the scan.
+	device, ident := number()
+	id := w.issueRelink(t, w.team, device, w.sub)
+	sp := rig.p.next(t)
+	w.resultKept(t, id, kc.OutcomeInProgress, "")
+	other, _ := number()
+	w.inWorkspace(t, w.team, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `UPDATE devices SET lid = NULL, pn = $2, status = 'online', status_reason = '' WHERE id = $1`, other,
+			types.JID{User: ident.PN.User, Device: 9, Server: types.DefaultUserServer}.String())
+		return err
+	})
+	linked := newLink(ident)
+	w.sessionFor(t, linked)
+	if err := sp.scan(linked); !errors.Is(err, store.ErrRelinkNumberHeld) {
+		t.Fatalf("a scan of an account another number holds = %v", err)
+	}
+	w.resultKept(t, id, kc.OutcomeRefused, kc.CodeNumberHeld)
+	if d, err := store.NewDevices(w.pool).Get(ctx, w.team.String(), device.String()); err != nil || d.Status != wa.StatusLoggedOut {
+		t.Fatalf("a number_held changed the number: %+v %v", d.Status, err)
+	}
+
+	// A scan whose new link's session was not stored.
+	device, ident = number()
+	id = w.issueRelink(t, w.team, device, w.sub)
+	sp = rig.p.next(t)
+	w.resultKept(t, id, kc.OutcomeInProgress, "")
+	if err := sp.scan(newLink(ident)); !errors.Is(err, store.ErrRelinkNoSession) {
+		t.Fatalf("a scan with no session stored = %v", err)
+	}
+	w.resultKept(t, id, kc.OutcomeRefused, kc.CodeConnectFailed)
+}
+
+// TestRelinkLeaderStops: a leader that stops leading cancels its console
+// relinks, whose ends are written at once (connect_failed), and the next
+// leader posts them.
+func TestRelinkLeaderStops(t *testing.T) {
+	w := newEventWorld(t)
+	logs := &membershiptest.Logs{}
+	w.settingsOn(t, store.SettingsOn)
+	device, _ := w.loggedOut(t, w.team, "Loja", 101, w.owner)
+	rig := w.relinkRig(t, logs)
+	stop := run(t, w.settingsLeader(w.members, logs, rig.cfg))
+	w.canRelinkSent(t, w.team, device, true)
+	id := w.issueRelink(t, w.team, device, w.sub)
+	rig.p.next(t)
+	w.resultKept(t, id, kc.OutcomeInProgress, "")
+
+	stop()
+	eventually(t, soon, "the end written as the leader stopped", func() bool {
+		r, _ := w.ledgerRow(t, id)
+		return r.outcome == store.CommandRefused && r.code == kc.CodeConnectFailed && r.stateSeq != nil
+	})
+	if rig.running.Has(device) {
+		t.Fatal("a relink outlived its leader")
+	}
+	run(t, w.settingsLeader(w.members, logs, rig.cfg))
+	w.resultKept(t, id, kc.OutcomeRefused, kc.CodeConnectFailed)
+}
+
+// TestRelinkSweepWaitsForTheNumber: the sweep answers a relink row left
+// in_progress only once nothing holds its number: not while this process
+// pairs it, nor while another process's registry holds its lock (an old
+// leader still pairing it); a later sweep, at a ledger trim, answers it
+// then.
+func TestRelinkSweepWaitsForTheNumber(t *testing.T) {
+	w := newEventWorld(t)
+	ctx := context.Background()
+	logs := &membershiptest.Logs{}
+	w.settingsOn(t, store.SettingsOn)
+	pairing, _ := w.loggedOut(t, w.team, "Pareando", 111, w.owner)
+	elsewhere, _ := w.loggedOut(t, w.team, "Noutro", 112, w.owner)
+	docs := map[uuid.UUID]int64{w.sub: w.version(t, w.sub)}
+	expires := time.Now().Add(5 * time.Minute)
+	ids := map[uuid.UUID]uuid.UUID{}
+	for _, device := range []uuid.UUID{pairing, elsewhere} {
+		id := w.take(t, row{kind: kc.OpItemRelink, ws: &w.team, actor: w.sub, target: item(device), docs: docs, expires: &expires})
+		w.exec(ctx, t, `UPDATE contract_commands SET outcome = 'in_progress', state_seq = 1, result_at = clock_timestamp() WHERE id = $1`, id)
+		ids[device] = id
+	}
+	// The other process's registry: the number's lock, on a connection of
+	// its own.
+	release, ok, err := pg.NewLocker(w.pool).TryLock(ctx, wa.DeviceLockKey(elsewhere.String()))
+	if err != nil || !ok {
+		t.Fatalf("the other process's lock: %v %v", ok, err)
+	}
+	defer release()
+	rig := w.relinkRig(t, logs)
+	rig.cfg.TrimEvery = 100 * time.Millisecond
+	rig.p.mu.Lock()
+	rig.p.since[pairing.String()] = time.Now()
+	rig.p.mu.Unlock()
+	run(t, w.settingsLeader(w.members, logs, rig.cfg))
+	// Several sweeps pass, the trim's notice in the log.
+	eventually(t, soon, "the leader's executor running", func() bool {
+		return w.fake.Count(contracttest.CallCommands) >= 3
+	})
+	time.Sleep(5 * rig.cfg.TrimEvery)
+	for device, id := range ids {
+		if r, _ := w.ledgerRow(t, id.String()); r.outcome != store.CommandInProgress {
+			t.Fatalf("a relink whose number is held (%s) was answered: %+v", device, r)
+		}
+	}
+	rig.p.mu.Lock()
+	delete(rig.p.since, pairing.String())
+	rig.p.mu.Unlock()
+	release()
+	for _, id := range ids {
+		eventually(t, soon, "a later sweep's connect_failed", func() bool {
+			r, _ := w.ledgerRow(t, id.String())
+			return r.outcome == store.CommandRefused && r.code == kc.CodeConnectFailed && r.stateSeq != nil
+		})
+	}
+}
+
+// TestNumbersCanRelinkLearnsTheMap: a logged-out number with half its
+// identity stored is can_relink false while whatsmeow's map knows no other
+// half; once the map learns it, the section goes again with can_relink
+// true, with no change of the number's row, as the relink's Check would
+// then pass.
+func TestNumbersCanRelinkLearnsTheMap(t *testing.T) {
+	w := newEventWorld(t)
+	logs := &membershiptest.Logs{}
+	w.settingsOn(t, store.SettingsOn)
+	device, ident := w.loggedOut(t, w.team, "Meio", 121, w.owner)
+	w.inWorkspace(t, w.team, func(tx pgx.Tx) error {
+		_, err := tx.Exec(context.Background(), `UPDATE devices SET lid = NULL WHERE id = $1`, device)
+		return err
+	})
+	book := &learningBook{}
+	rig := w.relinkRig(t, logs)
+	rig.cfg.Identities = book
+	run(t, w.settingsLeader(w.members, logs, rig.cfg))
+	w.canRelinkSent(t, w.team, device, false)
+	book.learn(ident.LID.ToNonAD())
+	w.canRelinkSent(t, w.team, device, true)
+}
+
+// learningBook is whatsmeow's map of LIDs and phone numbers, which learns
+// a LID while a test runs.
+type learningBook struct {
+	mu  sync.Mutex
+	lid types.JID
+}
+
+func (b *learningBook) learn(lid types.JID) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.lid = lid
+}
+
+func (b *learningBook) PhoneFor(context.Context, types.JID) (types.JID, bool) {
+	return types.JID{}, false
+}
+
+func (b *learningBook) LIDFor(context.Context, types.JID) (types.JID, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.lid, !b.lid.IsEmpty()
 }
