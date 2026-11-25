@@ -145,6 +145,9 @@ type deletionOptions struct {
 	fresh membership.Freshness
 	// relinks are the process's console relinks.
 	relinks *relink.Running
+	// fakePairing builds the registry's pairings on the fake client, so
+	// a test starts one with no WhatsApp (needs registry).
+	fakePairing bool
 }
 
 func newDeletionConsole(t *testing.T) *deletionConsole {
@@ -182,7 +185,13 @@ func newDeletionConsoleWith(t *testing.T, opt deletionOptions) *deletionConsole 
 	var registry *wa.Registry
 	if opt.registry {
 		var err error
+		rc := wa.RegistryConfig{}
+		if opt.fakePairing {
+			rc.NewPairingDevice = func() *waStore.Device { return (&sqlstore.Container{}).NewDevice() }
+			rc.NewPairingClient = func(*waStore.Device, waLog.Logger) wa.Client { return fakewa.New() }
+		}
 		registry, err = wa.NewRegistry(wa.RegistryConfig{Container: &sqlstore.Container{}, Store: devices, Log: slog.New(slog.DiscardHandler),
+			NewPairingDevice: rc.NewPairingDevice, NewPairingClient: rc.NewPairingClient,
 			NewClient: func(*waStore.Device, waLog.Logger) wa.Client { return fakewa.New() },
 			// A session is stored while its row is in the session store's
 			// table, so a start runs, on a fake client, until that row goes.

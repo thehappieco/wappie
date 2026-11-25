@@ -13,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"go.mau.fi/whatsmeow/types"
 
 	"whatserver2/internal/pg"
 	"whatserver2/internal/relink"
@@ -527,7 +528,8 @@ func waitWaiting(t *testing.T, c *deletionConsole, pid uint32, n int) {
 
 // TestTransferWaitsForARelink: a move of a number a relink pairs is
 // item_busy before anything is paused, and the relink is left running
-// (DS56): one this process runs as a console relink, and one another
+// (DS56): one this process runs as a console relink or pairs in its
+// registry (the sheet's), with the seconds left, and one another
 // process pairs (its relink's hold, store.RelinkHoldKey), with WhatsApp's
 // whole window. A device lock another process keeps for a logged-out
 // number it has yet to let go is no relink: the store refuses the move,
@@ -538,7 +540,7 @@ func TestTransferWaitsForARelink(t *testing.T) {
 	var moving atomic.Bool
 	var c *deletionConsole
 	relinks := &relink.Running{}
-	c = newDeletionConsoleWith(t, deletionOptions{relinks: relinks,
+	c = newDeletionConsoleWith(t, deletionOptions{relinks: relinks, registry: true, fakePairing: true,
 		transfer: func(ctx context.Context, source, actor, device, target uuid.UUID) (store.PersonalTransferPreview, error) {
 			running, err := c.devices.MoveRunning(ctx, source)
 			if err != nil {
@@ -610,6 +612,38 @@ func TestTransferWaitsForARelink(t *testing.T) {
 		t.Fatal("a refused move paused the number or ended its relink")
 	}
 	relinks.Remove(device, nil)
+
+	// This process's registry pairs it, as the sheet's relink does: the
+	// seconds left in WhatsApp's window, and the pairing runs on.
+	pairing, err := c.registry.StartPairing(ctx, c.tenant.String(), device.String(), wa.ReceiptPolicy{Mode: wa.ModePassive},
+		wa.PairOptions{Method: wa.PairByQR, Relink: &wa.Relink{
+			Expect: wa.Identity{PN: types.NewJID("155501000951", types.DefaultUserServer), LID: types.NewJID("100000000000951", types.HiddenUserServer)},
+			Attach: func(context.Context, wa.Identity) error { return errors.New("no scan here") },
+		}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pairing.Cancel()
+	e = wantError(t, ask(t, c.console, owner, wsapi.TypeDeviceTransfer, transferFrame(device, personal)), wsapi.ErrCodeItemBusy)
+	if e.RetryAfter < 1 || e.RetryAfter > int(wa.PairWindow/time.Second) {
+		t.Fatalf("a pairing here: %+v", e)
+	}
+	if c.paused(t, c.tenant, device) || pauseSeq() != seq {
+		t.Fatal("a refused move paused the number")
+	}
+	if _, ok := c.registry.PairingSince(device.String()); !ok {
+		t.Fatal("a refused move ended the pairing")
+	}
+	pairing.Cancel()
+	for range pairing.Events() {
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for c.registry.Holds(device.String()) {
+		if time.Now().After(deadline) {
+			t.Fatal("the cancelled pairing kept the number")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 
 	// Once the relink ended, it moves, holding its workspace meanwhile.
 	if f := ask(t, c.console, owner, wsapi.TypeDeviceTransfer, transferFrame(device, personal)); f.Type != wsapi.TypeDeviceTransferred {
