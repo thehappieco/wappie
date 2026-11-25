@@ -5,9 +5,11 @@ import (
 	"errors"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 	kc "github.com/thehappieco/kit/contract"
 
+	"whatserver2/internal/pg"
 	"whatserver2/internal/store"
 	"whatserver2/internal/wa"
 )
@@ -75,12 +77,14 @@ func (sw *settingsWork) execute(ctx context.Context) {
 }
 
 // sweepRelinks answers each item.relink row left in_progress whose
-// pairing runs nowhere here (the spec's 14.6: after a restart, or when
-// another process took over the commands, once it holds the number
-// again): state_changed for a number deleted or no longer logged out,
-// else connect_failed. One this process pairs, as a console relink or any
-// pairing of its number, waits for the next sweep. A started relink is
-// never run again.
+// pairing runs nowhere (the spec's 14.6: after a restart, or when another
+// process took over the commands, once it holds the number again):
+// state_changed for a number deleted or no longer logged out, else
+// connect_failed. One this process pairs, as a console relink or any
+// pairing of its number, or whose number another process's registry
+// holds (pg.AdvisoryHeld on wa.DeviceLockKey: an old leader still
+// pairing it), waits for a later sweep. A started relink is never run
+// again.
 func (sw *settingsWork) sweepRelinks(ctx context.Context) {
 	l, c, acts := sw.l, sw.l.Members.Contract, sw.cfg.Acts
 	rows, err := c.InProgressRelinks(ctx)
@@ -94,8 +98,27 @@ func (sw *settingsWork) sweepRelinks(ctx context.Context) {
 		if acts.Running.Has(row.Device) {
 			continue
 		}
-		if looks := sw.cfg.Numbers; looks != nil {
-			if _, pairing := looks.PairingSince(row.Device.String()); pairing {
+		id := row.Device.String()
+		looks := sw.cfg.Numbers
+		if looks != nil {
+			if _, pairing := looks.PairingSince(id); pairing {
+				continue
+			}
+		}
+		if row.Device != uuid.Nil && sw.l.Pool != nil && (looks == nil || !looks.Holds(id)) {
+			// Held by another process, its registry's lock of the number:
+			// an old leader's pairing may still run there until it sees
+			// its lock go. The row waits until this process could hold the
+			// number (the spec's 14.6), a later sweep's. A lock this
+			// process's registry holds is its own, and nothing pairs here.
+			held, err := pg.AdvisoryHeld(ctx, sw.l.Pool, wa.DeviceLockKey(id))
+			if err != nil {
+				if ctx.Err() == nil {
+					l.log().Warn("contract: could not look at a relink's number's lock", "id", row.ID, "error", err)
+				}
+				continue
+			}
+			if held {
 				continue
 			}
 		}

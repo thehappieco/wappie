@@ -415,3 +415,38 @@ func TestHoldStopsOnASilentLink(t *testing.T) {
 	r.kill()
 	held.Release()
 }
+
+// AdvisoryHeld sees a lock another session holds, whatever the sign of its
+// key, and takes none itself.
+func TestAdvisoryHeld(t *testing.T) {
+	pool := pgtest.Connect(t)
+	ctx := context.Background()
+	locker := pg.NewLocker(pool)
+	// Sixteen keys: both signs of a key's 64 bits, all but surely.
+	for range 16 {
+		name := "device:held-" + uuid.NewString()
+		if held, err := pg.AdvisoryHeld(ctx, pool, name); err != nil || held {
+			t.Fatalf("%s before its lock: %v %v", name, held, err)
+		}
+		release, ok, err := locker.TryLock(ctx, name)
+		if err != nil || !ok {
+			t.Fatalf("%s: lock: %v %v", name, ok, err)
+		}
+		if held, err := pg.AdvisoryHeld(ctx, pool, name); err != nil || !held {
+			t.Fatalf("%s while locked: %v %v", name, held, err)
+		}
+		if held, err := pg.AdvisoryHeld(ctx, pool, name+"-other"); err != nil || held {
+			t.Fatalf("another key while %s is locked: %v %v", name, held, err)
+		}
+		release()
+		if held, err := pg.AdvisoryHeld(ctx, pool, name); err != nil || held {
+			t.Fatalf("%s after its release: %v %v", name, held, err)
+		}
+		// The look took nothing: the lock is free to take.
+		release, ok, err = locker.TryLock(ctx, name)
+		if err != nil || !ok {
+			t.Fatalf("%s: lock after the looks: %v %v", name, ok, err)
+		}
+		release()
+	}
+}

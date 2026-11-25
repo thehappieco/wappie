@@ -74,6 +74,31 @@ func (l *Locker) TryLock(ctx context.Context, key string) (release func(), ok bo
 	}, true, nil
 }
 
+// Querier is what AdvisoryHeld reads with: a pool, a connection or a
+// transaction.
+type Querier interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+// AdvisoryHeld reports whether any session of this database holds the
+// advisory lock key (TryLock's, TryLockTx's) now, without taking it: a
+// look at pg_locks, so the caller never holds, even briefly, a lock that
+// another process may be about to take.
+func AdvisoryHeld(ctx context.Context, q Querier, key string) (bool, error) {
+	var held bool
+	// A bigint key is listed with its high 32 bits in classid, its low 32
+	// in objid, and objsubid 1.
+	err := q.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_locks
+		WHERE locktype = 'advisory' AND granted AND objsubid = 1
+		  AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
+		  AND classid = (($1::bigint >> 32) & 4294967295)::oid AND objid = ($1::bigint & 4294967295)::oid)`,
+		lockKey(key)).Scan(&held)
+	if err != nil {
+		return false, fmt.Errorf("pg: look at advisory lock %q: %w", key, err)
+	}
+	return held, nil
+}
+
 // HoldHeartbeat is how often a held lock's connection is asked whether it
 // still holds the lock, when Hold is given no interval of its own: a holder
 // whose lock went quietly is stopped within it, and one whose link went
