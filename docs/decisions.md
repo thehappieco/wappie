@@ -3388,8 +3388,8 @@ store's), since the filled identity is known only after the store's read.
 It never calls `ReleaseStale`: `NumberLooks` offers no way to, so a hold of
 the process reads as passing, where the check would release a stale one
 or answer `item_busy`. It is `false` while a pairing of the number runs or
-a move's pause holds it (the platform's question 2's default), which are
-retries on time; the pairing look re-sends the section when such a
+a move out of the workspace runs (the platform's question 2's default, and
+DS56), which are retries on time; the pairing look re-sends the section when such a
 pairing starts or ends, and when whatsmeow's map learns a half of a
 logged-out number's identity it could not fill at the last send (every
 look, 10 s, asks the map again for those rows only), so a fill that makes
@@ -3401,26 +3401,59 @@ reads is the leader's process's: a pairing that runs in another process
 shows `can_relink` `true`, and the relink is then `item_busy` at its
 start, the registry's lock refusing it.
 
-**DS56. A move's pause is item_busy.** Core answers a relink of a number
-paused for a move `item_busy` with WhatsApp's whole window, before the
-role (the platform's question 1's default). The kit's SPEC says a move's
-pause gives no `item_busy`: while `item.move_out` runs the relink is
-`workspace_busy`, and once it has finished the relink resumes the pause.
-Core has no contract `item.move_out` runner, so its move pause is only
-Wappie's own transfer, which cancels a relink instead of being refused;
-both codes are the relink's on the wire, and both are retries. So a move's
-pause is `item_busy` wherever the relink meets it, never the final
-`state_changed`: at the entry (`JudgeRelink`, `relink.Judge`), in the
-transaction that writes `in_progress` (`StartRelinkCommand`), and at the
-pairing's end, when Wappie's transfer paused the number and cancelled the
-pairing, or the attach found the pause (the store's `ErrRelinkMoveHeld`,
-judged before the `pause_seq` the move's pause counted). Once the move has
-moved the number away it is no longer the workspace's, which is
-`state_changed`, as README 14.13 step 5 has it for a deleted number; a
-move that failed and undid its pause before the pairing's end is read was
-a pause and its lift meanwhile, `state_changed` too. When a move_out
-runner comes, it answers `item_busy` while a relink of its number pairs
-(numbers.go says where).
+**DS56. A move holds the workspace: workspace_busy.** The platform's
+binding answer to question 1 (spec 14.13, "Capture and places", and
+14.6): while a move runs in the workspace, a relink is `workspace_busy`,
+judged before the storage pause; `item_busy` is only another pairing of
+the same number. Core has no contract `item.move_out` runner, so the move
+is Wappie's own transfer to Personal, and both paths answer alike.
+
+How core tells a running move from a finished one. The transfer's pause
+(`pause_cause` move) stays on the number once the move has moved it, and
+a crash between the pause and its undo leaves it too, so the pause alone
+says nothing of a move that runs. The transfer handler holds the
+workspace from before its pause to its end (`Devices.HoldMove`): a shared
+advisory lock, `move:` and the workspace's id, on a connection of its
+own. Any process sees it (`pg.AdvisoryHeld`, `store.MoveHoldKey`); a
+process that dies ends it with its connection; two moves of a workspace
+run as before. A move ends its hold once it committed or undid its pause,
+and the release makes the workspace's sections measure again.
+
+The relink's answers. At its entry (`relink.Judge` with `MoveRunning`,
+`JudgeRelink` after `item_busy` and before the role,
+`StartRelinkCommand`, and the pairing's start once it holds the device
+lock, `RelinkStartCheck`), any move of the workspace is `workspace_busy`,
+`retry_after` 10 s (`store.MoveBusyRetry`: a move takes seconds, at most
+the handler's 2 minutes, and a retry that finds it still running waits
+again; the kit allows 1 to 3600). While it pairs (each QR's recheck, the
+attach, the pairing's end, the leader's sweep of a row left
+`in_progress`), only a move whose pause the number shows is
+`workspace_busy` (`ErrRelinkWorkspaceBusy`, judged before the storage
+pause and before the `pause_seq` the move counted), so another number's
+move never ends a scan. It is never `state_changed` or `item_busy` while
+the move runs. A number the move has moved away is no longer the
+workspace's: `state_changed`, as README 14.13 step 5 has it for a deleted
+number. `can_relink` is `false` while a move of the workspace runs, as
+`Judge` has it.
+
+A move that has ended holds nothing. Its pause (`paused_by` app) is one
+the relink lifts, as a person's or a key's: on `ran` capture is `on`.
+`based_on` needs no exemption: the console drew the number with the
+pause, so the pause is not later than `based_on.state_seq`. A move's pause
+since the relink's check, its move ended, is a pause later than the start,
+`state_changed`.
+
+A move started while a relink pairs the number is refused, `item_busy`
+with the seconds left in WhatsApp's window (another process's pairing:
+the whole window), before anything is paused, and the relink runs on. The
+handler takes its hold first, then looks for a pairing: a console relink
+or a pairing of the logged-out number in this process, or the number's
+device lock (`wa.DeviceLockKey`) held where this process holds nothing.
+The relink takes the device lock first, then looks at the hold. One of the
+two always sees the other, so a move's pause never lands on a pairing it
+missed. Past its look, the handler still cancels the number's pairings,
+for a new number's pairing; a relink found there began between its device
+lock and its look at the hold, and it ends `workspace_busy` as well.
 
 **DS57. A result in two steps.** `in_progress` is written in the
 transaction that starts the act, at the act's seq (always a value: the

@@ -83,6 +83,9 @@ must be fresh, as for any pairing.
 English message that names no phone number, account or QR. Before any QR, in
 this order:
 
+- `workspace_busy`, with `retry_after` 10: a move out of the workspace runs
+  (Wappie's own transfer, in any process), judged before the storage pause
+  (DS56);
 - `storage_paused`: the workspace's storage is paused;
 - then the request's own checks: `bad_request`, then who asks
   (`not_authorized`, `step_up_required`, `memberships_unconfirmed` and the
@@ -91,7 +94,9 @@ this order:
 - `not_found`: no live number with that id here;
 - `item_busy`, with `retry_after` in whole seconds: another pairing of the
   number runs (the seconds left in WhatsApp's window), or another process
-  holds it, or a move's pause holds it (160);
+  holds it (160);
+- `workspace_busy`, with `retry_after` 10: a move out of the workspace runs.
+  A move that has ended holds nothing: the relink lifts the pause it left;
 - `state_changed`: the number is not logged out (online, offline, new,
   pairing or banned);
 - `read_only`: Wappie does not hold both halves of the number's identity,
@@ -107,8 +112,11 @@ or from the number's own account under another phone number; nothing was
 stored), `link_timeout` (WhatsApp's window, about 160 seconds from the first QR,
 closed with no scan), `connect_failed` (the link did not start or did not finish: a socket
 drop, a passkey step, a client WhatsApp refuses), `number_held`,
-`storage_paused` and `state_changed` (the number was paused, deleted or moved
-meanwhile, or its workspace stopped being active). `capacity_reached` is
+`storage_paused`, `workspace_busy` (a move another process started as the
+pairing began, which paused the number and still runs) and `state_changed`
+(the number was paused, deleted or moved meanwhile, or its workspace stopped
+being active). A move of a number a relink pairs is refused `item_busy`,
+before its pause, and the relink runs on (DS56). `capacity_reached` is
 named but never answered today: the logged-out number keeps its place.
 
 **The same account, before anything is stored.** Wappie compares the user
