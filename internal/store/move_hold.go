@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -64,7 +65,7 @@ func (d *Devices) MoveRunning(ctx context.Context, workspace uuid.UUID) (bool, e
 // of d's pool out of circulation until it ends. release ends the hold,
 // then tells the workspace's sections to measure again
 // (contract_settings_mark's channel): a numbers section measured while the
-// move ran shows can_relink false.
+// move ran shows can_relink false. release is idempotent.
 func (d *Devices) HoldMove(ctx context.Context, workspace, device uuid.UUID) (release func(), err error) {
 	unlock, ok, err := pg.NewLocker(d.pool).TryLockShared(ctx, MoveHoldKey(workspace), NumberMoveKey(workspace, device))
 	if err != nil {
@@ -74,12 +75,15 @@ func (d *Devices) HoldMove(ctx context.Context, workspace, device uuid.UUID) (re
 		// Nothing takes the keys exclusively.
 		return nil, errors.New("store: the move hold is taken exclusively")
 	}
+	var once sync.Once
 	return func() {
-		unlock()
-		nctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-		defer cancel()
-		//nolint:errcheck // the sections measure again on their own schedule
-		_, _ = d.pool.Exec(nctx, `SELECT pg_notify('wappie_contract_settings', $1)`, workspace.String())
+		once.Do(func() {
+			unlock()
+			nctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			defer cancel()
+			//nolint:errcheck // the sections measure again on their own schedule
+			_, _ = d.pool.Exec(nctx, `SELECT pg_notify('wappie_contract_settings', $1)`, workspace.String())
+		})
 	}, nil
 }
 

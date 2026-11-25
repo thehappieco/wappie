@@ -576,6 +576,10 @@ func TestTransferWaitsForARelink(t *testing.T) {
 	if c.paused(t, c.tenant, device) {
 		t.Fatal("a refused move left the number paused")
 	}
+	// Every answer goes once the move's hold is gone.
+	if running, err := c.devices.MoveRunning(ctx, c.tenant); err != nil || running {
+		t.Fatalf("a failed move kept its hold: %v %v", running, err)
+	}
 	stale()
 	seq := pauseSeq()
 

@@ -118,8 +118,12 @@ func (s *session) handleDeviceTransfer(ctx context.Context, f Frame) {
 		s.transferError(f.ReqID, err)
 		return
 	}
+	// Each answer below goes once the hold is gone (release is idempotent),
+	// so a client that reads it finds the workspace free; the defer is for
+	// a panic.
 	defer releaseHold()
 	if wait, pairing, err := s.srv.relinkPairing(ctx, source, device); err != nil || pairing {
+		releaseHold()
 		if err != nil {
 			s.transferError(f.ReqID, err)
 			return
@@ -130,6 +134,7 @@ func (s *session) handleDeviceTransfer(ctx context.Context, f Frame) {
 	}
 	pause, err := s.srv.cfg.Devices.PauseForMove(ctx, source, device)
 	if err != nil {
+		releaseHold()
 		s.transferError(f.ReqID, err)
 		return
 	}
@@ -155,7 +160,9 @@ func (s *session) handleDeviceTransfer(ctx context.Context, f Frame) {
 		s.srv.cfg.Router.Forget(device)
 	}
 	if err != nil {
-		if gone, moved := s.settleFailedTransfer(ctx, source, target, device, pause); gone {
+		gone, moved := s.settleFailedTransfer(ctx, source, target, device, pause)
+		releaseHold()
+		if gone {
 			if moved {
 				// The move committed and only its answer was lost.
 				s.srv.exportLedger(context.WithoutCancel(ctx), source)
@@ -173,6 +180,7 @@ func (s *session) handleDeviceTransfer(ctx context.Context, f Frame) {
 	// The move's moved_out line, so a restore from before it never puts
 	// the number back in its team.
 	s.srv.exportLedger(context.WithoutCancel(ctx), source)
+	releaseHold()
 	s.reply(TypeDeviceTransferred, f.ReqID, out)
 	s.srv.RevalidateAccess()
 	s.tellMoved(viewers, device)
