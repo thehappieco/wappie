@@ -162,6 +162,21 @@ func TestStartRelinkCommand(t *testing.T) {
 		t.Fatalf("a pause the console drew: %+v %v", act, err)
 	}
 
+	// A move's pause since the Check: item_busy with WhatsApp's whole
+	// window (DS56), before the state_changed its pause_seq would give.
+	seen = w.seen(t, w.item)
+	w.execOne(t, `UPDATE devices SET pause_cause = 'move', pause_seq = pause_seq + 1 WHERE id = $1`, w.item)
+	run = w.command(t, kc.OpItemRelink, w.user, w.sub)
+	act, err = w.c.StartRelinkCommand(ctx, run, w.item, seen, nil)
+	refusedWith(t, "a move's pause since the Check", act, err, kc.CodeItemBusy)
+	if act.Result.RetryAfter != int(wa.PairWindow/time.Second) {
+		t.Fatalf("a move's wait %d", act.Result.RetryAfter)
+	}
+	if l := w.ledger(t, run.ID); l.retryAfter == nil || *l.retryAfter != int(wa.PairWindow/time.Second) || l.seq == nil {
+		t.Fatalf("a move's ledger %+v", l)
+	}
+	w.execOne(t, `UPDATE devices SET pause_cause = 'person' WHERE id = $1`, w.item)
+
 	online := w.number(t, "Online")
 	act, err = w.c.StartRelinkCommand(ctx, w.command(t, kc.OpItemRelink, w.user, w.sub), online, w.seen(t, online), nil)
 	refusedWith(t, "a number online", act, err, kc.CodeStateChanged)

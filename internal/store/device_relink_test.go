@@ -365,10 +365,10 @@ func TestAttachRelinkRefuses(t *testing.T) {
 		}, want: store.ErrRelinkStateChanged},
 		"a move's pause": {change: func(t *testing.T, w *delWorld, device uuid.UUID, _ wa.Identity) {
 			inTenantTx(ctx, t, w.pool, w.tenant, func(tx pgx.Tx) error {
-				_, err := tx.Exec(ctx, `UPDATE devices SET paused = true, pause_cause = 'move' WHERE id = $1`, device)
+				_, err := tx.Exec(ctx, `UPDATE devices SET paused = true, pause_cause = 'move', pause_seq = pause_seq + 1 WHERE id = $1`, device)
 				return err
 			})
-		}, want: store.ErrRelinkStateChanged},
+		}, want: store.ErrRelinkMoveHeld},
 		"the workspace suspended": {change: func(t *testing.T, w *delWorld, _ uuid.UUID, _ wa.Identity) {
 			if _, err := w.pool.Exec(ctx, `UPDATE tenants SET status = 'suspended' WHERE id = $1`, w.tenant); err != nil {
 				t.Fatal(err)

@@ -449,7 +449,8 @@ func TestRelinkQRPump(t *testing.T) {
 // the in_progress, the number as it was: WhatsApp's window with no scan
 // (link_timeout), another account (other_account), a link that did not
 // finish (connect_failed), a sync stop while it pairs (it runs; the relink
-// state_changed, the pause kept), and the number deleted (state_changed).
+// state_changed, the pause kept), a move's pause (item_busy, a retry), and
+// the number deleted (state_changed).
 // While it pairs, a second relink and a sync now are item_busy with the
 // seconds left in the window.
 func TestRelinkEnds(t *testing.T) {
@@ -519,6 +520,19 @@ func TestRelinkEnds(t *testing.T) {
 	w.resultKept(t, id, kc.OutcomeRefused, kc.CodeStateChanged)
 	if d := row(device); !d.Paused || d.Status != wa.StatusLoggedOut {
 		t.Fatalf("after the stop: paused %v, %s", d.Paused, d.Status)
+	}
+
+	// Wappie's own transfer while it pairs: its pause, then its cancel
+	// (wsapi's cancelDevicePairing). A retry, item_busy with WhatsApp's
+	// whole window, never the final state_changed (DS56).
+	device, id, _ = start()
+	if _, err := store.NewDevices(w.pool).PauseForMove(ctx, w.team, device); err != nil {
+		t.Fatal(err)
+	}
+	rig.running.Cancel(device)
+	if res := w.resultKept(t, id, kc.OutcomeRefused, kc.CodeItemBusy); res.RetryAfter == nil ||
+		*res.RetryAfter != int64(wa.PairWindow/time.Second) {
+		t.Fatalf("a move's wait %v", res.RetryAfter)
 	}
 
 	device, id, _ = start()

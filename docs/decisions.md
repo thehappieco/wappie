@@ -3399,9 +3399,19 @@ pause gives no `item_busy`: while `item.move_out` runs the relink is
 `workspace_busy`, and once it has finished the relink resumes the pause.
 Core has no contract `item.move_out` runner, so its move pause is only
 Wappie's own transfer, which cancels a relink instead of being refused;
-both codes are the relink's on the wire. When a move_out runner comes, it
-answers `item_busy` while a relink of its number pairs (numbers.go says
-where).
+both codes are the relink's on the wire, and both are retries. So a move's
+pause is `item_busy` wherever the relink meets it, never the final
+`state_changed`: at the entry (`JudgeRelink`, `relink.Judge`), in the
+transaction that writes `in_progress` (`StartRelinkCommand`), and at the
+pairing's end, when Wappie's transfer paused the number and cancelled the
+pairing, or the attach found the pause (the store's `ErrRelinkMoveHeld`,
+judged before the `pause_seq` the move's pause counted). Once the move has
+moved the number away it is no longer the workspace's, which is
+`state_changed`, as README 14.13 step 5 has it for a deleted number; a
+move that failed and undid its pause before the pairing's end is read was
+a pause and its lift meanwhile, `state_changed` too. When a move_out
+runner comes, it answers `item_busy` while a relink of its number pairs
+(numbers.go says where).
 
 **DS57. A result in two steps.** `in_progress` is written in the
 transaction that starts the act, at the act's seq (always a value: the

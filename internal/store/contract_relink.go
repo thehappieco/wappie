@@ -156,8 +156,9 @@ func (c *Contract) JudgeRelink(ctx context.Context, run ContractRun, item uuid.U
 
 // StartRelinkCommand writes item.relink's in_progress, at the act's seq
 // (the state it judged on), in the transaction that starts the act: the
-// number still live (not_found), still logged out, paused no more since
-// the relink's Check (seen) and not held by a move (state_changed), and no
+// number still live (not_found), not held by a move (item_busy, WhatsApp's
+// whole window, DS56), still logged out and paused no more since the
+// relink's Check (seen) (state_changed), and no
 // pause later than the command's based_on.state_seq (state_changed, the
 // pause kept: the spec's 14.13), compared in milliseconds on the clock the
 // workspace's seq counts on. basedOn nil compares nothing. A started relink
@@ -178,7 +179,15 @@ func (c *Contract) StartRelinkCommand(ctx context.Context, run ContractRun, item
 		if err != nil {
 			return actWrite{}, err
 		}
-		if status != string(wa.StatusLoggedOut) || pauseSeq != seen.PauseSeq || cause == PauseForMove || pausedLater {
+		if cause == PauseForMove {
+			// A move's pause since the Check: item_busy with WhatsApp's
+			// whole window, as JudgeRelink answers it (DS56), judged before
+			// state_changed (the move's pause counted a pause_seq).
+			w := refusedWith(kc.CodeItemBusy)
+			w.result.RetryAfter = min(int(wa.PairWindow/time.Second), kc.MaxRetryAfter)
+			return w, nil
+		}
+		if status != string(wa.StatusLoggedOut) || pauseSeq != seen.PauseSeq || pausedLater {
 			return refusedWith(kc.CodeStateChanged), nil
 		}
 		return actWrite{result: CommandResult{Outcome: CommandInProgress}}, nil

@@ -22,9 +22,15 @@ import (
 
 var (
 	// ErrRelinkStateChanged is a number that is no longer one to link
-	// again: deleted, moved, paused since, no longer logged out, or its
-	// workspace no longer active.
+	// again: deleted, moved away, paused since, no longer logged out, or
+	// its workspace no longer active.
 	ErrRelinkStateChanged = errors.New("store: the number changed during the relink")
+	// ErrRelinkMoveHeld is a number a move's pause holds (Wappie's own
+	// transfer, pause_cause move): a retry, item_busy, never
+	// state_changed (the platform's question 1's default, DS56). Once the
+	// move has moved it, the number is no longer the workspace's, and that
+	// is ErrRelinkStateChanged.
+	ErrRelinkMoveHeld = errors.New("store: a move holds the number")
 	// ErrRelinkNumberHeld is an account another live number of the
 	// workspace holds.
 	ErrRelinkNumberHeld = errors.New("store: this WhatsApp account is linked here as another number")
@@ -164,8 +170,9 @@ func sameAccountUser(a, b types.JID) bool {
 
 // RelinkState is the relink's read of the number and its workspace, with no
 // lock: ErrRelinkStateChanged unless the workspace is active and the number
-// is live, logged out, paused no more since the start (pause_seq) and not
-// held by a move; ErrStoragePaused when the workspace's storage is paused.
+// is live, logged out and paused no more since the start (pause_seq);
+// ErrRelinkMoveHeld, judged before those, while a move's pause holds it;
+// ErrStoragePaused when the workspace's storage is paused.
 func (d *Devices) RelinkState(ctx context.Context, tenant, device uuid.UUID, seen RelinkSeen) error {
 	return pg.InTenantTx(ctx, d.pool, tenant.String(), func(tx pgx.Tx) error {
 		return relinkStateTx(ctx, tx, tenant, device, seen, false)
@@ -225,7 +232,11 @@ func relinkStateTx(ctx context.Context, tx pgx.Tx, tenant, device uuid.UUID, see
 	if err != nil {
 		return err
 	}
-	if devStatus != string(wa.StatusLoggedOut) || pauseSeq != seen.PauseSeq || cause == PauseForMove {
+	if cause == PauseForMove {
+		// Before pause_seq: the move's pause counted one.
+		return ErrRelinkMoveHeld
+	}
+	if devStatus != string(wa.StatusLoggedOut) || pauseSeq != seen.PauseSeq {
 		return ErrRelinkStateChanged
 	}
 	return nil
@@ -234,7 +245,8 @@ func relinkStateTx(ctx context.Context, tx pgx.Tx, tenant, device uuid.UUID, see
 // AttachRelink writes a new link into the number, in one transaction that
 // is a compare-and-set on what the relink saw at its start: the workspace
 // active with its storage running, the number live, still logged out, not
-// paused again since (pause_seq) and not held by a move, and the account
+// paused again since (pause_seq) and not held by a move (ErrRelinkMoveHeld),
+// and the account
 // held by no other live number of the workspace. It then names the new
 // link (pn, lid, push name), marks the number offline until its client
 // connects, and lifts its pause with its open sync_paused notices marked

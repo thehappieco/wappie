@@ -332,7 +332,9 @@ func (s *Session) run(ctx context.Context) {
 
 // classify names a pairing's end. A window that closed, or a link that
 // failed, is first set against the number as it is now: a cancel by a
-// pause, a deletion, a move or a storage stop is its cause.
+// pause, a deletion, a move or a storage stop is its cause. A move's pause
+// is item_busy (ErrRelinkMoveHeld), a number the move has moved away
+// state_changed.
 func (s *Service) classify(ctx context.Context, t Target, err error) *Refusal {
 	var other *wa.OtherAccount
 	switch {
@@ -344,6 +346,8 @@ func (s *Service) classify(ctx context.Context, t Target, err error) *Refusal {
 		return refuse(CodeOtherAccount, "scan")
 	case errors.Is(err, store.ErrRelinkNumberHeld):
 		return refuse(CodeNumberHeld, "attach")
+	case errors.Is(err, store.ErrRelinkMoveHeld):
+		return busy(busyElsewhere, "attach")
 	case errors.Is(err, store.ErrRelinkStateChanged):
 		return refuse(CodeStateChanged, "attach")
 	case errors.Is(err, store.ErrStoragePaused):
@@ -352,6 +356,11 @@ func (s *Service) classify(ctx context.Context, t Target, err error) *Refusal {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	switch now := s.Devices.RelinkState(ctx, t.Tenant, t.Device, t.Seen); {
+	case errors.Is(now, store.ErrRelinkMoveHeld):
+		// A move's pause met the pairing (Wappie's own transfer cancels
+		// it): a retry, item_busy with WhatsApp's whole window, as at the
+		// entry (DS56), never the final state_changed.
+		return busy(busyElsewhere, "end")
 	case errors.Is(now, store.ErrRelinkStateChanged):
 		return refuse(CodeStateChanged, "end")
 	case errors.Is(now, store.ErrStoragePaused):
