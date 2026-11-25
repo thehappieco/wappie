@@ -11,7 +11,11 @@ import (
 	"testing"
 	"time"
 
+	kc "github.com/thehappieco/kit/contract"
+
 	"whatserver2/internal/membership/membershiptest"
+	"whatserver2/internal/numberacts"
+	"whatserver2/internal/wa"
 )
 
 var spoken = membershiptest.Spoken
@@ -74,6 +78,11 @@ func TestContractTimingsMatchTheDocs(t *testing.T) {
 		"ledger trim":         spoken(trimEvery),
 		// The commands release's (commands_run.go).
 		"behind retry": spoken(behindRetry),
+		// The console's relink (kit v0.11.0; numberacts and wa).
+		"relink window":  spoken(wa.PairWindow),
+		"relink session": spoken(wa.RelinkWindow),
+		"QR ahead":       spoken(numberacts.PairingAheadMax),
+		"pairing hold":   spoken(kc.PairingHold),
 	}
 	for name, want := range ours {
 		if got := rows[name]; got != want {

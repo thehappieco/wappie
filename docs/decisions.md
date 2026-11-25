@@ -1743,7 +1743,7 @@ console alike; a key keeps Manage.
 ## The contract's settings part (2026-11-08)
 
 Step 12a puts Wappie's `numbers` section in the platform's console through
-the contract's settings part (kit v0.10.1; the platform's spec, section 14).
+the contract's settings part (kit v0.10.1, now v0.11.0; the platform's spec, section 14).
 It ships in two releases: "read" sends the sections with `accepts: []`,
 follows the command feed and answers every command `kind_not_accepted`;
 "commands" runs the kinds. One migration, 0052, holds the schema of both.
@@ -3358,3 +3358,100 @@ person's regeneration, with the old code kept; the pending code is listed,
 revealed and redeemed; a service invitation is issued and regenerated; a
 local owner of the same team, and the platform account with the provider
 unset, invite a person).
+
+## The console's relink, kit v0.11.0 (2026-11-25)
+
+Kit v0.11.0 (its SPEC 11.19, "Linking a number again"; the platform's spec
+14.13 and decision 0057) lets the console link a logged-out number again:
+`item.relink`, a numbers row's `can_relink`, and the pairing route that
+carries WhatsApp's link code to the console's page. Core runs it on the
+relink Wappie's own socket already runs (`internal/relink`), with no
+migration: 0052's ledger already allows `in_progress`.
+
+**DS54. No switch.** The spec lets an app list a kind, answer a code and
+send a member only once the platform's release that knows them is live.
+The owner confirmed that release live on 2026-11-25, so `item.relink` is
+in `runs`, `can_relink` is always sent, a rename to a name Wappie keeps
+none of is `label_changed` with `{"cleaned": null}` (superseding DS10's
+`not_authorized`), all with no setting, as DS46 shipped the flags kinds.
+The platform is never rolled back below that release while Wappie runs
+this.
+
+**DS55. can_relink is Check's table, with no side effect.** One table,
+`relink.Judge`, answers both the check before any QR and the row's
+`can_relink` (the owner's decision: exactly what Check computes; a
+logged_out_deletion number recovered since is relinkable; nothing is asked
+of `logout_cause`). The section fills a missing half of a number's identity
+from whatsmeow's LID map as the check does, so the two agree; it reads
+`HeldElsewhere` from the section's own rows (the same predicate as the
+store's), since the filled identity is known only after the store's read.
+It never calls `ReleaseStale`: `NumberLooks` offers no way to, so a hold of
+the process reads as passing, where the check would release a stale one
+or answer `item_busy`. It is `false` while a pairing of the number runs or
+a move's pause holds it (the platform's question 2's default), which are
+retries on time; the pairing look re-sends the section when such a
+pairing starts or ends.
+
+**DS56. A move's pause is item_busy.** Core answers a relink of a number
+paused for a move `item_busy` with WhatsApp's whole window, before the
+role (the platform's question 1's default). The kit's SPEC says a move's
+pause gives no `item_busy`: while `item.move_out` runs the relink is
+`workspace_busy`, and once it has finished the relink resumes the pause.
+Core has no contract `item.move_out` runner, so its move pause is only
+Wappie's own transfer, which cancels a relink instead of being refused;
+both codes are the relink's on the wire. When a move_out runner comes, it
+answers `item_busy` while a relink of its number pairs (numbers.go says
+where).
+
+**DS57. A result in two steps.** `in_progress` is written in the
+transaction that starts the act, at the act's seq (always a value: the
+platform's question 6's default), before the pairing starts and before
+any QR (question 5's default), so a started relink is never run again and
+the workspace's next command runs while the person scans. The final
+result replaces it by compare-and-set: `ran` in the attach's own
+transaction (record, command, wseq, scope, tenants, number), any other
+end over the `in_progress` with the judged seq. The settle of an answer
+compares `result_at`: before, an `in_progress` posted while its final
+result replaced it would have marked the final one delivered unsent, and
+so would a park.
+
+**DS58. The sweep, and the end of leadership.** The leader answers a
+relink row left `in_progress` at its start, before any row runs, and with
+each ledger trim, once no pairing of its number runs in its process:
+`state_changed` for a number deleted or no longer logged out, else
+`connect_failed` (the platform's question 7's default). The leader cancels
+its process's console relinks when it stops leading, so their ends are
+written at once; an old process whose pairing outlived its leadership and
+is scanned after the sweep fails the attach's compare-and-set, and the
+link is discarded.
+
+**DS59. The QRs.** Each QR goes with its own expiry, capped at 85 seconds
+ahead of Wappie's clock (the kit allows 90 on the platform's; question
+5's default leaves 5 for skew) and at the window's end; `seq` rises with
+every QR, a stale one is never sent. `accepted: false` counts as
+delivered. A signed `not_found` stops the PUTs and the pairing waits on to
+its own end (question 3's default), as the reference app does.
+
+**DS60. Checks the console's path makes.** No step-up: the platform asks a
+sign-in at most 10 minutes old when it issues the command, and the kit
+never answers `app_only`; the socket's relink keeps its own step-up. The
+actor's fresh memberships in a team, as the socket asks `freshPairing`. A
+pause later than `based_on.state_seq` is compared in milliseconds of
+`paused_at` against that seq, the workspace's clock in milliseconds; a seq
+that ran ahead of the clock (`seq + 1`) could let a pause a few
+milliseconds later pass, which the attach's `pause_seq` compare-and-set
+still catches when the pause came after the check. A sync now of a number
+this process pairs is `item_busy`, judged before its other refusals, as
+the spec's 14.6 holds a relink's number.
+
+Tests: `TestJudgeTable`, `TestCheckTable` (unchanged),
+`TestStartUsesGivenAttach`, `TestRunning`; the store's
+`TestJudgeRelink`, `TestStartRelinkCommand`, `TestFinishInProgressOnly`,
+`TestResultsPostedKeepsALaterFinal`, `TestAttachRelinkCommand`,
+`TestInProgressRelinks`, `TestNumbersRelinkColumns`; the executor's
+`TestRelinkFromTheConsole`, `TestRelinkQRPump`, `TestRelinkEnds`,
+`TestRelinkLeftInProgressAtStart`, `TestRelinkOrder`,
+`TestDeleteRecoverRelink`, `TestRelinkDeletedWhilePairing`,
+`TestNumbersCanRelink`, `TestRelinkResultsValidate`, and the vectors of
+`wire-pairing.json` and `wire-v011.json` (`TestPairingVectors`,
+`TestV011Vectors`).
