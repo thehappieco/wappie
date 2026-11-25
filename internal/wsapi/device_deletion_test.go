@@ -35,6 +35,7 @@ import (
 	"whatserver2/internal/migrate"
 	"whatserver2/internal/pg"
 	"whatserver2/internal/pgtest"
+	"whatserver2/internal/relink"
 	"whatserver2/internal/restapi"
 	"whatserver2/internal/store"
 	"whatserver2/internal/wa"
@@ -142,6 +143,8 @@ type deletionOptions struct {
 	ledger string
 	// fresh is the contract's freshness hook.
 	fresh membership.Freshness
+	// relinks are the process's console relinks.
+	relinks *relink.Running
 }
 
 func newDeletionConsole(t *testing.T) *deletionConsole {
@@ -204,6 +207,7 @@ func newDeletionConsoleWith(t *testing.T, opt deletionOptions) *deletionConsole 
 	if opt.fresh != nil {
 		cfg.Membership = opt.fresh
 	}
+	cfg.Relinks = opt.relinks
 	if opt.transfer != nil {
 		wsapi.SetTransferHook(&cfg, opt.transfer)
 	}

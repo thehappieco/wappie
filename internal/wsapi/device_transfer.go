@@ -4,10 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"github.com/google/uuid"
+	"math"
 	"time"
+
+	"github.com/google/uuid"
+
 	"whatserver2/internal/membership"
 	"whatserver2/internal/store"
+	"whatserver2/internal/wa"
 )
 
 const (
@@ -62,6 +66,13 @@ func (s *session) handleDeviceTransferPreview(ctx context.Context, f Frame) {
 // anything changes, the mover's document is asked for, always with a fresh
 // GET (README 7.1), and must list them as the team's only owner (decision
 // 0043; freshness.go).
+//
+// The move holds its workspace from before its pause to its end
+// (store.HoldMove): a relink meanwhile is workspace_busy, in any process
+// (DS56). A number a relink pairs is not moved: item_busy with the seconds
+// left in WhatsApp's window, before anything is paused and with the relink
+// left running (relinkPairing). The hold comes first, so a relink that
+// starts after the look sees the hold and ends itself.
 func (s *session) handleDeviceTransfer(ctx context.Context, f Frame) {
 	who, ok := s.requireAdmin(f.ReqID)
 	if !ok {
@@ -102,11 +113,30 @@ func (s *session) handleDeviceTransfer(ctx context.Context, f Frame) {
 	// who manage it by role, are told it is gone once it moved; nobody else
 	// can be reading it.
 	viewers := s.srv.viewersOf(ctx, source, device)
+	releaseHold, err := s.srv.cfg.Devices.HoldMove(ctx, source)
+	if err != nil {
+		s.transferError(f.ReqID, err)
+		return
+	}
+	defer releaseHold()
+	if wait, pairing, err := s.srv.relinkPairing(ctx, source, device); err != nil || pairing {
+		if err != nil {
+			s.transferError(f.ReqID, err)
+			return
+		}
+		s.reply(TypeError, f.ReqID, Error{Code: ErrCodeItemBusy, RetryAfter: int(math.Ceil(wait.Seconds())),
+			Message: "Este número está sendo vinculado de novo. Tente mover quando o vínculo terminar."})
+		return
+	}
 	pause, err := s.srv.cfg.Devices.PauseForMove(ctx, source, device)
 	if err != nil {
 		s.transferError(f.ReqID, err)
 		return
 	}
+	// Past the look, no relink pairs the number: one that starts now sees
+	// the hold and ends itself workspace_busy. What this still cancels is
+	// a new number's pairing, and a relink caught between its device lock
+	// and its look at the hold, whose end is workspace_busy as well.
 	s.srv.cancelDevicePairing(source.String(), device.String())
 	if s.srv.cfg.Registry != nil {
 		s.srv.cfg.Registry.Stop(ctx, device.String())
@@ -146,6 +176,28 @@ func (s *session) handleDeviceTransfer(ctx context.Context, f Frame) {
 	s.reply(TypeDeviceTransferred, f.ReqID, out)
 	s.srv.RevalidateAccess()
 	s.tellMoved(viewers, device)
+}
+
+// relinkPairing reports whether a relink pairs a logged-out number now,
+// and the wait it leaves: in this process, a console relink (Relinks) or
+// any pairing of the number in the registry (the sheet's relink), with the
+// seconds left in WhatsApp's window; in another, the number's device lock
+// held where this process holds nothing (store.RelinkLook), WhatsApp's
+// whole window. A number that is not logged out is paired by no relink: a
+// new number's pairing is cancelled, as before.
+func (s *Server) relinkPairing(ctx context.Context, tenant, device uuid.UUID) (time.Duration, bool, error) {
+	loggedOut, locked, err := s.cfg.Devices.RelinkLook(ctx, tenant, device)
+	if err != nil || !loggedOut {
+		return 0, false, err
+	}
+	id := device.String()
+	if since, ok := s.cfg.Registry.PairingSince(id); ok {
+		return max(time.Second, min(wa.PairWindow, time.Until(since.Add(wa.RelinkWindow)))), true, nil
+	}
+	if s.cfg.Relinks.Has(device) || locked && !s.cfg.Registry.Holds(id) {
+		return wa.PairWindow, true, nil
+	}
+	return 0, false, nil
 }
 
 // tellMoved tells the other sessions that saw the number that it moved.

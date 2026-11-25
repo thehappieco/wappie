@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"whatserver2/internal/pg"
+	"whatserver2/internal/relink"
 	"whatserver2/internal/store"
 	"whatserver2/internal/wa"
 	"whatserver2/internal/wsapi"
@@ -521,4 +523,81 @@ func waitWaiting(t *testing.T, c *deletionConsole, pid uint32, n int) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatalf("fewer than %d transactions waited", n)
+}
+
+// TestTransferWaitsForARelink: a move of a number a relink pairs is
+// item_busy before anything is paused, and the relink is left running
+// (DS56): one this process runs as a console relink, and one another
+// process pairs (its registry's device lock on the logged-out number),
+// with WhatsApp's whole window. A number whose relink ended moves; the
+// move holds its workspace while it runs, and lets go once it ended.
+func TestTransferWaitsForARelink(t *testing.T) {
+	ctx := context.Background()
+	var moving atomic.Bool
+	var c *deletionConsole
+	relinks := &relink.Running{}
+	c = newDeletionConsoleWith(t, deletionOptions{relinks: relinks,
+		transfer: func(ctx context.Context, source, actor, device, target uuid.UUID) (store.PersonalTransferPreview, error) {
+			running, err := c.devices.MoveRunning(ctx, source)
+			if err != nil {
+				return store.PersonalTransferPreview{}, err
+			}
+			moving.Store(running)
+			return c.devices.TransferPersonal(ctx, source, actor, device, target)
+		}})
+	personal := c.personalOf(t, c.owner)
+	owner := wsapi.Hello{Session: c.token}
+	device := c.linkedDevice(t, "Vendas")
+	c.reads(t, c.owner, device)
+	if err := c.devices.SetStatus(ctx, c.tenant.String(), device.String(), wa.StatusLoggedOut, "unlinked (logged out)"); err != nil {
+		t.Fatal(err)
+	}
+	pauseSeq := func() int64 {
+		t.Helper()
+		row, err := c.devices.RelinkRow(ctx, c.tenant, device)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return row.PauseSeq
+	}
+	seq := pauseSeq()
+
+	// Another process pairs it: its registry holds the device lock.
+	release, ok, err := pg.NewLocker(c.pool).TryLock(ctx, wa.DeviceLockKey(device.String()))
+	if err != nil || !ok {
+		t.Fatalf("the other process's lock: %v %v", ok, err)
+	}
+	// Released on every path: a pool cannot close while its lock is held.
+	defer release()
+	e := wantError(t, ask(t, c.console, owner, wsapi.TypeDeviceTransfer, transferFrame(device, personal)), wsapi.ErrCodeItemBusy)
+	if e.RetryAfter != int(wa.PairWindow/time.Second) || e.Message == "" {
+		t.Fatalf("a relink in another process: %+v", e)
+	}
+	if c.paused(t, c.tenant, device) || pauseSeq() != seq {
+		t.Fatal("a refused move paused the number")
+	}
+	if running, err := c.devices.MoveRunning(ctx, c.tenant); err != nil || running {
+		t.Fatalf("a refused move kept its hold: %v %v", running, err)
+	}
+	release()
+
+	// This process runs it as a console relink: refused, never cancelled
+	// (a cancel would end the session recorded here, which is nil).
+	relinks.Add(device, uuid.New(), nil)
+	wantError(t, ask(t, c.console, owner, wsapi.TypeDeviceTransfer, transferFrame(device, personal)), wsapi.ErrCodeItemBusy)
+	if c.paused(t, c.tenant, device) || pauseSeq() != seq || !relinks.Has(device) {
+		t.Fatal("a refused move paused the number or ended its relink")
+	}
+	relinks.Remove(device, nil)
+
+	// Once the relink ended, it moves, holding its workspace meanwhile.
+	if f := ask(t, c.console, owner, wsapi.TypeDeviceTransfer, transferFrame(device, personal)); f.Type != wsapi.TypeDeviceTransferred {
+		t.Fatalf("the move: %s %s", f.Type, f.Payload)
+	}
+	if !moving.Load() {
+		t.Fatal("the move did not hold its workspace")
+	}
+	if running, err := c.devices.MoveRunning(ctx, c.tenant); err != nil || running {
+		t.Fatalf("the move kept its hold: %v %v", running, err)
+	}
 }

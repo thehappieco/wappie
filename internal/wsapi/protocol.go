@@ -1888,7 +1888,12 @@ const (
 	ErrCodeNumberHeld    = "number_held"
 	ErrCodeReadOnly      = "read_only"
 	ErrCodeNoReader      = "no_reader"
-	ErrCodeItemBusy      = "item_busy"
+	// ErrCodeItemBusy is also a move refused while a relink pairs the
+	// number (DS56).
+	ErrCodeItemBusy = "item_busy"
+	// ErrCodeWorkspaceBusy is a relink while a move out of the workspace
+	// runs (DS56).
+	ErrCodeWorkspaceBusy = "workspace_busy"
 	ErrCodeStateChanged  = "state_changed"
 )
 
@@ -1899,7 +1904,8 @@ type Error struct {
 	Message string                 `json:"message"`
 	Readers []store.Person         `json:"readers,omitempty"`
 	Others  []store.TransferAccess `json:"others,omitempty"`
-	// RetryAfter is whole seconds, at least 1, with item_busy.
+	// RetryAfter is whole seconds, at least 1, with item_busy and
+	// workspace_busy.
 	RetryAfter int `json:"retry_after,omitempty"`
 }
 
