@@ -619,3 +619,34 @@ func TestSectionLeavesOutRefusedRows(t *testing.T) {
 		t.Fatalf("an item twice: %q %v", why, dropped)
 	}
 }
+
+// TestSectionLeavesOutRefusedRowsCanRelink: a row left out because the
+// wire refuses it still counts toward the kept rows' can_relink: the live
+// number holding a logged-out number's account makes that row's
+// can_relink false, as the relink's Check answers number_held.
+func TestSectionLeavesOutRefusedRowsCanRelink(t *testing.T) {
+	read, _ := numbersRead(t)
+	read.Items, read.Pending = nil, nil
+	logged := store.ContractNumber{ID: uuid.New(), Status: "logged_out", LogoutCause: "phone", Known: true, Epoch: 1, KeyHeld: true,
+		PN: "155501099001:3@s.whatsapp.net", LID: "100000000099001:3@lid"}
+	read.Items = []store.ContractNumber{logged}
+	l := looks{}
+	doc, dropped, why, _ := numbersSection(read, store.SettingsOn, l)
+	if why != "" || len(dropped) != 0 || !*rowsOf(t, doc).Items[0].CanRelink {
+		t.Fatalf("alone: can_relink true, %q %v", why, dropped)
+	}
+	// The account's live number, with a paused_by kind no database row
+	// holds: the wire refuses it, and the section leaves it out.
+	at := time.Date(2026, 11, 8, 11, 0, 0, 0, time.UTC)
+	holder := store.ContractNumber{ID: uuid.New(), Status: "online", Known: true, Paused: true, PauseCause: "person", PausedAt: &at,
+		PausedByKind: "robot", Epoch: 1, PN: "155501099001:7@s.whatsapp.net"}
+	read.Items = append(read.Items, holder)
+	doc, dropped, why, _ = numbersSection(read, store.SettingsOn, l)
+	if why != "" || len(dropped) != 1 || dropped[0] != holder.ID || !doc.Truncated {
+		t.Fatalf("the holder left out: %q %v truncated=%v", why, dropped, doc.Truncated)
+	}
+	rows := rowsOf(t, doc).Items
+	if len(rows) != 1 || rows[0].ID != logged.ID.String() || rows[0].CanRelink == nil || *rows[0].CanRelink {
+		t.Fatalf("the kept row's can_relink with its account held by a row left out: %+v", rows)
+	}
+}

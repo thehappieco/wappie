@@ -213,6 +213,14 @@ func pausedBy(n store.ContractNumber) *kc.PausedBy {
 // truncated (never cut), and the data encoded with no HTML escaping. A
 // workspace Wappie has no workspace for gets an empty section.
 func numbersDoc(read store.ContractNumbers, mode string, looks NumberLooks) (kc.SettingsDoc, error) {
+	return numbersDocOver(read, read.Items, mode, looks)
+}
+
+// numbersDocOver is numbersDoc with each row's can_relink judged over all,
+// the rows the section measured: a section that left out a row the wire
+// refuses still counts it toward HeldElsewhere, as the relink's Check
+// counts every live row of the workspace.
+func numbersDocOver(read store.ContractNumbers, all []store.ContractNumber, mode string, looks NumberLooks) (kc.SettingsDoc, error) {
 	data := kc.NumbersSettings{CanLink: read.CanLink, StoragePaused: read.StoragePaused,
 		Pending: []kc.PendingRegistration{}, Items: []kc.NumberRow{}}
 	if !read.PendingOver {
@@ -222,7 +230,7 @@ func numbersDoc(read store.ContractNumbers, mode string, looks NumberLooks) (kc.
 	}
 	if !read.ItemsOver {
 		for _, n := range read.Items {
-			data.Items = append(data.Items, numberRow(n, read.Items, looks))
+			data.Items = append(data.Items, numberRow(n, all, looks))
 		}
 	}
 	raw, err := encodeData(data)
@@ -290,7 +298,8 @@ func numbersSection(read store.ContractNumbers, mode string, looks NumberLooks) 
 	if len(dropped) == 0 {
 		return doc, nil, why, rule
 	}
-	if doc, err = numbersDoc(kept, mode, looks); err != nil {
+	// can_relink over every row measured, the ones left out included.
+	if doc, err = numbersDocOver(kept, read.Items, mode, looks); err != nil {
 		return kc.SettingsDoc{}, dropped, "encode", err
 	}
 	doc.Truncated = true
