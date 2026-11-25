@@ -520,8 +520,10 @@ func TestRegistrationDelete(t *testing.T) {
 	}
 }
 
-// TestJudgeSyncNow: the frame's order of refusals, then the act left open
-// and answered at a new seq.
+// TestJudgeSyncNow: item_busy while this process pairs a linked number (a
+// relink: the spec's 14.6 holds its number, judged first), then the
+// frame's order of refusals, then the act left open and answered at a new
+// seq.
 func TestJudgeSyncNow(t *testing.T) {
 	ctx := context.Background()
 	w := newActWorld(t)
@@ -549,6 +551,9 @@ func TestJudgeSyncNow(t *testing.T) {
 	if done.Seq <= act.Seq {
 		t.Fatalf("the answer's seq %d is not above the judgement's %d", done.Seq, act.Seq)
 	}
+	w.execOne(t, `UPDATE devices SET status = 'logged_out', status_reason = 'unlinked (test)' WHERE id = $1`, device)
+	_, act, err = judge(busy)
+	refusedWith(t, "a logged-out number its relink pairs", act, err, kc.CodeItemBusy)
 	for _, c := range []struct {
 		set, code string
 	}{
@@ -557,7 +562,7 @@ func TestJudgeSyncNow(t *testing.T) {
 		{`paused = true`, kc.CodePaused},
 	} {
 		w.execOne(t, `UPDATE devices SET `+c.set+` WHERE id = $1`, device)
-		_, act, err := judge(busy)
+		_, act, err := judge(nil)
 		refusedWith(t, c.set, act, err, c.code)
 	}
 	w.execOne(t, `UPDATE tenants SET storage_paused_at = clock_timestamp() WHERE id = $1`, w.tenant)
@@ -570,4 +575,7 @@ func TestJudgeSyncNow(t *testing.T) {
 	w.execOne(t, `UPDATE devices SET pn = NULL, lid = NULL, status = 'offline', status_reason = '' WHERE id = $1`, device)
 	_, act, err = judge(nil)
 	refusedWith(t, "a number with no identity", act, err, kc.CodeNotLinked)
+	// A registration's own pairing is no relink: not_linked still.
+	_, act, err = judge(busy)
+	refusedWith(t, "a number with no identity pairing", act, err, kc.CodeNotLinked)
 }

@@ -23,8 +23,11 @@ type run struct {
 }
 
 // Add records sess as the relink of device answering cmd. False, and
-// nothing recorded, when one runs already.
+// nothing recorded, when one runs already. A nil Running records nothing.
 func (r *Running) Add(device, cmd uuid.UUID, sess *Session) bool {
+	if r == nil {
+		return true
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.m == nil {
@@ -39,6 +42,9 @@ func (r *Running) Add(device, cmd uuid.UUID, sess *Session) bool {
 
 // Remove forgets device's relink, if it is still sess.
 func (r *Running) Remove(device uuid.UUID, sess *Session) {
+	if r == nil {
+		return
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if cur := r.m[device]; cur != nil && cur.sess == sess {

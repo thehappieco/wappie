@@ -516,11 +516,13 @@ func (c *Contract) RunSyncResume(ctx context.Context, run ContractRun, item uuid
 }
 
 // JudgeSyncNow is item.sync_now's judgement (the frame is device.start on
-// a number not paused), in the frame's order: the number live, the actor's
-// RuleRead, then paused (a move's pause included), the storage verdict,
-// its identity not known (not_linked), logged out or banned (read_only),
-// and a pairing of it in this process (item_busy, busy's retry_after in
-// seconds). A refusal is written there; a number that may connect is
+// a number not paused): the number live, the actor's RuleRead, then a
+// pairing of a linked number in this process, a relink (item_busy, busy's
+// retry_after in seconds: the spec's 14.6 holds the number for its relink,
+// judged before the rest), then in the frame's order paused (a move's
+// pause included), the storage verdict, its identity not known
+// (not_linked), logged out or banned (read_only). A refusal is written
+// there; a number that may connect is
 // returned with the act open, written nothing, and FinishSyncNow answers
 // it once the start is tried.
 func (c *Contract) JudgeSyncNow(ctx context.Context, run ContractRun, item uuid.UUID, busy func(uuid.UUID) (int, bool)) (ContractAct, Device, error) {
@@ -541,6 +543,13 @@ func (c *Contract) JudgeSyncNow(ctx context.Context, run ContractRun, item uuid.
 		if !roles.Allows(RuleRead) {
 			return refusedWith(kc.CodeNotAuthorized), nil
 		}
+		if busy != nil && dev.Identity.Known() {
+			if wait, ok := busy(item); ok {
+				w := refusedWith(kc.CodeItemBusy)
+				w.result.RetryAfter = min(max(wait, 1), kc.MaxRetryAfter)
+				return w, nil
+			}
+		}
 		var storage bool
 		if err := tx.QueryRow(ctx, `SELECT `+snapshotQuotaSQL+` FROM tenants t WHERE t.id = $1`, run.Workspace).Scan(&storage); err != nil {
 			return actWrite{}, err
@@ -554,13 +563,6 @@ func (c *Contract) JudgeSyncNow(ctx context.Context, run ContractRun, item uuid.
 			return refusedWith(kc.CodeNotLinked), nil
 		case dev.Status == wa.StatusLoggedOut, dev.Status == wa.StatusBanned:
 			return refusedWith(kc.CodeReadOnly), nil
-		}
-		if busy != nil {
-			if wait, ok := busy(item); ok {
-				w := refusedWith(kc.CodeItemBusy)
-				w.result.RetryAfter = min(max(wait, 1), kc.MaxRetryAfter)
-				return w, nil
-			}
 		}
 		return actWrite{open: true}, nil
 	})

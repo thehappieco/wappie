@@ -11,7 +11,8 @@ import (
 
 // SyncStop is item.sync_stop (the frame is device.stop): the pause in the
 // store's transaction, then, as the frame does after its own, in its
-// order: a pairing of the number in progress is cancelled, the registry
+// order: a pairing of the number in progress is cancelled (a console
+// relink's too, which ends state_changed), the registry
 // stops it, its display status becomes offline ("paused by request",
 // unless it is logged out or banned, which a pause keeps), that status is
 // broadcast, and the notices the pause raised go to their persons'
@@ -29,6 +30,10 @@ func (r *Runner) SyncStop(ctx context.Context, run Run, item uuid.UUID) (store.C
 	if r.Sockets != nil {
 		r.Sockets.CancelPairing(tenant, device)
 	}
+	// A console relink of the number ends state_changed, its pause kept
+	// (the spec's 14.13): the pause's pause_seq fails the attach's
+	// compare-and-set, and the cancel ends the pairing now.
+	r.Running.Cancel(item)
 	if r.Registry != nil {
 		r.Registry.Stop(ctx, device)
 	}
