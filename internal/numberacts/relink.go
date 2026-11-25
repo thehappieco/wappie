@@ -26,7 +26,7 @@ type RelinkCmd struct {
 // PairingAheadMax is how far ahead of this process's clock a QR's
 // expires_at may be sent: the kit's 90 s (kc.MaxPairingAhead) less a
 // margin for the platform's clock, which judges it (the platform's
-// question 5's default). Each QR goes with its own expiry, capped.
+// question 4's default). Each QR goes with its own expiry, capped.
 const PairingAheadMax = kc.MaxPairingAhead - 5*time.Second
 
 // Relink is item.relink (kit v0.11.0; the spec's 14.13): a logged-out

@@ -3437,7 +3437,7 @@ link is discarded.
 
 **DS59. The QRs.** Each QR goes with its own expiry, capped at 85 seconds
 ahead of Wappie's clock (the kit allows 90 on the platform's; question
-5's default leaves 5 for skew) and at the window's end; `seq` rises with
+4's default leaves 5 for skew) and at the window's end; `seq` rises with
 every QR, a stale one is never sent. `accepted: false` counts as
 delivered. A signed `not_found` stops the PUTs and the pairing waits on to
 its own end (question 3's default), as the reference app does.
