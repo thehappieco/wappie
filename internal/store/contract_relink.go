@@ -268,3 +268,24 @@ func (c *Contract) InProgressRelinks(ctx context.Context) ([]InProgressRelink, e
 		return r, nil
 	})
 }
+
+// RelinkPosted reports where a relink's in_progress is: posted (the
+// platform answered its post, so it carries the command as one in
+// progress), or replaced by a final result (or gone), after which no QR
+// is sent. Neither: written and not answered yet. The QR pump holds the
+// first QR until one of them (the platform's question 5's default: the
+// in_progress first, then the first PUT).
+func (c *Contract) RelinkPosted(ctx context.Context, id uuid.UUID) (posted, final bool, err error) {
+	var outcome *string
+	err = c.pool.QueryRow(ctx, `SELECT outcome, delivery IS NOT NULL FROM contract_commands WHERE id = $1`, id).Scan(&outcome, &posted)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, true, nil
+	}
+	if err != nil {
+		return false, false, err
+	}
+	if outcome == nil || *outcome != string(CommandInProgress) {
+		return false, true, nil
+	}
+	return posted, false, nil
+}

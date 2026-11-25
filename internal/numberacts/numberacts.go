@@ -110,6 +110,11 @@ type Runner struct {
 	// Now is the clock a relink's expiry and its QRs' are judged on
 	// (time.Now when nil).
 	Now func() time.Time
+	// PostedPoll is how often a relink's QR pump asks whether its
+	// in_progress was posted while it holds the first QR (250 ms when
+	// zero); FinishBackoff the first wait before a failed write of its
+	// final result is tried again (1 s when zero).
+	PostedPoll, FinishBackoff time.Duration
 
 	mu sync.Mutex
 	// failed is when each number's last sync now start failed, kept
