@@ -3466,6 +3466,13 @@ handler still cancels the number's pairings, for a new number's pairing;
 a relink found there began between its hold and its look at the move's,
 and it ends `workspace_busy` as well.
 
+That `item_busy` is Wappie's own socket transfer, which is not on the
+contract wire. A contract `item.move_out` has no runner in core. Once it
+has one, the move answers `item_busy` while a relink of its number pairs
+only once the platform's release that knows `item_busy` on
+`item.move_out` is live (README's compatibility rule), and
+`workspace_busy` before that, as the earlier kit has it.
+
 **DS57. A result in two steps.** `in_progress` is written in the
 transaction that starts the act, at the act's seq (always a value: the
 platform's question 6's default), before the pairing starts and before

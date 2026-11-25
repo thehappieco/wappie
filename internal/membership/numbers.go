@@ -39,10 +39,13 @@ type NumberLooks interface {
 // carries them, with no switch), item.relink (kit v0.11.0, listed with no
 // switch since the platform's release that knows it is live: the spec's
 // 14 lets an app list a kind only then), and the person's two. A
-// contract item.move_out has no runner here: once it has one, it answers
-// item_busy, judged before state_changed, while a relink of its number
-// pairs (Runner.busy's retry_after), and a relink meanwhile workspace_busy,
-// as Wappie's own transfer has it (DS56).
+// contract item.move_out has no runner here. Once it has one, a relink
+// meanwhile is workspace_busy, as with Wappie's own transfer (DS56). The
+// move itself, while a relink of its number pairs, answers item_busy,
+// judged before state_changed (Runner.busy's retry_after), only once the
+// platform's release that knows item_busy on item.move_out is live (the
+// spec's compatibility rule), and workspace_busy before that. Wappie's own
+// socket transfer is not on the contract wire and keeps item_busy.
 var runs = map[string][]string{
 	kc.SectionNumbers: {kc.OpItemRename, kc.OpItemSyncStop, kc.OpItemSyncResume, kc.OpItemSyncNow, kc.OpItemRegistrationDelete,
 		kc.OpItemFlagsRaise, kc.OpItemFlagsDrop, kc.OpItemAccessRemove, kc.OpItemRelink},

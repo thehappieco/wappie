@@ -961,8 +961,12 @@ workspace runs (the transfer's hold, seen by every process), a relink is
 move of the number itself, whose pause it shows, ends a pairing
 `workspace_busy` too, and another number's move ends none.
 Once the move has ended, its pause is one the relink lifts (DS56). A
-contract `item.move_out` has no runner here yet: once it has, it answers
-the same way.
+contract `item.move_out` has no runner here yet. Once it has, a relink
+meanwhile is `workspace_busy` as above. The move itself, while a relink
+of its number pairs, answers `item_busy` only once the platform's
+release that knows `item_busy` on `item.move_out` is live (the spec's
+compatibility rule), and `workspace_busy` before that. Wappie's own
+transfer is not on the contract wire and keeps `item_busy`.
 
 **The flags kinds** (step 12b, DS18 to DS24, DS47) run on the write Wappie's
 own permissions screen makes (`setDevicePermissionTx`), so the two agree
