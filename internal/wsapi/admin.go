@@ -716,8 +716,12 @@ func (s *session) running(deviceID string) bool {
 	return ok
 }
 
-// Cancel a pending pairing even when another browser initiated it.
+// Cancel a pending pairing even when another browser initiated it, and a
+// console relink of the number (item.relink), which ends state_changed.
 func (s *Server) cancelDevicePairing(tenant, device string) {
+	if id, err := uuid.Parse(device); err == nil {
+		s.cfg.Relinks.Cancel(id)
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	for sess := range s.sessions {

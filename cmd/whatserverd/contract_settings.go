@@ -336,16 +336,24 @@ func personFindings(st store.ContractSettingsStatus, since func(*time.Time) *tim
 
 // settingsConfig is the leader's settings part as this process wires it:
 // the registry tells the pending rows' pairing and retry, and the numbers
-// kinds run with it and with the socket server (internal/numberacts).
+// kinds run with it and with the socket server (internal/numberacts), the
+// console's relink with the socket's relink service and the process's
+// console relinks.
 func (a *app) settingsConfig() membership.SettingsConfig {
 	var cfg membership.SettingsConfig
 	if a.members == nil {
 		return cfg
 	}
-	acts := &numberacts.Runner{Store: a.members.Contract, Devices: a.devices, Recorder: a.recordReceipt, Log: a.log, Readers: &a.readers}
+	acts := &numberacts.Runner{Store: a.members.Contract, Devices: a.devices, Recorder: a.recordReceipt, Log: a.log, Readers: &a.readers,
+		Relinker: a.relink, Running: a.relinks}
 	if a.registry != nil {
 		cfg.Numbers = a.registry
 		acts.Registry = a.registry
+	}
+	if a.relink != nil {
+		// can_relink fills a half of a number's identity from whatsmeow's
+		// map, as the relink's Check does.
+		cfg.Identities = a.relink.LIDs
 	}
 	if a.ws != nil {
 		acts.Sockets = a.ws

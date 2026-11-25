@@ -181,6 +181,12 @@ type app struct {
 	unlinker sessionUnlinker
 	router   *ingest.Router
 	ws       *wsapi.Server
+	// relink links a logged-out number again, from the socket's pair frame
+	// and from the console's item.relink alike (decision 0057); relinks are
+	// the process's console relinks, which a stop, a deletion, a transfer
+	// and the end of leadership cancel. relink is nil without a registry.
+	relink   *relink.Service
+	relinks  *relink.Running
 	calls    *calling.Service
 	web      *webui.Handler
 	passkeys *authapi.PasskeyProvider
@@ -546,6 +552,11 @@ func setupWith(ctx context.Context, withWA, migrations bool) (*app, func(), erro
 		return nil, nil, err
 	}
 
+	a.relink = &relink.Service{
+		Devices: a.devices, Pairer: relink.FromRegistry(registry), LIDs: wa.NewLIDMap(container),
+		Receipts: a.recordReceipt, Log: lg,
+	}
+	a.relinks = &relink.Running{}
 	ws = wsapi.NewServer(wsapi.Config{
 		Storage:        a.storage,
 		BrowserOrigins: cfg.BrowserOrigins,
@@ -573,11 +584,10 @@ func setupWith(ctx context.Context, withWA, migrations bool) (*app, func(), erro
 		// A grant.revoke that took a person's Read tells the readers of
 		// their connections it ended (DS48).
 		MCPReaders: &a.readers,
-		// "Link again" on a logged-out number (decision 0057).
-		Relink: &relink.Service{
-			Devices: a.devices, Pairer: relink.FromRegistry(registry), LIDs: wa.NewLIDMap(container),
-			Receipts: a.recordReceipt, Log: lg,
-		},
+		// "Link again" on a logged-out number (decision 0057), the same
+		// service the console's item.relink runs on.
+		Relink:  a.relink,
+		Relinks: a.relinks,
 	})
 
 	a.registry, a.unlinker, a.router, a.ws = registry, registry, router, ws

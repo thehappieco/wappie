@@ -59,6 +59,10 @@ type row struct {
 	gen            uuid.UUID
 	issued         time.Time
 	again          bool
+	// expires is the command's expires_at (none when nil); basedOn its
+	// based_on.state_seq (1 when 0).
+	expires *time.Time
+	basedOn int64
 }
 
 var rowSeq int64
@@ -100,11 +104,14 @@ func (w *world) take(t *testing.T, r row) uuid.UUID {
 	if r.params == "" {
 		r.params = "{}"
 	}
+	if r.basedOn == 0 {
+		r.basedOn = 1
+	}
 	if _, err := w.pool.Exec(context.Background(), `INSERT INTO contract_commands (id, generation, cseq, workspace_id, wseq, kind, section, actor,
-		target, params, based_on_seq, based_on_docs, issued_at, body, body_key, signed_at, again, producer)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 1, $11, $12, '{}', $13, clock_timestamp(), $14, $15)`,
+		target, params, based_on_seq, based_on_docs, issued_at, body, body_key, signed_at, again, producer, expires_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $16, $11, $12, '{}', $13, clock_timestamp(), $14, $15, $17)`,
 		id, r.gen, rowSeq, r.ws, wseq, r.kind, section, r.actor, r.target, []byte(r.params), rawDocs, r.issued, make([]byte, 32),
-		r.again, producer); err != nil {
+		r.again, producer, r.basedOn, r.expires); err != nil {
 		t.Fatal(err)
 	}
 	return id

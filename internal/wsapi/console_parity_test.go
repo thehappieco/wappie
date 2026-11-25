@@ -429,11 +429,14 @@ func TestConsoleParityRename(t *testing.T) {
 	}
 	// The one divergence (DS10): a label Wappie sets aside. The frame
 	// stores it, as Wappie's own screens take it; the runner refuses it,
-	// since the console sees only the label the snapshot publishes, null.
+	// since the console sees only the label the snapshot publishes, null:
+	// label_changed with a null cleaned (kit v0.11.0).
 	before = "Vendas SP"
-	co = p.outcome(p.runner.Rename(ctx, p.command(t, kc.OpItemRename, manager, managerSub), console, &before, "Número sem nome"))
-	if fo := rename(managerToken, frame, "Número sem nome"); fo != "ok" || co != kc.CodeNotAuthorized {
-		t.Fatalf("a label set aside: the frame %s, the runner %s", fo, co)
+	act, err := p.runner.Rename(ctx, p.command(t, kc.OpItemRename, manager, managerSub), console, &before, "Número sem nome")
+	co = p.outcome(act, err)
+	if fo := rename(managerToken, frame, "Número sem nome"); fo != "ok" || co != kc.CodeLabelChanged ||
+		string(act.Result.Detail) != `{"cleaned":null}` {
+		t.Fatalf("a label set aside: the frame %s, the runner %s %s", fo, co, act.Result.Detail)
 	}
 	if f, c := p.numberRow(t, frame), p.numberRow(t, console); f.Label != "Número sem nome" || c.Label != "Vendas SP" {
 		t.Fatalf("a label set aside: the frame's %q, the runner's %q", f.Label, c.Label)

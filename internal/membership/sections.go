@@ -45,6 +45,10 @@ type sectionSender struct {
 	// dropped is, per workspace, the rows its last section left out because
 	// the wire refuses them: their ERROR is logged once per run.
 	dropped map[uuid.UUID]string
+	// relinkable is, per workspace, whether a pairing ran for each live
+	// logged-out number its last section sent: a pairing's start and end
+	// change its can_relink with no row change, as the pending rows'.
+	relinkable map[uuid.UUID]map[uuid.UUID]bool
 }
 
 // run sends sections until ctx ends.
@@ -219,6 +223,14 @@ func (s *sectionSender) lookPairings() {
 			}
 		}
 	}
+	for ws, sent := range s.relinkable {
+		for id, pairing := range sent {
+			if _, now := looks.PairingSince(id.String()); now != pairing {
+				s.sw.sections.dirty(ws.String())
+				break
+			}
+		}
+	}
 }
 
 // send measures one workspace's numbers section, renders it, checks it,
@@ -242,6 +254,7 @@ func (s *sectionSender) send(ctx context.Context, next store.ContractSectionDue)
 		// both): nothing goes.
 		return true
 	}
+	fillIdentities(ctx, &read, sw.cfg.Identities)
 	doc, dropped, why, rule := numbersSection(read, sw.mode(), sw.cfg.Numbers)
 	if why != "" {
 		class := "local_invalid:" + why
@@ -318,6 +331,7 @@ func (s *sectionSender) droppedRows(ctx context.Context, ws uuid.UUID, dropped [
 // remember keeps what a section sent of its pending rows, with each one's
 // epoch as read, for the pairing look.
 func (s *sectionSender) remember(ws uuid.UUID, read store.ContractNumbers, doc kc.SettingsDoc) {
+	s.rememberRelinkable(ws, read)
 	var data struct {
 		Pending []kc.PendingRegistration `json:"pending"`
 	}
@@ -336,6 +350,28 @@ func (s *sectionSender) remember(ws uuid.UUID, read store.ContractNumbers, doc k
 		}
 	}
 	s.pending[ws] = sent
+}
+
+// rememberRelinkable keeps, for the pairing look, whether a pairing ran
+// for each live logged-out number of read as it was sent.
+func (s *sectionSender) rememberRelinkable(ws uuid.UUID, read store.ContractNumbers) {
+	looks := s.sw.cfg.Numbers
+	sent := map[uuid.UUID]bool{}
+	if looks != nil && !read.ItemsOver {
+		for _, n := range read.Items {
+			if !n.Deleted && n.Status == "logged_out" {
+				_, sent[n.ID] = looks.PairingSince(n.ID.String())
+			}
+		}
+	}
+	if len(sent) == 0 {
+		delete(s.relinkable, ws)
+		return
+	}
+	if s.relinkable == nil {
+		s.relinkable = map[uuid.UUID]map[uuid.UUID]bool{}
+	}
+	s.relinkable[ws] = sent
 }
 
 // sectionRule says why Wappie would not send doc, or "": a document the

@@ -325,6 +325,9 @@ func callOf(r *http.Request) (string, string) {
 		return contracttest.CallCommands, r.URL.Query().Get("after")
 	case rest == "commands/results":
 		return contracttest.CallResults, ""
+	case strings.HasPrefix(rest, "commands/") && strings.HasSuffix(rest, "/pairing"):
+		// Its argument is the command's id.
+		return contracttest.CallPairing, strings.TrimSuffix(strings.TrimPrefix(rest, "commands/"), "/pairing")
 	case strings.HasPrefix(rest, "accounts/") && strings.HasSuffix(rest, "/settings"):
 		return contracttest.CallPersonSettings, strings.TrimSuffix(strings.TrimPrefix(rest, "accounts/"), "/settings")
 	case strings.HasPrefix(rest, "workspaces/") && strings.Contains(rest, "/settings/"):

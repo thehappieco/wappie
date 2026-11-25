@@ -405,7 +405,7 @@ func TestNumbersDeletedRow(t *testing.T) {
 		t.Fatalf("the deleted number's row: %+v", rows)
 	}
 	unpaused := store.ContractNumber{ID: uuid.New(), Status: "online", Known: true, Deleted: true}
-	if r := numberRow(unpaused); r.Capture != "paused" || !r.ReadOnly || r.PausedBy != nil {
+	if r := numberRow(unpaused, nil, nil); r.Capture != "paused" || !r.ReadOnly || r.PausedBy != nil {
 		t.Fatalf("a deleted row not paused: %+v", r)
 	}
 }

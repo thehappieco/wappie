@@ -6,8 +6,10 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
+	kc "github.com/thehappieco/kit/contract"
 
 	"whatserver2/internal/store"
+	"whatserver2/internal/wa"
 )
 
 // The executor (the spec's 14.6; the plan's 3.2): one ledger row at a
@@ -36,6 +38,8 @@ func (sw *settingsWork) execute(ctx context.Context) {
 			} else if n > 0 {
 				l.log().Info("contract: command ledger trimmed", "rows", n)
 			}
+			// At the start, before any row runs, and with each trim.
+			sw.sweepRelinks(ctx)
 			trimAt = time.Now().Add(or(sw.cfg.TrimEvery, trimEvery))
 		}
 		cmd, ok, err := c.NextCommand(ctx)
@@ -66,6 +70,60 @@ func (sw *settingsWork) execute(ctx context.Context) {
 			if !pause(ctx, wait, sw.executor) {
 				return
 			}
+		}
+	}
+}
+
+// sweepRelinks answers each item.relink row left in_progress whose
+// pairing runs nowhere here (the spec's 14.6: after a restart, or when
+// another process took over the commands, once it holds the number
+// again): state_changed for a number deleted or no longer logged out,
+// else connect_failed. One this process pairs, as a console relink or any
+// pairing of its number, waits for the next sweep. A started relink is
+// never run again.
+func (sw *settingsWork) sweepRelinks(ctx context.Context) {
+	l, c, acts := sw.l, sw.l.Members.Contract, sw.cfg.Acts
+	rows, err := c.InProgressRelinks(ctx)
+	if err != nil {
+		if ctx.Err() == nil {
+			l.log().Warn("contract: could not read the relinks left in progress", "error", err)
+		}
+		return
+	}
+	for _, row := range rows {
+		if acts.Running.Has(row.Device) {
+			continue
+		}
+		if looks := sw.cfg.Numbers; looks != nil {
+			if _, pairing := looks.PairingSince(row.Device.String()); pairing {
+				continue
+			}
+		}
+		code := kc.CodeConnectFailed
+		if acts.Devices != nil {
+			number, err := acts.Devices.RelinkRow(ctx, row.Workspace, row.Device)
+			switch {
+			case errors.Is(err, store.ErrNotFound):
+				code = kc.CodeStateChanged
+			case err != nil:
+				if ctx.Err() == nil {
+					l.log().Warn("contract: could not read a relink's number", "id", row.ID, "error", err)
+				}
+				continue
+			case number.Status != wa.StatusLoggedOut:
+				code = kc.CodeStateChanged
+			}
+		}
+		err := c.FinishInProgress(ctx, row.ID, store.CommandResult{Outcome: store.CommandRefused, Code: code})
+		switch {
+		case errors.Is(err, store.ErrCommandFinished):
+		case err != nil:
+			if ctx.Err() == nil {
+				l.log().Warn("contract: could not answer a relink left in progress", "id", row.ID, "error", err)
+			}
+		default:
+			l.log().Info("contract: a relink left in progress was answered", "id", row.ID, "code", code)
+			kick(sw.results)
 		}
 	}
 }

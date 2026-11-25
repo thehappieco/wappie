@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	kc "github.com/thehappieco/kit/contract"
 	"go.mau.fi/libsignal/ecc"
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/proto/waAdv"
@@ -357,6 +358,15 @@ func TestPairingQRShape(t *testing.T) {
 		if !allowed(r) {
 			t.Fatalf("the QR holds %q, outside spec 14.13's alphabet", r)
 		}
+	}
+	// The kit's own rule for the pairing route's body (v0.11.0): the text
+	// whatsmeow builds, with a window of a minute, is a body it sends.
+	if !kc.ValidPairingQR(qr) {
+		t.Fatal("the kit's ValidPairingQR refuses whatsmeow's QR")
+	}
+	now := time.Now()
+	if err := (kc.PairingQR{Seq: 1, QR: qr, ExpiresAt: now.Add(60 * time.Second)}).ValidateAt(now); err != nil {
+		t.Fatalf("whatsmeow's QR in a pairing body: %v", err)
 	}
 }
 

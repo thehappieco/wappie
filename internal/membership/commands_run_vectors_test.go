@@ -23,6 +23,8 @@ import (
 // on: each ends with a result, and every result posts. The flags vectors
 // are judged past R0 now (step 12b): their actor is no one Wappie holds
 // here, so not_held (TestFlagsVectorsRun runs them on the world's ids).
+// So are wire-pairing.json's item.relink commands Wappie takes (kit
+// v0.11.0), judged past R0 too.
 func TestVectorsThroughTheExecutor(t *testing.T) {
 	var v commandVectors
 	readVectors(t, "wire-commands.json", &v)
@@ -42,6 +44,13 @@ func TestVectorsThroughTheExecutor(t *testing.T) {
 	for _, a := range v.Actions {
 		if a.App == App && a.Action == "run" {
 			bodies = append(bodies, a.Value)
+		}
+	}
+	var pairing pairingVectors
+	readVectors(t, "wire-pairing.json", &pairing)
+	for _, c := range pairing.Commands {
+		if c.App == App && c.Valid {
+			bodies = append(bodies, c.Value)
 		}
 	}
 	taken := 0
@@ -94,6 +103,7 @@ func TestVectorsThroughTheExecutor(t *testing.T) {
 		t.Fatalf("%d results for %d rows: %v", len(rows), taken, err)
 	}
 	flags := map[string]int{}
+	relinks := 0
 	for _, r := range rows {
 		if _, why := resultOf(r); why != "" {
 			t.Errorf("the result of a %s (%s %s) would not post: %s", r.Kind, r.Outcome, r.Code, why)
@@ -104,10 +114,18 @@ func TestVectorsThroughTheExecutor(t *testing.T) {
 			if r.Code == kc.CodeKindNotAccepted {
 				t.Errorf("a %s vector was not accepted", r.Kind)
 			}
+		case kc.OpItemRelink:
+			relinks++
+			if r.Code == kc.CodeKindNotAccepted {
+				t.Errorf("a %s vector was not accepted", r.Kind)
+			}
 		}
 	}
 	if len(flags) != 3 {
 		t.Errorf("the flags vectors judged: %v", flags)
+	}
+	if relinks == 0 {
+		t.Error("no item.relink vector judged")
 	}
 }
 

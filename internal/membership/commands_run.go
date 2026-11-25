@@ -30,8 +30,9 @@ import (
 //	   (not_found, team_closed); then, for item.flags_raise, its target
 //	   active locally, read-only (a final not_found: the platform's Q6);
 //	R4 the freshness the kind asks before any write (the plan's 3.1; at
-//	   observe it only logs): item.sync_stop and item.sync_resume the
-//	   actor's in a team (RequireFresh), item.flags_raise the actor's and
+//	   observe it only logs): item.sync_stop, item.sync_resume and
+//	   item.relink the actor's in a team (RequireFresh, as the socket's
+//	   relink asks freshPairing), item.flags_raise the actor's and
 //	   the target's in every workspace (RequireWidening), and a drop of
 //	   read or an access_remove of someone who reads or holds the key the
 //	   minute rule in a team (RequireBackups);
@@ -328,7 +329,7 @@ func (sw *settingsWork) fresh(ctx context.Context, cmd store.ContractCommand, ac
 	m, ws := sw.l.Members, *cmd.Workspace
 	var err error
 	switch cmd.Kind {
-	case kc.OpItemSyncStop, kc.OpItemSyncResume:
+	case kc.OpItemSyncStop, kc.OpItemSyncResume, kc.OpItemRelink:
 		_, err = m.RequireFresh(ctx, cmd.Kind, ws, Party{User: actor, How: IfStale})
 	case kc.OpItemFlagsRaise:
 		parties := []Party{{User: actor, How: IfStale}}
@@ -412,6 +413,13 @@ func (sw *settingsWork) dispatch(ctx context.Context, cmd store.ContractCommand,
 		return acts.SyncResume(ctx, run, item)
 	case kc.OpItemSyncNow:
 		return acts.SyncNow(ctx, run, item)
+	case kc.OpItemRelink:
+		// params are {} (the kit checked them at take); a relink always
+		// carries an expires_at.
+		if cmd.ExpiresAt == nil {
+			return store.ContractAct{}, errUnreadable
+		}
+		return acts.Relink(ctx, run, item, numberacts.RelinkCmd{ExpiresAt: *cmd.ExpiresAt, BasedOnSeq: cmd.BasedOnSeq})
 	case kc.OpItemFlagsRaise, kc.OpItemFlagsDrop, kc.OpItemAccessRemove:
 		return runFlags(ctx, acts, run, cmd, item, person)
 	}
