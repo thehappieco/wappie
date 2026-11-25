@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	kc "github.com/thehappieco/kit/contract"
 
+	"whatserver2/internal/relink"
 	"whatserver2/internal/store"
 )
 
@@ -45,10 +46,20 @@ type sectionSender struct {
 	// dropped is, per workspace, the rows its last section left out because
 	// the wire refuses them: their ERROR is logged once per run.
 	dropped map[uuid.UUID]string
-	// relinkable is, per workspace, whether a pairing ran for each live
-	// logged-out number its last section sent: a pairing's start and end
-	// change its can_relink with no row change, as the pending rows'.
-	relinkable map[uuid.UUID]map[uuid.UUID]bool
+	// relinkable is, per workspace, what its last section sent of each
+	// live logged-out number's can_relink that no row change shows: a
+	// pairing's start and end, and a half of its identity whatsmeow's map
+	// learns, change it as the pending rows' change.
+	relinkable map[uuid.UUID]map[uuid.UUID]relinkLook
+}
+
+// relinkLook is one live logged-out number as its section was sent:
+// whether a pairing of it ran, and, for one with only half its identity
+// that the map could not fill then, the halves stored (pn, lid), which
+// the look gives the map again.
+type relinkLook struct {
+	pairing bool
+	pn, lid string
 }
 
 // run sends sections until ctx ends.
@@ -77,7 +88,7 @@ func (s *sectionSender) run(ctx context.Context) {
 	lookAt := time.Now().Add(or(cfg.PairingLook, pairingLook))
 	for ctx.Err() == nil {
 		if !time.Now().Before(lookAt) {
-			s.lookPairings()
+			s.lookPairings(ctx)
 			lookAt = time.Now().Add(or(cfg.PairingLook, pairingLook))
 		}
 		if !s.applyNotices(ctx) {
@@ -208,26 +219,42 @@ func (s *sectionSender) applySectionNotices(ctx context.Context) bool {
 
 // lookPairings makes due, within the debounce, each workspace whose last
 // section sent a pending row the process now sees otherwise: a pairing
-// that started or ended, or a retry that became possible or not.
-func (s *sectionSender) lookPairings() {
-	looks := s.sw.cfg.Numbers
-	if looks == nil {
-		return
-	}
-	for ws, sent := range s.pending {
-		for id, row := range sent {
-			now := pendingOf(store.ContractPending{ID: id, Epoch: row.epoch}, looks)
-			if now.Pairing != row.pairing || now.CanRetry != row.canRetry {
-				s.sw.sections.dirty(ws.String())
-				break
+// that started or ended, or a retry that became possible or not; and each
+// whose live logged-out number's can_relink may have changed with no row
+// change: a pairing of it that started or ended, or a half of its
+// identity whatsmeow's map now knows (fillIdentities fills it at the
+// send, as the relink's Check does).
+func (s *sectionSender) lookPairings(ctx context.Context) {
+	looks, book := s.sw.cfg.Numbers, s.sw.cfg.Identities
+	if looks != nil {
+		for ws, sent := range s.pending {
+			for id, row := range sent {
+				now := pendingOf(store.ContractPending{ID: id, Epoch: row.epoch}, looks)
+				if now.Pairing != row.pairing || now.CanRetry != row.canRetry {
+					s.sw.sections.dirty(ws.String())
+					break
+				}
 			}
 		}
 	}
+	if len(s.relinkable) == 0 {
+		return
+	}
+	lctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
 	for ws, sent := range s.relinkable {
-		for id, pairing := range sent {
-			if _, now := looks.PairingSince(id.String()); now != pairing {
-				s.sw.sections.dirty(ws.String())
-				break
+		for id, row := range sent {
+			if looks != nil {
+				if _, now := looks.PairingSince(id.String()); now != row.pairing {
+					s.sw.sections.dirty(ws.String())
+					break
+				}
+			}
+			if book != nil && (row.pn != "" || row.lid != "") {
+				if _, _, filled := relink.FillIdentity(lctx, book, jidOf(row.pn), jidOf(row.lid)); filled {
+					s.sw.sections.dirty(ws.String())
+					break
+				}
 			}
 		}
 	}
@@ -352,16 +379,26 @@ func (s *sectionSender) remember(ws uuid.UUID, read store.ContractNumbers, doc k
 	s.pending[ws] = sent
 }
 
-// rememberRelinkable keeps, for the pairing look, whether a pairing ran
-// for each live logged-out number of read as it was sent.
+// rememberRelinkable keeps, for the pairing look, each live logged-out
+// number of read as it was sent (read's identities as fillIdentities left
+// them): whether a pairing of it ran, and the halves of one whose identity
+// the map could not fill.
 func (s *sectionSender) rememberRelinkable(ws uuid.UUID, read store.ContractNumbers) {
-	looks := s.sw.cfg.Numbers
-	sent := map[uuid.UUID]bool{}
-	if looks != nil && !read.ItemsOver {
+	looks, book := s.sw.cfg.Numbers, s.sw.cfg.Identities
+	sent := map[uuid.UUID]relinkLook{}
+	if (looks != nil || book != nil) && !read.ItemsOver {
 		for _, n := range read.Items {
-			if !n.Deleted && n.Status == "logged_out" {
-				_, sent[n.ID] = looks.PairingSince(n.ID.String())
+			if n.Deleted || n.Status != "logged_out" {
+				continue
 			}
+			var row relinkLook
+			if looks != nil {
+				_, row.pairing = looks.PairingSince(n.ID.String())
+			}
+			if book != nil && (n.PN != "") != (n.LID != "") {
+				row.pn, row.lid = n.PN, n.LID
+			}
+			sent[n.ID] = row
 		}
 	}
 	if len(sent) == 0 {
@@ -369,7 +406,7 @@ func (s *sectionSender) rememberRelinkable(ws uuid.UUID, read store.ContractNumb
 		return
 	}
 	if s.relinkable == nil {
-		s.relinkable = map[uuid.UUID]map[uuid.UUID]bool{}
+		s.relinkable = map[uuid.UUID]map[uuid.UUID]relinkLook{}
 	}
 	s.relinkable[ws] = sent
 }
