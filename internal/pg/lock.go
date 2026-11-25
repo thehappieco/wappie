@@ -42,13 +42,28 @@ func NewLocker(pool *pgxpool.Pool) *Locker { return &Locker{pool: pool} }
 // from it is still held. Close blocks waiting for the connection to come back,
 // and only release returns it. Always release before shutting a pool down.
 func (l *Locker) TryLock(ctx context.Context, key string) (release func(), ok bool, err error) {
+	return l.tryLock(ctx, key, false)
+}
+
+// TryLockShared is TryLock in the shared mode: any number of sessions hold
+// key shared at once, and none of them while another holds it exclusively
+// (TryLock's). AdvisoryHeld sees a shared hold as it sees an exclusive one.
+func (l *Locker) TryLockShared(ctx context.Context, key string) (release func(), ok bool, err error) {
+	return l.tryLock(ctx, key, true)
+}
+
+func (l *Locker) tryLock(ctx context.Context, key string, shared bool) (release func(), ok bool, err error) {
+	lock, unlock := `SELECT pg_try_advisory_lock($1)`, `SELECT pg_advisory_unlock($1)`
+	if shared {
+		lock, unlock = `SELECT pg_try_advisory_lock_shared($1)`, `SELECT pg_advisory_unlock_shared($1)`
+	}
 	conn, err := l.pool.Acquire(ctx)
 	if err != nil {
 		return nil, false, fmt.Errorf("pg: acquire for advisory lock: %w", err)
 	}
 
 	var acquired bool
-	if err := conn.QueryRow(ctx, `SELECT pg_try_advisory_lock($1)`, lockKey(key)).Scan(&acquired); err != nil {
+	if err := conn.QueryRow(ctx, lock, lockKey(key)).Scan(&acquired); err != nil {
 		conn.Release()
 		return nil, false, fmt.Errorf("pg: try advisory lock %q: %w", key, err)
 	}
@@ -68,7 +83,7 @@ func (l *Locker) TryLock(ctx context.Context, key string) (release func(), ok bo
 			// when this connection closes, which is the crash-safety property
 			// this design relies on.
 			//nolint:errcheck // advisory locks free themselves on disconnect
-			_, _ = conn.Exec(unlockCtx, `SELECT pg_advisory_unlock($1)`, lockKey(key))
+			_, _ = conn.Exec(unlockCtx, unlock, lockKey(key))
 			conn.Release()
 		})
 	}, true, nil
