@@ -520,7 +520,7 @@ func TestSectionRefusedLocally(t *testing.T) {
 		t.Fatalf("a valid section: %s %v", why, rule)
 	}
 	bad := doc
-	bad.Accepts = []string{"item.relink"}
+	bad.Accepts = []string{"item.teleport"}
 	if why, rule := sectionRule(bad); why != "invalid" || rule == nil {
 		t.Errorf("a kind the kit does not know in accepts: %q %v", why, rule)
 	}

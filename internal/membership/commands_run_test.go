@@ -129,7 +129,7 @@ const renameParams = `{"before":{"label":"Vendas"},"after":{"label":"Vendas SP"}
 // TestRunChecksOrder: R0 to R5 in their order, each answered with its code
 // and the seq it was judged on (none for a person's not_held): a kind the
 // mode does not run (read: all, a flags kind too; on: Wappie Cloud's
-// installation.add, since every v0.10.1 Wappie kind is run in time), an
+// installation.add, since every Wappie kind is run in time), an
 // actor Wappie does not hold, a document not yet applied
 // (memberships_behind, retry_after 5), a workspace not recorded, a closed
 // team, a deleted number and another workspace's (not_found, before any

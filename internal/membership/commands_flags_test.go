@@ -442,7 +442,7 @@ func TestFlagsVectorsRun(t *testing.T) {
 }
 
 // TestAcceptsFlags: in on, numbers lists the three flags kinds beside
-// 12a's five, each a kit v0.10.1 Wappie kind of the numbers section; in
+// 12a's five, each a Wappie kind of the kit's numbers section; in
 // read, none.
 func TestAcceptsFlags(t *testing.T) {
 	got := accepts(store.SettingsOn, kc.SectionNumbers)

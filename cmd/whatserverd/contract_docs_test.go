@@ -958,7 +958,7 @@ var wappieKinds = map[string]string{
 	"OpMCPSwitchOff": kc.OpMCPSwitchOff, "OpMCPLegacyTokenRevoke": kc.OpMCPLegacyTokenRevoke,
 	"OpInstallationAdd": kc.OpInstallationAdd, "OpInstallationRename": kc.OpInstallationRename,
 	"OpLicenceRelease": kc.OpLicenceRelease, "OpPersonSignOutEverywhere": kc.OpPersonSignOutEverywhere,
-	"OpPersonNoticesDismiss": kc.OpPersonNoticesDismiss,
+	"OpPersonNoticesDismiss": kc.OpPersonNoticesDismiss, "OpItemRelink": kc.OpItemRelink,
 }
 
 // TestWappieKindsAreTheKits holds wappieKinds to the kit's list, so a kind
