@@ -528,9 +528,11 @@ func waitWaiting(t *testing.T, c *deletionConsole, pid uint32, n int) {
 // TestTransferWaitsForARelink: a move of a number a relink pairs is
 // item_busy before anything is paused, and the relink is left running
 // (DS56): one this process runs as a console relink, and one another
-// process pairs (its registry's device lock on the logged-out number),
-// with WhatsApp's whole window. A number whose relink ended moves; the
-// move holds its workspace while it runs, and lets go once it ended.
+// process pairs (its relink's hold, store.RelinkHoldKey), with WhatsApp's
+// whole window. A device lock another process keeps for a logged-out
+// number it has yet to let go is no relink: the store refuses the move,
+// the pause undone. A number whose relink ended moves; the move holds its
+// workspace while it runs, and lets go once it ended.
 func TestTransferWaitsForARelink(t *testing.T) {
 	ctx := context.Background()
 	var moving atomic.Bool
@@ -560,12 +562,27 @@ func TestTransferWaitsForARelink(t *testing.T) {
 		}
 		return row.PauseSeq
 	}
+
+	// Another process keeps the device lock of a client it has yet to
+	// let go: no relink pairs, and the store refuses the move.
+	stale, ok, err := pg.NewLocker(c.pool).TryLock(ctx, wa.DeviceLockKey(device.String()))
+	if err != nil || !ok {
+		t.Fatalf("the other process's device lock: %v %v", ok, err)
+	}
+	defer stale()
+	if e := wantError(t, ask(t, c.console, owner, wsapi.TypeDeviceTransfer, transferFrame(device, personal)), wsapi.ErrCodeConflict); e.RetryAfter != 0 {
+		t.Fatalf("a device lock elsewhere: %+v", e)
+	}
+	if c.paused(t, c.tenant, device) {
+		t.Fatal("a refused move left the number paused")
+	}
+	stale()
 	seq := pauseSeq()
 
-	// Another process pairs it: its registry holds the device lock.
-	release, ok, err := pg.NewLocker(c.pool).TryLock(ctx, wa.DeviceLockKey(device.String()))
+	// Another process pairs it: its relink holds the number.
+	release, ok, err := pg.NewLocker(c.pool).TryLock(ctx, store.RelinkHoldKey(device))
 	if err != nil || !ok {
-		t.Fatalf("the other process's lock: %v %v", ok, err)
+		t.Fatalf("the other process's relink hold: %v %v", ok, err)
 	}
 	// Released on every path: a pool cannot close while its lock is held.
 	defer release()

@@ -3452,13 +3452,19 @@ A move started while a relink pairs the number is refused, `item_busy`
 with the seconds left in WhatsApp's window (another process's pairing:
 the whole window), before anything is paused, and the relink runs on. The
 handler takes its hold first, then looks for a pairing: a console relink
-or a pairing of the logged-out number in this process, or the number's
-device lock (`wa.DeviceLockKey`) held where this process holds nothing.
-The relink takes the device lock first, then looks at the hold. One of the
-two always sees the other, so a move's pause never lands on a pairing it
-missed. Past its look, the handler still cancels the number's pairings,
-for a new number's pairing; a relink found there began between its device
-lock and its look at the hold, and it ends `workspace_busy` as well.
+or a pairing of the logged-out number in this process, or, in any
+process, the relink's own hold (`store.RelinkHoldKey`, an advisory lock
+`relink.Service.Start` takes before its pairing and lets go at its end,
+on a pooled connection as the move's). The number's device lock
+(`wa.DeviceLockKey`) is not that look: a process also keeps it for a
+number logged out while it held it, until something stops that client,
+and nothing pairs then. Such a lock still refuses the move in the store,
+as before (`TransferDenied`, the pause undone). The relink takes its hold
+first, then looks at the move's. One of the two always sees the other, so
+a move's pause never lands on a pairing it missed. Past its look, the
+handler still cancels the number's pairings, for a new number's pairing;
+a relink found there began between its hold and its look at the move's,
+and it ends `workspace_busy` as well.
 
 **DS57. A result in two steps.** `in_progress` is written in the
 transaction that starts the act, at the act's seq (always a value: the

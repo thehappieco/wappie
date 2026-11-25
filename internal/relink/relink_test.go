@@ -433,6 +433,68 @@ func TestStartSeesAMove(t *testing.T) {
 	}
 }
 
+// A relink holds its number (store.RelinkHoldKey) from before its
+// pairing to its end, which every process's move sees (RelinkLook): a
+// bare device lock does not say a relink pairs. A relink whose number
+// another relink holds is item_busy, WhatsApp's whole window, and starts
+// no pairing.
+func TestStartHoldsTheNumber(t *testing.T) {
+	ctx := context.Background()
+	w := newWorld(t)
+	pairer := &fakePairer{}
+	svc := &relink.Service{Devices: w.devices, Pairer: pairer, Log: slog.New(slog.DiscardHandler)}
+	device := w.number(t, ownPN, ownLID)
+	relinking := func() bool {
+		t.Helper()
+		loggedOut, relinking, err := w.devices.RelinkLook(ctx, w.tenant, device)
+		if err != nil || !loggedOut {
+			t.Fatalf("the look: logged out %v (%v)", loggedOut, err)
+		}
+		return relinking
+	}
+	// A registry's device lock alone, as a process keeps one for a
+	// number logged out while it held it.
+	lock, ok, err := pg.NewLocker(w.pool).TryLock(ctx, wa.DeviceLockKey(device.String()))
+	if err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	// Released on every path: a pool cannot close while its lock is held.
+	defer lock()
+	if relinking() {
+		t.Fatal("a device lock read as a relink")
+	}
+	lock()
+	target, err := svc.Check(ctx, w.tenant, device)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := svc.Start(ctx, target, relink.Actor{Kind: "person", ID: w.owner}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Ended on every path: the relink's hold keeps a pooled connection.
+	var end sync.Once
+	ended := func() {
+		end.Do(func() {
+			close(pairer.started[0].events)
+			for range sess.Events() {
+			}
+		})
+	}
+	defer ended()
+	if !relinking() {
+		t.Fatal("a pairing relink not seen")
+	}
+	if _, err := svc.Start(ctx, target, relink.Actor{Kind: "person", ID: w.owner}, nil); code(t, err).Code != relink.CodeItemBusy ||
+		code(t, err).RetryAfter != wa.PairWindow || len(pairer.started) != 1 {
+		t.Fatalf("a second relink = %v, %d pairings", err, len(pairer.started))
+	}
+	ended()
+	if relinking() {
+		t.Fatal("an ended relink kept its hold")
+	}
+}
+
 // sessionRows is whatsmeow's session store as the attach reads it: a fake
 // that writes the session row the real one would.
 type sessionRows struct {

@@ -233,6 +233,8 @@ type Session struct {
 	// cause is set before a cancel this package makes, to name the end.
 	cause  chan error
 	result error
+	// release lets go of the relink's hold (store.Devices.HoldRelink).
+	release func()
 }
 
 // Events yields the pairing's QR events until it ends, then closes. They
@@ -284,9 +286,24 @@ func (s *Service) Start(ctx context.Context, t Target, who Actor, attach AttachF
 			}
 		},
 	}
+	// The relink's hold, for the life of the pairing: a move of the
+	// number, in any process, sees it and is refused item_busy before its
+	// pause (store.Devices.RelinkLook). Taken before the start's look at
+	// the move hold.
+	release, ok, err := s.Devices.HoldRelink(ctx, t.Device)
+	if err != nil || !ok {
+		r := busy(busyElsewhere, "start")
+		if err != nil {
+			r = refuse(CodeConnectFailed, "start")
+			s.log().Warn("relink could not start", "device", t.Device, "error", err)
+		}
+		s.logRefused(t, who, r)
+		return nil, r
+	}
 	pair, err := s.Pairer.StartPairing(ctx, t.Tenant.String(), t.Device.String(),
 		wa.ReceiptPolicy{Mode: t.ReceiptMode, Recorder: s.Receipts}, wa.PairOptions{Method: wa.PairByQR, Relink: rl})
 	if err != nil {
+		release()
 		var r *Refusal
 		switch {
 		case errors.Is(err, wa.ErrAlreadyRunning):
@@ -300,11 +317,13 @@ func (s *Service) Start(ctx context.Context, t Target, who Actor, attach AttachF
 		s.logRefused(t, who, r)
 		return nil, r
 	}
-	sess := &Session{svc: s, target: t, actor: who, pair: pair, events: make(chan wa.PairEvent, 8), cause: make(chan error, 1)}
-	// The check above ran before the device lock: read once more now that
-	// the pairing holds it, as a new number's pairing does, any move of
-	// the workspace included (RelinkStartCheck: a move that started
-	// meanwhile either saw this lock or is seen here).
+	sess := &Session{svc: s, target: t, actor: who, pair: pair, events: make(chan wa.PairEvent, 8), cause: make(chan error, 1),
+		release: release}
+	// The check above ran before the holds: read once more now that the
+	// relink holds the number and its pairing the device lock, as a new
+	// number's pairing does, any move of the workspace included
+	// (RelinkStartCheck: a move that started meanwhile either saw the
+	// relink's hold or is seen here).
 	if err := s.Devices.RelinkStartCheck(ctx, t.Tenant, t.Device, t.Seen, t.Expect); err != nil {
 		sess.cause <- err
 		pair.Cancel()
@@ -315,6 +334,9 @@ func (s *Service) Start(ctx context.Context, t Target, who Actor, attach AttachF
 
 func (s *Session) run(ctx context.Context) {
 	defer close(s.events)
+	// Let go of the relink's hold once its end is named, before Events
+	// closes.
+	defer s.release()
 	var end error
 	for e := range s.pair.Events() {
 		switch e.Kind {

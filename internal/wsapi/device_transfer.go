@@ -135,8 +135,8 @@ func (s *session) handleDeviceTransfer(ctx context.Context, f Frame) {
 	}
 	// Past the look, no relink pairs the number: one that starts now sees
 	// the hold and ends itself workspace_busy. What this still cancels is
-	// a new number's pairing, and a relink caught between its device lock
-	// and its look at the hold, whose end is workspace_busy as well.
+	// a new number's pairing, and a relink caught between its own hold
+	// and its look at the move's, whose end is workspace_busy as well.
 	s.srv.cancelDevicePairing(source.String(), device.String())
 	if s.srv.cfg.Registry != nil {
 		s.srv.cfg.Registry.Stop(ctx, device.String())
@@ -179,22 +179,23 @@ func (s *session) handleDeviceTransfer(ctx context.Context, f Frame) {
 }
 
 // relinkPairing reports whether a relink pairs a logged-out number now,
-// and the wait it leaves: in this process, a console relink (Relinks) or
-// any pairing of the number in the registry (the sheet's relink), with the
-// seconds left in WhatsApp's window; in another, the number's device lock
-// held where this process holds nothing (store.RelinkLook), WhatsApp's
-// whole window. A number that is not logged out is paired by no relink: a
-// new number's pairing is cancelled, as before.
+// and the wait it leaves: in this process, any pairing of the number in
+// the registry (the sheet's relink), with the seconds left in WhatsApp's
+// window, or a console relink (Relinks); in any process, the relink's own
+// hold (store.RelinkLook), WhatsApp's whole window. A device lock alone
+// is no relink: a process keeps one for a number logged out while it held
+// it, until something stops that client, and the move then meets it in
+// the store (TransferDenied). A number that is not logged out is paired by
+// no relink: a new number's pairing is cancelled, as before.
 func (s *Server) relinkPairing(ctx context.Context, tenant, device uuid.UUID) (time.Duration, bool, error) {
-	loggedOut, locked, err := s.cfg.Devices.RelinkLook(ctx, tenant, device)
+	loggedOut, relinking, err := s.cfg.Devices.RelinkLook(ctx, tenant, device)
 	if err != nil || !loggedOut {
 		return 0, false, err
 	}
-	id := device.String()
-	if since, ok := s.cfg.Registry.PairingSince(id); ok {
+	if since, ok := s.cfg.Registry.PairingSince(device.String()); ok {
 		return max(time.Second, min(wa.PairWindow, time.Until(since.Add(wa.RelinkWindow)))), true, nil
 	}
-	if s.cfg.Relinks.Has(device) || locked && !s.cfg.Registry.Holds(id) {
+	if s.cfg.Relinks.Has(device) || relinking {
 		return wa.PairWindow, true, nil
 	}
 	return 0, false, nil

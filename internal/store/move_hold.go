@@ -83,12 +83,30 @@ func (d *Devices) HoldMove(ctx context.Context, workspace, device uuid.UUID) (re
 	}, nil
 }
 
+// RelinkHoldKey is the advisory lock a relink holds while it pairs
+// device, in any process (HoldRelink). A device lock (wa.DeviceLockKey)
+// says less: a process also keeps it for a number logged out while it held
+// it, until something stops that client, and nothing pairs then.
+func RelinkHoldKey(device uuid.UUID) string { return "relink:" + device.String() }
+
+// HoldRelink takes device's relink hold for a pairing about to start,
+// exclusively, on a pooled connection kept until release, as HoldMove's.
+// ok is false when another relink of the number holds it, in any process.
+// The relink takes it before its pairing's look at the move hold
+// (RelinkStartCheck), and a move takes its hold before it looks at this
+// one (RelinkLook), so one of the two always sees the other.
+func (d *Devices) HoldRelink(ctx context.Context, device uuid.UUID) (release func(), ok bool, err error) {
+	release, ok, err = pg.NewLocker(d.pool).TryLock(ctx, RelinkHoldKey(device))
+	if err != nil {
+		return nil, false, fmt.Errorf("store: hold a relink: %w", err)
+	}
+	return release, ok, nil
+}
+
 // RelinkLook is what a move reads of a number before its pause: whether
-// it is logged out, and whether a registry holds its device lock
-// (wa.DeviceLockKey), in any process. A logged-out number whose lock is
-// held is paired by a relink, or held by a process that has yet to let a
-// logged-out client go.
-func (d *Devices) RelinkLook(ctx context.Context, tenant, device uuid.UUID) (loggedOut, locked bool, err error) {
+// it is logged out, and whether a relink pairs it now (RelinkHoldKey), in
+// any process.
+func (d *Devices) RelinkLook(ctx context.Context, tenant, device uuid.UUID) (loggedOut, relinking bool, err error) {
 	err = pg.InTenantTx(ctx, d.pool, tenant.String(), func(tx pgx.Tx) error {
 		var status string
 		err := tx.QueryRow(ctx, `SELECT status FROM devices WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL`,
@@ -100,11 +118,11 @@ func (d *Devices) RelinkLook(ctx context.Context, tenant, device uuid.UUID) (log
 			return err
 		}
 		loggedOut = status == string(wa.StatusLoggedOut)
-		locked, err = pg.AdvisoryHeld(ctx, tx, wa.DeviceLockKey(device.String()))
+		relinking, err = pg.AdvisoryHeld(ctx, tx, RelinkHoldKey(device))
 		return err
 	})
 	if err != nil && !errors.Is(err, ErrNotFound) {
 		err = fmt.Errorf("store: look at a number before its move: %w", err)
 	}
-	return loggedOut, locked, err
+	return loggedOut, relinking, err
 }

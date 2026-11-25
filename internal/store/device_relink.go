@@ -206,12 +206,13 @@ func (d *Devices) RelinkRecheck(ctx context.Context, tenant, device uuid.UUID, s
 	return d.relinkRecheck(ctx, tenant, device, seen, account, false)
 }
 
-// RelinkStartCheck is RelinkRecheck once the pairing holds the number's
-// device lock, before its first QR: ErrRelinkWorkspaceBusy for any move
-// out of the workspace, as at the relink's entry. A move takes its hold
-// before it looks at the device lock (RelinkLook), and the pairing takes
-// the device lock before this look at the hold, so one of the two always
-// sees the other: no pause of a move ever lands on a pairing it missed.
+// RelinkStartCheck is RelinkRecheck once the relink holds the number
+// (HoldRelink) and its pairing started, before its first QR:
+// ErrRelinkWorkspaceBusy for any move out of the workspace, as at the
+// relink's entry. A move takes its hold before it looks at the relink's
+// (RelinkLook), and the relink takes its hold before this look at the
+// move's, so one of the two always sees the other: no pause of a move
+// ever lands on a pairing it missed.
 func (d *Devices) RelinkStartCheck(ctx context.Context, tenant, device uuid.UUID, seen RelinkSeen, account wa.Identity) error {
 	return d.relinkRecheck(ctx, tenant, device, seen, account, true)
 }
