@@ -5,9 +5,13 @@ import (
 	"errors"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
+	kc "github.com/thehappieco/kit/contract"
 
+	"whatserver2/internal/pg"
 	"whatserver2/internal/store"
+	"whatserver2/internal/wa"
 )
 
 // The executor (the spec's 14.6; the plan's 3.2): one ledger row at a
@@ -36,6 +40,8 @@ func (sw *settingsWork) execute(ctx context.Context) {
 			} else if n > 0 {
 				l.log().Info("contract: command ledger trimmed", "rows", n)
 			}
+			// At the start, before any row runs, and with each trim.
+			sw.sweepRelinks(ctx)
 			trimAt = time.Now().Add(or(sw.cfg.TrimEvery, trimEvery))
 		}
 		cmd, ok, err := c.NextCommand(ctx)
@@ -66,6 +72,86 @@ func (sw *settingsWork) execute(ctx context.Context) {
 			if !pause(ctx, wait, sw.executor) {
 				return
 			}
+		}
+	}
+}
+
+// sweepRelinks answers each item.relink row left in_progress whose
+// pairing runs nowhere (the spec's 14.6: after a restart, or when another
+// process took over the commands, once it holds the number again):
+// workspace_busy for a number a move of it that still runs has paused
+// (the relink's own end would say so: DS56; another number's move leaves
+// the row alone, whatever pause its number shows), state_changed for a
+// number deleted or no longer logged out, else connect_failed. One this process pairs, as a console relink or any
+// pairing of its number, or whose number another process's registry
+// holds (pg.AdvisoryHeld on wa.DeviceLockKey: an old leader still
+// pairing it), waits for a later sweep. A started relink is never run
+// again.
+func (sw *settingsWork) sweepRelinks(ctx context.Context) {
+	l, c, acts := sw.l, sw.l.Members.Contract, sw.cfg.Acts
+	rows, err := c.InProgressRelinks(ctx)
+	if err != nil {
+		if ctx.Err() == nil {
+			l.log().Warn("contract: could not read the relinks left in progress", "error", err)
+		}
+		return
+	}
+	for _, row := range rows {
+		if acts.Running.Has(row.Device) {
+			continue
+		}
+		id := row.Device.String()
+		looks := sw.cfg.Numbers
+		if looks != nil {
+			if _, pairing := looks.PairingSince(id); pairing {
+				continue
+			}
+		}
+		if row.Device != uuid.Nil && sw.l.Pool != nil && (looks == nil || !looks.Holds(id)) {
+			// Held by another process, its registry's lock of the number:
+			// an old leader's pairing may still run there until it sees
+			// its lock go. The row waits until this process could hold the
+			// number (the spec's 14.6), a later sweep's. A lock this
+			// process's registry holds is its own, and nothing pairs here.
+			held, err := pg.AdvisoryHeld(ctx, sw.l.Pool, wa.DeviceLockKey(id))
+			if err != nil {
+				if ctx.Err() == nil {
+					l.log().Warn("contract: could not look at a relink's number's lock", "id", row.ID, "error", err)
+				}
+				continue
+			}
+			if held {
+				continue
+			}
+		}
+		res := store.CommandResult{Outcome: store.CommandRefused, Code: kc.CodeConnectFailed}
+		if acts.Devices != nil {
+			number, err := acts.Devices.RelinkRow(ctx, row.Workspace, row.Device)
+			switch {
+			case errors.Is(err, store.ErrNotFound):
+				res.Code = kc.CodeStateChanged
+			case err != nil:
+				if ctx.Err() == nil {
+					l.log().Warn("contract: could not read a relink's number", "id", row.ID, "error", err)
+				}
+				continue
+			case number.NumberMoving && number.PauseCause == store.PauseForMove:
+				res.Code, res.RetryAfter = kc.CodeWorkspaceBusy, int(store.MoveBusyRetry/time.Second)
+			case number.Status != wa.StatusLoggedOut:
+				res.Code = kc.CodeStateChanged
+			}
+		}
+		code := res.Code
+		err := c.FinishInProgress(ctx, row.ID, res)
+		switch {
+		case errors.Is(err, store.ErrCommandFinished):
+		case err != nil:
+			if ctx.Err() == nil {
+				l.log().Warn("contract: could not answer a relink left in progress", "id", row.ID, "error", err)
+			}
+		default:
+			l.log().Info("contract: a relink left in progress was answered", "id", row.ID, "code", code)
+			kick(sw.results)
 		}
 	}
 }

@@ -35,6 +35,7 @@ import (
 	"whatserver2/internal/migrate"
 	"whatserver2/internal/pg"
 	"whatserver2/internal/pgtest"
+	"whatserver2/internal/relink"
 	"whatserver2/internal/restapi"
 	"whatserver2/internal/store"
 	"whatserver2/internal/wa"
@@ -142,6 +143,11 @@ type deletionOptions struct {
 	ledger string
 	// fresh is the contract's freshness hook.
 	fresh membership.Freshness
+	// relinks are the process's console relinks.
+	relinks *relink.Running
+	// fakePairing builds the registry's pairings on the fake client, so
+	// a test starts one with no WhatsApp (needs registry).
+	fakePairing bool
 }
 
 func newDeletionConsole(t *testing.T) *deletionConsole {
@@ -179,7 +185,13 @@ func newDeletionConsoleWith(t *testing.T, opt deletionOptions) *deletionConsole 
 	var registry *wa.Registry
 	if opt.registry {
 		var err error
+		rc := wa.RegistryConfig{}
+		if opt.fakePairing {
+			rc.NewPairingDevice = func() *waStore.Device { return (&sqlstore.Container{}).NewDevice() }
+			rc.NewPairingClient = func(*waStore.Device, waLog.Logger) wa.Client { return fakewa.New() }
+		}
 		registry, err = wa.NewRegistry(wa.RegistryConfig{Container: &sqlstore.Container{}, Store: devices, Log: slog.New(slog.DiscardHandler),
+			NewPairingDevice: rc.NewPairingDevice, NewPairingClient: rc.NewPairingClient,
 			NewClient: func(*waStore.Device, waLog.Logger) wa.Client { return fakewa.New() },
 			// A session is stored while its row is in the session store's
 			// table, so a start runs, on a fake client, until that row goes.
@@ -204,6 +216,7 @@ func newDeletionConsoleWith(t *testing.T, opt deletionOptions) *deletionConsole 
 	if opt.fresh != nil {
 		cfg.Membership = opt.fresh
 	}
+	cfg.Relinks = opt.relinks
 	if opt.transfer != nil {
 		wsapi.SetTransferHook(&cfg, opt.transfer)
 	}

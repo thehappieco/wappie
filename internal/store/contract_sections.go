@@ -75,6 +75,15 @@ type ContractNumber struct {
 	PausedByKind string
 	PausedBySub  *uuid.UUID
 	Epoch        int
+	// PN and LID are its identity as stored (device JIDs, "" for a half
+	// not known), what its can_relink and HoldsAccount judge it by.
+	PN, LID string
+	// KeyHeld is Devices.KeyHeld's answer, read only for a live number
+	// logged out (false for any other): its can_relink.
+	KeyHeld bool
+	// MoveRunning: a move out of the workspace ran when the section was
+	// measured (MoveHoldKey), the same for every row: its can_relink.
+	MoveRunning bool
 }
 
 // ContractNumbers is what Wappie's own tables say of one platform
@@ -196,11 +205,17 @@ func (c *Contract) NumbersOf(ctx context.Context, workspace uuid.UUID) (Contract
 // visible. The predicate is the snapshot's (snapshotItemsTx), so a row and
 // the snapshot's item join by id.
 func numbersItemsTx(ctx context.Context, tx pgx.Tx, workspace uuid.UUID, out *ContractNumbers) error {
+	moving, err := moveRunningTx(ctx, tx, workspace)
+	if err != nil {
+		return err
+	}
 	rows, err := tx.Query(ctx, `SELECT d.id, d.status, coalesce(d.logout_cause, ''), coalesce(d.pause_cause, ''),
 			d.deleted_at IS NOT NULL, d.paused, d.lid IS NOT NULL OR d.pn IS NOT NULL,
 			coalesce(d.deleted_at IS NOT NULL AND d.purge_after > clock_timestamp() AND d.purge_started_at IS NULL, false),
 			d.last_connected_at, d.paused_at, coalesce(d.paused_by_kind, ''),
-			CASE WHEN d.paused_by_kind IN ('person', 'key') THEN pi.sub END, d.current_epoch
+			CASE WHEN d.paused_by_kind IN ('person', 'key') THEN pi.sub END, d.current_epoch,
+			coalesce(d.pn, ''), coalesce(d.lid, ''),
+			CASE WHEN d.deleted_at IS NULL AND d.status = 'logged_out' THEN `+keyHeldSQL("d")+` ELSE false END
 		FROM devices d LEFT JOIN platform_identities pi ON pi.user_id = d.paused_by_user
 		WHERE d.tenant_id = $1 AND (d.lid IS NOT NULL OR d.pn IS NOT NULL OR d.last_connected_at IS NOT NULL)
 		ORDER BY d.id LIMIT $2`, workspace, NumbersMaxItems+1)
@@ -210,9 +225,10 @@ func numbersItemsTx(ctx context.Context, tx pgx.Tx, workspace uuid.UUID, out *Co
 	err = forEachRow(rows, func(row pgx.Rows) error {
 		var n ContractNumber
 		if err := row.Scan(&n.ID, &n.Status, &n.LogoutCause, &n.PauseCause, &n.Deleted, &n.Paused, &n.Known, &n.RecoveryOpen,
-			&n.LastConnectedAt, &n.PausedAt, &n.PausedByKind, &n.PausedBySub, &n.Epoch); err != nil {
+			&n.LastConnectedAt, &n.PausedAt, &n.PausedByKind, &n.PausedBySub, &n.Epoch, &n.PN, &n.LID, &n.KeyHeld); err != nil {
 			return err
 		}
+		n.MoveRunning = moving
 		out.Items = append(out.Items, n)
 		return nil
 	})

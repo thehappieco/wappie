@@ -22,6 +22,7 @@ func (r *Runner) RegistrationDelete(ctx context.Context, run Run, row uuid.UUID)
 	if r.Sockets != nil {
 		r.Sockets.CancelPairing(run.Workspace.String(), row.String())
 	}
+	r.Running.Cancel(row)
 	if r.Registry != nil {
 		r.Registry.Stop(ctx, row.String())
 	}

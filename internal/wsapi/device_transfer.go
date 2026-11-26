@@ -4,10 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"github.com/google/uuid"
+	"math"
 	"time"
+
+	"github.com/google/uuid"
+
 	"whatserver2/internal/membership"
 	"whatserver2/internal/store"
+	"whatserver2/internal/wa"
 )
 
 const (
@@ -62,6 +66,13 @@ func (s *session) handleDeviceTransferPreview(ctx context.Context, f Frame) {
 // anything changes, the mover's document is asked for, always with a fresh
 // GET (README 7.1), and must list them as the team's only owner (decision
 // 0043; freshness.go).
+//
+// The move holds its workspace from before its pause to its end
+// (store.HoldMove): a relink meanwhile is workspace_busy, in any process
+// (DS56). A number a relink pairs is not moved: item_busy with the seconds
+// left in WhatsApp's window, before anything is paused and with the relink
+// left running (relinkPairing). The hold comes first, so a relink that
+// starts after the look sees the hold and ends itself.
 func (s *session) handleDeviceTransfer(ctx context.Context, f Frame) {
 	who, ok := s.requireAdmin(f.ReqID)
 	if !ok {
@@ -102,11 +113,35 @@ func (s *session) handleDeviceTransfer(ctx context.Context, f Frame) {
 	// who manage it by role, are told it is gone once it moved; nobody else
 	// can be reading it.
 	viewers := s.srv.viewersOf(ctx, source, device)
-	pause, err := s.srv.cfg.Devices.PauseForMove(ctx, source, device)
+	releaseHold, err := s.srv.cfg.Devices.HoldMove(ctx, source, device)
 	if err != nil {
 		s.transferError(f.ReqID, err)
 		return
 	}
+	// Each answer below goes once the hold is gone (release is idempotent),
+	// so a client that reads it finds the workspace free; the defer is for
+	// a panic.
+	defer releaseHold()
+	if wait, pairing, err := s.srv.relinkPairing(ctx, source, device); err != nil || pairing {
+		releaseHold()
+		if err != nil {
+			s.transferError(f.ReqID, err)
+			return
+		}
+		s.reply(TypeError, f.ReqID, Error{Code: ErrCodeItemBusy, RetryAfter: int(math.Ceil(wait.Seconds())),
+			Message: "Este número está sendo vinculado de novo. Tente mover quando o vínculo terminar."})
+		return
+	}
+	pause, err := s.srv.cfg.Devices.PauseForMove(ctx, source, device)
+	if err != nil {
+		releaseHold()
+		s.transferError(f.ReqID, err)
+		return
+	}
+	// Past the look, no relink pairs the number: one that starts now sees
+	// the hold and ends itself workspace_busy. What this still cancels is
+	// a new number's pairing, and a relink caught between its own hold
+	// and its look at the move's, whose end is workspace_busy as well.
 	s.srv.cancelDevicePairing(source.String(), device.String())
 	if s.srv.cfg.Registry != nil {
 		s.srv.cfg.Registry.Stop(ctx, device.String())
@@ -125,7 +160,9 @@ func (s *session) handleDeviceTransfer(ctx context.Context, f Frame) {
 		s.srv.cfg.Router.Forget(device)
 	}
 	if err != nil {
-		if gone, moved := s.settleFailedTransfer(ctx, source, target, device, pause); gone {
+		gone, moved := s.settleFailedTransfer(ctx, source, target, device, pause)
+		releaseHold()
+		if gone {
 			if moved {
 				// The move committed and only its answer was lost.
 				s.srv.exportLedger(context.WithoutCancel(ctx), source)
@@ -143,9 +180,33 @@ func (s *session) handleDeviceTransfer(ctx context.Context, f Frame) {
 	// The move's moved_out line, so a restore from before it never puts
 	// the number back in its team.
 	s.srv.exportLedger(context.WithoutCancel(ctx), source)
+	releaseHold()
 	s.reply(TypeDeviceTransferred, f.ReqID, out)
 	s.srv.RevalidateAccess()
 	s.tellMoved(viewers, device)
+}
+
+// relinkPairing reports whether a relink pairs a logged-out number now,
+// and the wait it leaves: in this process, any pairing of the number in
+// the registry (the sheet's relink), with the seconds left in WhatsApp's
+// window, or a console relink (Relinks); in any process, the relink's own
+// hold (store.RelinkLook), WhatsApp's whole window. A device lock alone
+// is no relink: a process keeps one for a number logged out while it held
+// it, until something stops that client, and the move then meets it in
+// the store (TransferDenied). A number that is not logged out is paired by
+// no relink: a new number's pairing is cancelled, as before.
+func (s *Server) relinkPairing(ctx context.Context, tenant, device uuid.UUID) (time.Duration, bool, error) {
+	loggedOut, relinking, err := s.cfg.Devices.RelinkLook(ctx, tenant, device)
+	if err != nil || !loggedOut {
+		return 0, false, err
+	}
+	if since, ok := s.cfg.Registry.PairingSince(device.String()); ok {
+		return max(time.Second, min(wa.PairWindow, time.Until(since.Add(wa.RelinkWindow)))), true, nil
+	}
+	if s.cfg.Relinks.Has(device) || relinking {
+		return wa.PairWindow, true, nil
+	}
+	return 0, false, nil
 }
 
 // tellMoved tells the other sessions that saw the number that it moved.

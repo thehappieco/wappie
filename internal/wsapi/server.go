@@ -117,6 +117,10 @@ type Config struct {
 	// Relink links a logged-out number again (the pair frame's relink
 	// branch, relink.go). Nil answers that branch internal.
 	Relink *relink.Service
+	// Relinks are the process's console relinks (item.relink): a
+	// deletion and a transfer of the number cancel its relink too, which
+	// then ends state_changed. Nil cancels none.
+	Relinks *relink.Running
 	// MCPReaders tells a connection's reader it ended: a grant.revoke
 	// that took a person's Read tells the readers of their own
 	// connections it ended (DS48). Nil tells none here; the readers'

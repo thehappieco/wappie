@@ -5,7 +5,6 @@ import (
 	"context"
 	"time"
 
-	"github.com/google/uuid"
 	kc "github.com/thehappieco/kit/contract"
 
 	"whatserver2/internal/store"
@@ -99,8 +98,8 @@ func (sw *settingsWork) post(ctx context.Context) {
 				warn("contract: could not record the results' failure", "error", rerr)
 			}
 			outcomes := make([]store.ContractResultOutcome, len(ids))
-			for i, id := range ids {
-				outcomes[i] = store.ContractResultOutcome{ID: id, Failed: class}
+			for i, ref := range ids {
+				outcomes[i] = store.ContractResultOutcome{ID: ref.ID, Failed: class, ResultAt: ref.At}
 			}
 			if rerr := c.ResultsPosted(ctx, outcomes); rerr != nil && ctx.Err() == nil {
 				warn("contract: could not record the results' failure", "error", rerr)
@@ -121,23 +120,26 @@ func (sw *settingsWork) post(ctx context.Context) {
 }
 
 // checkResults turns rows into the results to post, those that fit one
-// call, and the ids of each, in order; and those Wappie would not post,
-// with why.
-func (sw *settingsWork) checkResults(ctx context.Context, rows []store.ContractResult) ([]kc.CommandResult, []uuid.UUID,
-	map[uuid.UUID]string) {
+// call, and the id and time of each, in order; and those Wappie would not
+// post, with why. The time settles only the result read (store's
+// ResultsPosted and ResultsParked): an item.relink's final result written
+// while its in_progress is posted is posted in turn.
+func (sw *settingsWork) checkResults(ctx context.Context, rows []store.ContractResult) ([]kc.CommandResult,
+	[]store.ContractResultRef, map[store.ContractResultRef]string) {
 	batch := make([]kc.CommandResult, 0, len(rows))
-	ids := make([]uuid.UUID, 0, len(rows))
-	parked := map[uuid.UUID]string{}
+	ids := make([]store.ContractResultRef, 0, len(rows))
+	parked := map[store.ContractResultRef]string{}
 	size := len(`{"results":[]}`)
 	for _, row := range rows {
+		ref := store.ContractResultRef{ID: row.ID, At: row.At}
 		r, why := resultOf(row)
 		if why != "" {
-			parked[row.ID] = why
+			parked[ref] = why
 			continue
 		}
 		raw, err := encodeData(r)
 		if err != nil {
-			parked[row.ID] = "encode"
+			parked[ref] = "encode"
 			continue
 		}
 		if len(batch) > 0 && size+len(raw)+1 > kc.ResultsBodyLimit {
@@ -146,7 +148,7 @@ func (sw *settingsWork) checkResults(ctx context.Context, rows []store.ContractR
 		}
 		size += len(raw) + 1
 		batch = append(batch, r)
-		ids = append(ids, row.ID)
+		ids = append(ids, ref)
 	}
 	if ctx.Err() != nil {
 		return nil, nil, nil
@@ -187,17 +189,17 @@ func resultOf(row store.ContractResult) (kc.CommandResult, string) {
 // park parks the results Wappie would not post, with one ERROR per call
 // and one recorded for --check; it returns the error of a park that could
 // not be stored.
-func (sw *settingsWork) park(ctx context.Context, parked map[uuid.UUID]string) error {
+func (sw *settingsWork) park(ctx context.Context, parked map[store.ContractResultRef]string) error {
 	l, c := sw.l, sw.l.Members.Contract
-	byWhy := map[string][]uuid.UUID{}
-	for id, why := range parked {
-		byWhy[why] = append(byWhy[why], id)
+	byWhy := map[string][]store.ContractResultRef{}
+	for ref, why := range parked {
+		byWhy[why] = append(byWhy[why], ref)
 	}
-	for why, ids := range byWhy {
-		if err := c.ResultsParked(ctx, ids, "local_invalid:"+why); err != nil {
+	for why, refs := range byWhy {
+		if err := c.ResultsParked(ctx, refs, "local_invalid:"+why); err != nil {
 			return err
 		}
-		l.log().Error("contract: results are parked: Wappie would not post them", "count", len(ids), "reason", why, "first", ids[0])
+		l.log().Error("contract: results are parked: Wappie would not post them", "count", len(refs), "reason", why, "first", refs[0].ID)
 	}
 	if err := c.RecordError(ctx, store.ContractErrorResultParked); err != nil && ctx.Err() == nil {
 		l.log().Warn("contract: could not record an ERROR", "error", err)
@@ -207,13 +209,14 @@ func (sw *settingsWork) park(ctx context.Context, parked map[uuid.UUID]string) e
 
 // settle records the platform's answers to the results ids, by position;
 // it returns the error of answers that could not be stored.
-func (sw *settingsWork) settle(ctx context.Context, ids []uuid.UUID, answers []kc.CommandResultAnswer) error {
+func (sw *settingsWork) settle(ctx context.Context, ids []store.ContractResultRef, answers []kc.CommandResultAnswer) error {
 	l, c := sw.l, sw.l.Members.Contract
 	outcomes := make([]store.ContractResultOutcome, len(ids))
 	parked := 0
-	for i, id := range ids {
+	for i, ref := range ids {
+		id := ref.ID
 		a := answers[i]
-		o := store.ContractResultOutcome{ID: id, Answer: a.Outcome}
+		o := store.ContractResultOutcome{ID: id, Answer: a.Outcome, ResultAt: ref.At}
 		if a.Code != nil {
 			o.Code = *a.Code
 		}

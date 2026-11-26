@@ -92,7 +92,7 @@ func newRelinkConsole(t *testing.T) *relinkConsole {
 	lg := slog.New(slog.NewTextHandler(lockedWriter{rc.logMu, rc.log}, nil))
 	srv := httptest.NewServer(wsapi.NewServer(wsapi.Config{
 		Keys: keys, Sessions: users, Accounts: users,
-		Devices: devices, Messages: store.NewMessages(pool), Keys2: store.NewKeys(pool),
+		Devices: devices, Messages: store.NewMessages(pool), Keys2: store.NewKeys(pool), Storage: store.NewStorage(pool),
 		Relink: &relink.Service{Devices: devices, Pairer: rc.pairer, Log: lg},
 		Log:    lg,
 	}))
@@ -307,5 +307,49 @@ func TestPauseKeepsLoggedOut(t *testing.T) {
 	}
 	if !d.Paused || d.Status != wa.StatusLoggedOut {
 		t.Fatalf("after the stop paused=%v status=%s", d.Paused, d.Status)
+	}
+}
+
+// Wappie's own relink while a move out of the workspace runs, in any
+// process (its hold): workspace_busy with its wait, before any QR and
+// before the storage pause (DS56). Once the move ended, the pause it left
+// holds nothing: the relink starts.
+func TestRelinkDuringAMove(t *testing.T) {
+	ctx := context.Background()
+	c := newRelinkConsole(t)
+	token := c.account(t, "owner@acme.test", "owner")
+	owner, err := c.users.Session(ctx, token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	device := c.loggedOut(t, owner.UserID)
+	release, err := c.devices.HoldMove(ctx, c.tenant, uuid.MustParse(device))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	e := wantError(t, ask(t, c.console, wsapi.Hello{Session: token}, wsapi.TypePair, relinkOf(device)), wsapi.ErrCodeWorkspaceBusy)
+	if e.RetryAfter != int(store.MoveBusyRetry/time.Second) || e.Message == "" {
+		t.Fatalf("a relink during a move: %+v", e)
+	}
+	if _, err := c.pool.Exec(ctx, `UPDATE tenants SET storage_paused_at = now() WHERE id = $1`, c.tenant); err != nil {
+		t.Fatal(err)
+	}
+	wantError(t, ask(t, c.console, wsapi.Hello{Session: token}, wsapi.TypePair, relinkOf(device)), wsapi.ErrCodeWorkspaceBusy)
+	release()
+	wantError(t, ask(t, c.console, wsapi.Hello{Session: token}, wsapi.TypePair, relinkOf(device)), wsapi.ErrCodeStoragePaused)
+	if _, err := c.pool.Exec(ctx, `UPDATE tenants SET storage_paused_at = NULL WHERE id = $1`, c.tenant); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.devices.PauseForMove(ctx, c.tenant, uuid.MustParse(device)); err != nil {
+		t.Fatal(err)
+	}
+	conn := c.open(t, wsapi.Hello{Session: token})
+	send(t, conn, wsapi.TypePair, relinkOf(device))
+	select {
+	case p := <-c.pairer.started:
+		close(p.events)
+	case <-time.After(10 * time.Second):
+		t.Fatal("a relink after the move did not start")
 	}
 }

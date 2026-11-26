@@ -168,9 +168,9 @@ func ranAct(t *testing.T, what string, act store.ContractAct, err error) {
 // workspace's clock passed, and makes the numbers section and the
 // snapshot due now. A label Wappie sets aside, as typed or as the
 // contract cleans it (a placeholder, an id, the number's own digits), is
-// not_authorized and
-// stores nothing, before a label_changed that would offer it: the snapshot
-// would publish null, which label_changed cannot say (DS10).
+// label_changed with a null cleaned (kit v0.11.0) and stores nothing,
+// before a label_changed that would offer the cleaned text: the snapshot
+// would publish null for it.
 func TestRunRename(t *testing.T) {
 	ctx := context.Background()
 	w := newActWorld(t)
@@ -247,8 +247,11 @@ func TestRunRename(t *testing.T) {
 		"Loja" + user7[:3] + "Rua" + user7[3:]}, typed...) {
 		cmd := w.command(t, kc.OpItemRename, user, sub)
 		act, err = w.c.RunRename(ctx, cmd, device, &vendasSP, aside)
-		refusedWith(t, "a rename to "+aside, act, err, kc.CodeNotAuthorized)
-		if l := w.ledger(t, cmd.ID); l.detail != "" {
+		refusedWith(t, "a rename to "+aside, act, err, kc.CodeLabelChanged)
+		if string(act.Result.Detail) != `{"cleaned":null}` {
+			t.Fatalf("a rename to %s: the act's detail %s", aside, act.Result.Detail)
+		}
+		if l := w.ledger(t, cmd.ID); l.detail != `{"cleaned": null}` {
 			t.Fatalf("a rename to %s: the detail %s", aside, l.detail)
 		}
 		if got := w.device(t, device).Label; got != vendasSP {
@@ -517,8 +520,11 @@ func TestRegistrationDelete(t *testing.T) {
 	}
 }
 
-// TestJudgeSyncNow: the frame's order of refusals, then the act left open
-// and answered at a new seq.
+// TestJudgeSyncNow: item_busy while this process pairs a linked number (a
+// relink: the spec's 14.6 holds its number, judged first, before the
+// role), then the
+// frame's order of refusals, then the act left open and answered at a new
+// seq.
 func TestJudgeSyncNow(t *testing.T) {
 	ctx := context.Background()
 	w := newActWorld(t)
@@ -537,6 +543,13 @@ func TestJudgeSyncNow(t *testing.T) {
 	if l := w.ledger(t, cmd.ID); l.retryAfter == nil || *l.retryAfter != 42 {
 		t.Fatalf("item_busy's retry_after: %+v", l)
 	}
+	// Before the role, as item.relink's: a member who does not read the
+	// number is item_busy while it pairs, not_authorized otherwise.
+	strangerUser, strangerSub := w.actor(t, "member", "member")
+	act, _, err = w.c.JudgeSyncNow(ctx, w.command(t, kc.OpItemSyncNow, strangerUser, strangerSub), device, busy)
+	refusedWith(t, "a number pairing, by a member who does not read it", act, err, kc.CodeItemBusy)
+	act, _, err = w.c.JudgeSyncNow(ctx, w.command(t, kc.OpItemSyncNow, strangerUser, strangerSub), device, nil)
+	refusedWith(t, "a member who does not read it", act, err, kc.CodeNotAuthorized)
 	cmd, act, err = judge(nil)
 	if err != nil || !act.Open {
 		t.Fatalf("a number that may connect: %+v %v", act, err)
@@ -546,6 +559,9 @@ func TestJudgeSyncNow(t *testing.T) {
 	if done.Seq <= act.Seq {
 		t.Fatalf("the answer's seq %d is not above the judgement's %d", done.Seq, act.Seq)
 	}
+	w.execOne(t, `UPDATE devices SET status = 'logged_out', status_reason = 'unlinked (test)' WHERE id = $1`, device)
+	_, act, err = judge(busy)
+	refusedWith(t, "a logged-out number its relink pairs", act, err, kc.CodeItemBusy)
 	for _, c := range []struct {
 		set, code string
 	}{
@@ -554,7 +570,7 @@ func TestJudgeSyncNow(t *testing.T) {
 		{`paused = true`, kc.CodePaused},
 	} {
 		w.execOne(t, `UPDATE devices SET `+c.set+` WHERE id = $1`, device)
-		_, act, err := judge(busy)
+		_, act, err := judge(nil)
 		refusedWith(t, c.set, act, err, c.code)
 	}
 	w.execOne(t, `UPDATE tenants SET storage_paused_at = clock_timestamp() WHERE id = $1`, w.tenant)
@@ -567,4 +583,7 @@ func TestJudgeSyncNow(t *testing.T) {
 	w.execOne(t, `UPDATE devices SET pn = NULL, lid = NULL, status = 'offline', status_reason = '' WHERE id = $1`, device)
 	_, act, err = judge(nil)
 	refusedWith(t, "a number with no identity", act, err, kc.CodeNotLinked)
+	// A registration's own pairing is no relink: not_linked still.
+	_, act, err = judge(busy)
+	refusedWith(t, "a number with no identity pairing", act, err, kc.CodeNotLinked)
 }

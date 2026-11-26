@@ -37,11 +37,13 @@ const (
 	CodeCapacityReached = "capacity_reached"
 	CodeStoragePaused   = "storage_paused"
 	CodeItemBusy        = "item_busy"
+	CodeWorkspaceBusy   = "workspace_busy"
 	CodeStateChanged    = "state_changed"
 )
 
 // Refusal is a relink's end other than linked: a code, a fixed English
-// message that names no account, and for item_busy the time to wait.
+// message that names no account, and for item_busy and workspace_busy the
+// time to wait.
 type Refusal struct {
 	Code       string
 	Message    string
@@ -63,7 +65,8 @@ var messages = map[string]string{
 	CodeNoReader:        "nobody holds this number's key",
 	CodeCapacityReached: "there is no free place for this number to sync",
 	CodeStoragePaused:   "the workspace's storage is paused",
-	CodeItemBusy:        "this number is being linked or moved already",
+	CodeItemBusy:        "this number is being linked already",
+	CodeWorkspaceBusy:   "a number is being moved out of this workspace",
 	CodeStateChanged:    "this number is no longer one to link again, or it changed meanwhile",
 }
 
@@ -78,6 +81,18 @@ const busyElsewhere = wa.PairWindow
 func busy(wait time.Duration, stage string) *Refusal {
 	r := refuse(CodeItemBusy, stage)
 	r.RetryAfter = max(time.Second, wait)
+	return r
+}
+
+// MoveBusy is the entry's workspace_busy, for a caller that judges a
+// running move before its own gates (the socket's storage gate).
+func MoveBusy() *Refusal { return moveBusy("entry") }
+
+// moveBusy is workspace_busy: a move out of the number's workspace runs
+// (store.ErrRelinkWorkspaceBusy), a retry after store.MoveBusyRetry.
+func moveBusy(stage string) *Refusal {
+	r := refuse(CodeWorkspaceBusy, stage)
+	r.RetryAfter = store.MoveBusyRetry
 	return r
 }
 
@@ -154,8 +169,8 @@ func (s *Service) log() *slog.Logger {
 }
 
 // Check makes the checks of the number before any QR, in the order of spec
-// 14.13: item_busy before state_changed, then read_only, no_reader and
-// number_held. A number with no live row is store.ErrNotFound, the caller's
+// 14.13: item_busy, then workspace_busy, before state_changed, then
+// read_only, no_reader and number_held. A number with no live row is store.ErrNotFound, the caller's
 // not_found. A refusal is a *Refusal.
 func (s *Service) Check(ctx context.Context, tenant, device uuid.UUID) (Target, error) {
 	row, err := s.Devices.RelinkRow(ctx, tenant, device)
@@ -170,54 +185,40 @@ func (s *Service) Check(ctx context.Context, tenant, device uuid.UUID) (Target, 
 		return Target{}, r
 	}
 
-	if since, ok := s.Pairer.PairingSince(id); ok {
-		return refused(busy(min(busyElsewhere, time.Until(since.Add(wa.RelinkWindow))), "entry"))
-	}
-	if row.PauseCause == store.PauseForMove {
-		return refused(busy(busyElsewhere, "entry"))
-	}
-	if row.Status != wa.StatusLoggedOut {
-		return refused(refuse(CodeStateChanged, "entry"))
+	// Judge's table, its facts read in its order: a stale hold is
+	// released only for a logged-out number nothing pairs and in a
+	// workspace no move holds, and a
+	// read a check before it refuses is never made. A fact not read yet is
+	// the passing one, so a refusal at a stage is the whole table's.
+	f := Facts{Status: row.Status, MoveRunning: row.MoveRunning, Epoch: row.Epoch, KeyHeld: true}
+	f.PairingSince, f.Pairing = s.Pairer.PairingSince(id)
+	if r := judgeEntry(f); r != nil {
+		return refused(r)
 	}
 	// A number logged out while this process held it keeps a stopped
 	// entry and its lock until something releases them. Any other hold of
 	// a logged-out number (a deletion's logout, a start) is busy.
-	if s.Pairer.Holds(id) && !s.Pairer.ReleaseStale(ctx, id) {
-		return refused(busy(busyElsewhere, "entry"))
+	f.Held = s.Pairer.Holds(id) && !s.Pairer.ReleaseStale(ctx, id)
+	f.PN, f.LID, t.FromMap = FillIdentity(ctx, s.LIDs, row.Identity.PN, row.Identity.LID)
+	if r := Judge(f); r != nil {
+		return refused(r)
 	}
+	t.Expect = wa.Identity{PN: f.PN, LID: f.LID}
 
-	pn, lid := row.Identity.PN.ToNonAD(), row.Identity.LID.ToNonAD()
-	if pn.IsEmpty() && !lid.IsEmpty() && s.LIDs != nil {
-		if found, ok := s.LIDs.PhoneFor(ctx, lid); ok {
-			pn, t.FromMap = found.ToNonAD(), true
-		}
-	}
-	if lid.IsEmpty() && !pn.IsEmpty() && s.LIDs != nil {
-		if found, ok := s.LIDs.LIDFor(ctx, pn); ok {
-			lid, t.FromMap = found.ToNonAD(), true
-		}
-	}
-	if pn.Server != types.DefaultUserServer || pn.User == "" || lid.Server != types.HiddenUserServer || lid.User == "" {
-		return refused(refuse(CodeReadOnly, "entry"))
-	}
-	t.Expect = wa.Identity{PN: pn, LID: lid}
-
-	if row.Epoch < 1 {
-		return refused(refuse(CodeNoReader, "entry"))
-	}
 	held, err := s.Devices.KeyHeld(ctx, tenant, device)
 	if err != nil {
 		return Target{}, err
 	}
-	if !held {
-		return refused(refuse(CodeNoReader, "entry"))
+	if f.KeyHeld = held; !held {
+		return refused(Judge(f))
 	}
 	elsewhere, err := s.Devices.HeldElsewhere(ctx, tenant, device, t.Expect)
 	if err != nil {
 		return Target{}, err
 	}
-	if elsewhere {
-		return refused(refuse(CodeNumberHeld, "entry"))
+	f.HeldElsewhere = elsewhere
+	if r := Judge(f); r != nil {
+		return refused(r)
 	}
 	return t, nil
 }
@@ -232,6 +233,8 @@ type Session struct {
 	// cause is set before a cancel this package makes, to name the end.
 	cause  chan error
 	result error
+	// release lets go of the relink's hold (store.Devices.HoldRelink).
+	release func()
 }
 
 // Events yields the pairing's QR events until it ends, then closes. They
@@ -246,9 +249,22 @@ func (s *Session) Cancel() { s.pair.Cancel() }
 // valid after Events closed.
 func (s *Session) Result() error { return s.result }
 
-// Start starts the pairing of a number Check passed. Its error is a
-// *Refusal; the end comes through Session.Result.
-func (s *Service) Start(ctx context.Context, t Target, who Actor) (*Session, error) {
+// AttachFunc writes the new link into the number, once WhatsApp confirmed
+// the link of its own account: a compare-and-set on what the relink saw
+// at its start (store.Devices.AttachRelink). The console's command writes
+// its final result in the same transaction (store.Contract's
+// AttachRelinkCommand).
+type AttachFunc func(ctx context.Context, linked wa.Identity) (store.Attached, error)
+
+// Start starts the pairing of a number Check passed, attaching the new
+// link with attach (nil: Devices.AttachRelink). Its error is a *Refusal;
+// the end comes through Session.Result.
+func (s *Service) Start(ctx context.Context, t Target, who Actor, attach AttachFunc) (*Session, error) {
+	if attach == nil {
+		attach = func(ctx context.Context, linked wa.Identity) (store.Attached, error) {
+			return s.Devices.AttachRelink(ctx, t.Tenant, t.Device, t.Seen, linked)
+		}
+	}
 	s.log().Info("relink started", "device", t.Device, "tenant", t.Tenant, "actor_kind", who.Kind, "actor", who.ID,
 		"paused", t.Paused, "identity_from_map", t.FromMap)
 	rl := &wa.Relink{
@@ -257,7 +273,7 @@ func (s *Service) Start(ctx context.Context, t Target, who Actor) (*Session, err
 			return s.Devices.RelinkRecheck(ctx, t.Tenant, t.Device, t.Seen, t.Expect)
 		},
 		Attach: func(ctx context.Context, linked wa.Identity) error {
-			a, err := s.Devices.AttachRelink(ctx, t.Tenant, t.Device, t.Seen, linked)
+			a, err := attach(ctx, linked)
 			if err == nil {
 				s.log().Info("relink attached", "device", t.Device, "tenant", t.Tenant, "actor", who.ID,
 					"resumed_pause", a.ResumedPause, "old_session_left", a.OldSessionLeft)
@@ -270,9 +286,24 @@ func (s *Service) Start(ctx context.Context, t Target, who Actor) (*Session, err
 			}
 		},
 	}
+	// The relink's hold, for the life of the pairing: a move of the
+	// number, in any process, sees it and is refused item_busy before its
+	// pause (store.Devices.RelinkLook). Taken before the start's look at
+	// the move hold.
+	release, ok, err := s.Devices.HoldRelink(ctx, t.Device)
+	if err != nil || !ok {
+		r := busy(busyElsewhere, "start")
+		if err != nil {
+			r = refuse(CodeConnectFailed, "start")
+			s.log().Warn("relink could not start", "device", t.Device, "error", err)
+		}
+		s.logRefused(t, who, r)
+		return nil, r
+	}
 	pair, err := s.Pairer.StartPairing(ctx, t.Tenant.String(), t.Device.String(),
 		wa.ReceiptPolicy{Mode: t.ReceiptMode, Recorder: s.Receipts}, wa.PairOptions{Method: wa.PairByQR, Relink: rl})
 	if err != nil {
+		release()
 		var r *Refusal
 		switch {
 		case errors.Is(err, wa.ErrAlreadyRunning):
@@ -286,10 +317,14 @@ func (s *Service) Start(ctx context.Context, t Target, who Actor) (*Session, err
 		s.logRefused(t, who, r)
 		return nil, r
 	}
-	sess := &Session{svc: s, target: t, actor: who, pair: pair, events: make(chan wa.PairEvent, 8), cause: make(chan error, 1)}
-	// The check above ran before the device lock: read once more now that
-	// the pairing holds it, as a new number's pairing does.
-	if err := s.Devices.RelinkRecheck(ctx, t.Tenant, t.Device, t.Seen, t.Expect); err != nil {
+	sess := &Session{svc: s, target: t, actor: who, pair: pair, events: make(chan wa.PairEvent, 8), cause: make(chan error, 1),
+		release: release}
+	// The check above ran before the holds: read once more now that the
+	// relink holds the number and its pairing the device lock, as a new
+	// number's pairing does, any move of the workspace included
+	// (RelinkStartCheck: a move that started meanwhile either saw the
+	// relink's hold or is seen here).
+	if err := s.Devices.RelinkStartCheck(ctx, t.Tenant, t.Device, t.Seen, t.Expect); err != nil {
 		sess.cause <- err
 		pair.Cancel()
 	}
@@ -299,6 +334,9 @@ func (s *Service) Start(ctx context.Context, t Target, who Actor) (*Session, err
 
 func (s *Session) run(ctx context.Context) {
 	defer close(s.events)
+	// Let go of the relink's hold once its end is named, before Events
+	// closes.
+	defer s.release()
 	var end error
 	for e := range s.pair.Events() {
 		switch e.Kind {
@@ -334,7 +372,9 @@ func (s *Session) run(ctx context.Context) {
 
 // classify names a pairing's end. A window that closed, or a link that
 // failed, is first set against the number as it is now: a cancel by a
-// pause, a deletion, a move or a storage stop is its cause.
+// pause, a deletion, a move or a storage stop is its cause. A move that
+// still runs is workspace_busy (ErrRelinkWorkspaceBusy, DS56), a number
+// the move has moved away state_changed.
 func (s *Service) classify(ctx context.Context, t Target, err error) *Refusal {
 	var other *wa.OtherAccount
 	switch {
@@ -346,6 +386,8 @@ func (s *Service) classify(ctx context.Context, t Target, err error) *Refusal {
 		return refuse(CodeOtherAccount, "scan")
 	case errors.Is(err, store.ErrRelinkNumberHeld):
 		return refuse(CodeNumberHeld, "attach")
+	case errors.Is(err, store.ErrRelinkWorkspaceBusy):
+		return moveBusy("attach")
 	case errors.Is(err, store.ErrRelinkStateChanged):
 		return refuse(CodeStateChanged, "attach")
 	case errors.Is(err, store.ErrStoragePaused):
@@ -354,6 +396,11 @@ func (s *Service) classify(ctx context.Context, t Target, err error) *Refusal {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	switch now := s.Devices.RelinkState(ctx, t.Tenant, t.Device, t.Seen); {
+	case errors.Is(now, store.ErrRelinkWorkspaceBusy):
+		// A move's pause met the pairing while the move runs (a move
+		// another process started as this pairing began): a retry,
+		// workspace_busy, as at the entry (DS56), never state_changed.
+		return moveBusy("end")
 	case errors.Is(now, store.ErrRelinkStateChanged):
 		return refuse(CodeStateChanged, "end")
 	case errors.Is(now, store.ErrStoragePaused):

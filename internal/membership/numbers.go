@@ -2,20 +2,25 @@ package membership
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"time"
 
 	"github.com/google/uuid"
 	kc "github.com/thehappieco/kit/contract"
+	"go.mau.fi/whatsmeow/types"
 
+	"whatserver2/internal/relink"
 	"whatserver2/internal/store"
+	"whatserver2/internal/wa"
 )
 
 // The numbers section (the spec's 14.3; the kit's NumbersSettings): what
 // Wappie's own tables say of one platform workspace's numbers, in the
 // console's terms. A row carries no label (a number's label lives in the
-// snapshot), no byte count (null until the privacy text names it), and no
-// move_out preview (null while accepts lacks item.move_out).
+// snapshot), no byte count (null until the privacy text names it), no
+// move_out preview (null while accepts lacks item.move_out), and its
+// can_relink (kit v0.11.0) by the relink's own table (canRelink).
 
 // NumberLooks is what the leader's process knows of a registration that
 // is not in the database: whether a pairing of it runs now, and whether
@@ -31,11 +36,19 @@ type NumberLooks interface {
 // numbers kinds, item.sync_now among them since the socket's frame asks a
 // person's Read too, as its runner does (the platform's answer 4, DS13),
 // the three flags kinds (step 12b, DS46: listed from the release that
-// carries them, with no switch), and the person's two. Never item.relink
-// or a kind of kit v0.11.0 (the whole document would be refused).
+// carries them, with no switch), item.relink (kit v0.11.0, listed with no
+// switch since the platform's release that knows it is live: the spec's
+// 14 lets an app list a kind only then), and the person's two. A
+// contract item.move_out has no runner here. Once it has one, a relink
+// meanwhile is workspace_busy, as with Wappie's own transfer (DS56). The
+// move itself, while a relink of its number pairs, answers item_busy,
+// judged before state_changed (Runner.busy's retry_after), only once the
+// platform's release that knows item_busy on item.move_out is live (the
+// spec's compatibility rule), and workspace_busy before that. Wappie's own
+// socket transfer is not on the contract wire and keeps item_busy.
 var runs = map[string][]string{
 	kc.SectionNumbers: {kc.OpItemRename, kc.OpItemSyncStop, kc.OpItemSyncResume, kc.OpItemSyncNow, kc.OpItemRegistrationDelete,
-		kc.OpItemFlagsRaise, kc.OpItemFlagsDrop, kc.OpItemAccessRemove},
+		kc.OpItemFlagsRaise, kc.OpItemFlagsDrop, kc.OpItemAccessRemove, kc.OpItemRelink},
 	kc.SectionPerson: {kc.OpPersonNoticesDismiss, kc.OpPersonSignOutEverywhere},
 }
 
@@ -74,7 +87,10 @@ func pendingOf(p store.ContractPending, looks NumberLooks) kc.PendingRegistratio
 // back, as on a logged-out number. In Wappie its start, its pairing retry
 // (it connected) and its relink (no identity to compare) all refuse it:
 // an owner deletes it and links the phone as a new number.
-func numberRow(n store.ContractNumber) kc.NumberRow {
+//
+// can_relink (kit v0.11.0) is always sent, true or false, never null:
+// canRelink.
+func numberRow(n store.ContractNumber, items []store.ContractNumber, looks NumberLooks) kc.NumberRow {
 	loggedOut := n.Status == "logged_out"
 	banned := n.Status == "banned"
 	row := kc.NumberRow{ID: n.ID.String(), Connection: connectionOf(n), Capture: "on", RecoveryOpen: n.RecoveryOpen,
@@ -95,7 +111,75 @@ func numberRow(n store.ContractNumber) kc.NumberRow {
 		epoch := int64(n.Epoch)
 		row.KeyEpoch = &epoch
 	}
+	can := canRelink(n, items, looks)
+	row.CanRelink = &can
 	return row
+}
+
+// canRelink is a row's can_relink: whether item.relink may link the
+// number again now, by the relink's own table (relink.Judge), from what
+// the section read with no side effect: the number live (a deleted one
+// not recovered is false; a logged_out_deletion one recovered since may be
+// true, the spec allowing it), not paired now and no move out of the
+// workspace running (false while either runs: a retry on time, not a
+// "cannot"; a move that has ended holds nothing, and its pause is one the
+// relink lifts), logged
+// out, both halves of its identity (a missing half filled from whatsmeow's
+// map before, fillIdentities, as Check fills it), a key a person holds,
+// and its account held by no other live number of the section that is
+// not logged out or banned (HeldElsewhere's rows, which the section lists
+// whole). A hold of the process is read as passing: Check would release a
+// stale one, never the listing (NumberLooks offers no ReleaseStale). False
+// with no looks.
+func canRelink(n store.ContractNumber, items []store.ContractNumber, looks NumberLooks) bool {
+	if looks == nil || n.Deleted {
+		return false
+	}
+	pn, lid := jidOf(n.PN), jidOf(n.LID)
+	f := relink.Facts{Status: wa.Status(n.Status), MoveRunning: n.MoveRunning, PN: pn, LID: lid, Epoch: n.Epoch, KeyHeld: n.KeyHeld}
+	f.PairingSince, f.Pairing = looks.PairingSince(n.ID.String())
+	if relink.FullIdentity(pn, lid) {
+		account := wa.Identity{PN: pn, LID: lid}
+		for _, o := range items {
+			if o.ID != n.ID && !o.Deleted && o.Status != string(wa.StatusLoggedOut) && o.Status != string(wa.StatusBanned) &&
+				store.HoldsAccount(o.PN, o.LID, account) {
+				f.HeldElsewhere = true
+				break
+			}
+		}
+	}
+	return relink.Judge(f) == nil
+}
+
+// jidOf is a stored JID, non-AD; empty for "" or one that does not parse.
+func jidOf(s string) types.JID {
+	if s == "" {
+		return types.JID{}
+	}
+	j, err := types.ParseJID(s)
+	if err != nil {
+		return types.JID{}
+	}
+	return j.ToNonAD()
+}
+
+// fillIdentities fills, in read's items, a half of a live logged-out
+// number's identity it lacks from whatsmeow's map (book, nil for none), as
+// the relink's Check fills it before its read_only: so can_relink and
+// Check agree. A read of the map only, never a write.
+func fillIdentities(ctx context.Context, read *store.ContractNumbers, book relink.PhoneBook) {
+	if book == nil {
+		return
+	}
+	for i, n := range read.Items {
+		if n.Deleted || n.Status != string(wa.StatusLoggedOut) || (n.PN != "") == (n.LID != "") {
+			continue
+		}
+		pn, lid, filled := relink.FillIdentity(ctx, book, jidOf(n.PN), jidOf(n.LID))
+		if filled {
+			read.Items[i].PN, read.Items[i].LID = pn.String(), lid.String()
+		}
+	}
 }
 
 // connectionOf is a number's connection code.
@@ -135,6 +219,14 @@ func pausedBy(n store.ContractNumber) *kc.PausedBy {
 // truncated (never cut), and the data encoded with no HTML escaping. A
 // workspace Wappie has no workspace for gets an empty section.
 func numbersDoc(read store.ContractNumbers, mode string, looks NumberLooks) (kc.SettingsDoc, error) {
+	return numbersDocOver(read, read.Items, mode, looks)
+}
+
+// numbersDocOver is numbersDoc with each row's can_relink judged over all,
+// the rows the section measured: a section that left out a row the wire
+// refuses still counts it toward HeldElsewhere, as the relink's Check
+// counts every live row of the workspace.
+func numbersDocOver(read store.ContractNumbers, all []store.ContractNumber, mode string, looks NumberLooks) (kc.SettingsDoc, error) {
 	data := kc.NumbersSettings{CanLink: read.CanLink, StoragePaused: read.StoragePaused,
 		Pending: []kc.PendingRegistration{}, Items: []kc.NumberRow{}}
 	if !read.PendingOver {
@@ -144,7 +236,7 @@ func numbersDoc(read store.ContractNumbers, mode string, looks NumberLooks) (kc.
 	}
 	if !read.ItemsOver {
 		for _, n := range read.Items {
-			data.Items = append(data.Items, numberRow(n))
+			data.Items = append(data.Items, numberRow(n, all, looks))
 		}
 	}
 	raw, err := encodeData(data)
@@ -212,7 +304,8 @@ func numbersSection(read store.ContractNumbers, mode string, looks NumberLooks) 
 	if len(dropped) == 0 {
 		return doc, nil, why, rule
 	}
-	if doc, err = numbersDoc(kept, mode, looks); err != nil {
+	// can_relink over every row measured, the ones left out included.
+	if doc, err = numbersDocOver(kept, read.Items, mode, looks); err != nil {
 		return kc.SettingsDoc{}, dropped, "encode", err
 	}
 	doc.Truncated = true

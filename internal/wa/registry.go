@@ -638,6 +638,10 @@ func (r *Registry) unlink(ctx context.Context, deviceID string, jid types.JID,
 	return logoutOn(ctx, client, nil, record)
 }
 
+// DeviceLockKey is the advisory lock a registry holds a number by, across
+// processes, while it runs, pairs or keeps it.
+func DeviceLockKey(deviceID string) string { return "device:" + deviceID }
+
 // reserveLocked, called with r.mu held, which it releases, reserves a device
 // this process does not hold and takes its device lock: ErrAlreadyRunning
 // while another process or a recovery holds it. done releases the lock, then
@@ -656,7 +660,7 @@ func (r *Registry) reserveLocked(ctx context.Context, deviceID string) (done fun
 	if r.cfg.Locker == nil {
 		return unreserve, nil
 	}
-	release, ok, err := r.cfg.Locker.TryLock(ctx, "device:"+deviceID)
+	release, ok, err := r.cfg.Locker.TryLock(ctx, DeviceLockKey(deviceID))
 	if err != nil {
 		unreserve()
 		return nil, fmt.Errorf("wa: lock device: %w", err)

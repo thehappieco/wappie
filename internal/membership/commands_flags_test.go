@@ -442,8 +442,8 @@ func TestFlagsVectorsRun(t *testing.T) {
 }
 
 // TestAcceptsFlags: in on, numbers lists the three flags kinds beside
-// 12a's five, each a kit v0.10.1 Wappie kind of the numbers section; in
-// read, none.
+// 12a's five and item.relink, each a Wappie kind of the kit's numbers
+// section; in read, none.
 func TestAcceptsFlags(t *testing.T) {
 	got := accepts(store.SettingsOn, kc.SectionNumbers)
 	for _, kind := range []string{kc.OpItemFlagsRaise, kc.OpItemFlagsDrop, kc.OpItemAccessRemove} {
@@ -456,7 +456,7 @@ func TestAcceptsFlags(t *testing.T) {
 			t.Errorf("%s is not a numbers kind of the kit: %+v", kind, k)
 		}
 	}
-	if len(got) != 8 {
+	if len(got) != 9 {
 		t.Errorf("on lists %d kinds: %v", len(got), got)
 	}
 	if r := accepts(store.SettingsRead, kc.SectionNumbers); r == nil || len(r) != 0 {

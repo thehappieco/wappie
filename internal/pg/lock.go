@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"slices"
 	"sync"
 	"time"
 
@@ -42,36 +43,87 @@ func NewLocker(pool *pgxpool.Pool) *Locker { return &Locker{pool: pool} }
 // from it is still held. Close blocks waiting for the connection to come back,
 // and only release returns it. Always release before shutting a pool down.
 func (l *Locker) TryLock(ctx context.Context, key string) (release func(), ok bool, err error) {
+	return l.tryLock(ctx, []string{key}, false)
+}
+
+// TryLockShared is TryLock in the shared mode, for every key at once on
+// one connection: any number of sessions hold a key shared at once, and
+// none of them while another holds it exclusively (TryLock's). It takes
+// all the keys or none: ok=false when one of them is held exclusively.
+// AdvisoryHeld sees a shared hold as it sees an exclusive one.
+func (l *Locker) TryLockShared(ctx context.Context, keys ...string) (release func(), ok bool, err error) {
+	return l.tryLock(ctx, keys, true)
+}
+
+func (l *Locker) tryLock(ctx context.Context, keys []string, shared bool) (release func(), ok bool, err error) {
+	if len(keys) == 0 {
+		return nil, false, errors.New("pg: an advisory lock with no key")
+	}
+	keys = slices.Clone(keys)
+	lock, unlock := `SELECT pg_try_advisory_lock($1)`, `SELECT pg_advisory_unlock($1)`
+	if shared {
+		lock, unlock = `SELECT pg_try_advisory_lock_shared($1)`, `SELECT pg_advisory_unlock_shared($1)`
+	}
 	conn, err := l.pool.Acquire(ctx)
 	if err != nil {
 		return nil, false, fmt.Errorf("pg: acquire for advisory lock: %w", err)
 	}
-
-	var acquired bool
-	if err := conn.QueryRow(ctx, `SELECT pg_try_advisory_lock($1)`, lockKey(key)).Scan(&acquired); err != nil {
+	// unlockTaken lets go of the keys taken so far, newest first, and
+	// returns the connection. Detached from the caller's context: release
+	// must happen even when the reason for releasing is that the context
+	// was cancelled.
+	unlockTaken := func(taken []string) {
+		unlockCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		for i := len(taken) - 1; i >= 0; i-- {
+			// Nothing useful to do on failure: the lock is released anyway
+			// when this connection closes, which is the crash-safety
+			// property this design relies on.
+			//nolint:errcheck // advisory locks free themselves on disconnect
+			_, _ = conn.Exec(unlockCtx, unlock, lockKey(taken[i]))
+		}
 		conn.Release()
-		return nil, false, fmt.Errorf("pg: try advisory lock %q: %w", key, err)
 	}
-	if !acquired {
-		conn.Release()
-		return nil, false, nil
+
+	for i, key := range keys {
+		var acquired bool
+		if err := conn.QueryRow(ctx, lock, lockKey(key)).Scan(&acquired); err != nil {
+			unlockTaken(keys[:i])
+			return nil, false, fmt.Errorf("pg: try advisory lock %q: %w", key, err)
+		}
+		if !acquired {
+			unlockTaken(keys[:i])
+			return nil, false, nil
+		}
 	}
 
 	var once sync.Once
-	return func() {
-		once.Do(func() {
-			// Detached from the caller's context: release must happen even
-			// when the reason for releasing is that the context was cancelled.
-			unlockCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-			defer cancel()
-			// Nothing useful to do on failure: the lock is released anyway
-			// when this connection closes, which is the crash-safety property
-			// this design relies on.
-			//nolint:errcheck // advisory locks free themselves on disconnect
-			_, _ = conn.Exec(unlockCtx, `SELECT pg_advisory_unlock($1)`, lockKey(key))
-			conn.Release()
-		})
-	}, true, nil
+	return func() { once.Do(func() { unlockTaken(keys) }) }, true, nil
+}
+
+// Querier is what AdvisoryHeld reads with: a pool, a connection or a
+// transaction.
+type Querier interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+// AdvisoryHeld reports whether any session of this database holds the
+// advisory lock key (TryLock's, TryLockTx's) now, without taking it: a
+// look at pg_locks, so the caller never holds, even briefly, a lock that
+// another process may be about to take.
+func AdvisoryHeld(ctx context.Context, q Querier, key string) (bool, error) {
+	var held bool
+	// A bigint key is listed with its high 32 bits in classid, its low 32
+	// in objid, and objsubid 1.
+	err := q.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_locks
+		WHERE locktype = 'advisory' AND granted AND objsubid = 1
+		  AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
+		  AND classid = (($1::bigint >> 32) & 4294967295)::oid AND objid = ($1::bigint & 4294967295)::oid)`,
+		lockKey(key)).Scan(&held)
+	if err != nil {
+		return false, fmt.Errorf("pg: look at advisory lock %q: %w", key, err)
+	}
+	return held, nil
 }
 
 // HoldHeartbeat is how often a held lock's connection is asked whether it

@@ -573,7 +573,7 @@ func TestCommandResults(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := l.c.ResultsParked(ctx, []uuid.UUID{ids[5]}, "detail"); err != nil {
+	if err := l.c.ResultsParked(ctx, []store.ContractResultRef{{ID: ids[5]}}, "detail"); err != nil {
 		t.Fatal(err)
 	}
 	for i, want := range []struct{ delivery, code string }{

@@ -2,8 +2,8 @@
 // commands now (step 12a's commands release; the spec's 14.7), and for
 // Wappie's own socket frames later, as internal/relink does for a relink:
 // rename, stop and resume its capture, connect it now, delete a
-// registration that never linked, and change a person's flags on it
-// (flags.go, step 12b).
+// registration that never linked, change a person's flags on it
+// (flags.go, step 12b), and link it again (relink.go, kit v0.11.0).
 //
 // Each act's checks and writes are one store transaction
 // (store/contract_command_acts.go): the number before the role, both roles,
@@ -24,8 +24,10 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	kc "github.com/thehappieco/kit/contract"
 	"go.mau.fi/whatsmeow/types"
 
+	"whatserver2/internal/relink"
 	"whatserver2/internal/store"
 	"whatserver2/internal/wa"
 )
@@ -92,6 +94,27 @@ type Runner struct {
 	// FailedStartWait is how long a sync now waits after this runner's
 	// failed start of its number (FailedStartWait when zero).
 	FailedStartWait time.Duration
+
+	// Relinker checks and starts a console relink (item.relink); nil
+	// answers it connect_failed. Running is the process's console
+	// relinks, which a stop, a deletion and the leader's end cancel.
+	Relinker *relink.Service
+	Running  *relink.Running
+	// PutPairing sends a relink's QR to the platform's pairing route, at
+	// the leader's pace (the membership's client); nil sends none, and the
+	// pairing still runs to its end.
+	PutPairing func(ctx context.Context, id uuid.UUID, q kc.PairingQR) (bool, error)
+	// Ended runs once a relink's final result is written, to wake the
+	// results poster and the section sender.
+	Ended func()
+	// Now is the clock a relink's expiry and its QRs' are judged on
+	// (time.Now when nil).
+	Now func() time.Time
+	// PostedPoll is how often a relink's QR pump asks whether its
+	// in_progress was posted while it holds the first QR (250 ms when
+	// zero); FinishBackoff the first wait before a failed write of its
+	// final result is tried again (1 s when zero).
+	PostedPoll, FinishBackoff time.Duration
 
 	mu sync.Mutex
 	// failed is when each number's last sync now start failed, kept

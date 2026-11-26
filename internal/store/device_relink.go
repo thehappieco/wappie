@@ -22,9 +22,19 @@ import (
 
 var (
 	// ErrRelinkStateChanged is a number that is no longer one to link
-	// again: deleted, moved, paused since, no longer logged out, or its
-	// workspace no longer active.
+	// again: deleted, moved away, paused since, no longer logged out, or
+	// its workspace no longer active.
 	ErrRelinkStateChanged = errors.New("store: the number changed during the relink")
+	// ErrRelinkWorkspaceBusy is a move that runs in the number's
+	// workspace: at the relink's start, any move of the workspace
+	// (MoveHoldKey); while it pairs, a move of this number (NumberMoveKey)
+	// whose pause the number shows. A
+	// retry, workspace_busy (the spec's 14.13, DS56), judged before the
+	// storage pause and before the pause_seq the move counted, never
+	// state_changed or item_busy. A move that has ended is no hold: the
+	// pause it left is one the relink lifts (a pause_seq the relink saw at
+	// its start), and a number it moved away is ErrRelinkStateChanged.
+	ErrRelinkWorkspaceBusy = errors.New("store: a move runs in the workspace")
 	// ErrRelinkNumberHeld is an account another live number of the
 	// workspace holds.
 	ErrRelinkNumberHeld = errors.New("store: this WhatsApp account is linked here as another number")
@@ -44,6 +54,10 @@ type RelinkRow struct {
 	PauseSeq     int64
 	Epoch        int
 	ReceiptMode  wa.ReceiptMode
+	// MoveRunning: a move out of the workspace runs now (MoveHoldKey).
+	MoveRunning bool
+	// NumberMoving: a move of this number runs now (NumberMoveKey).
+	NumberMoving bool
 }
 
 // RelinkSeen is what the relink saw at its start, which the attach must
@@ -60,17 +74,26 @@ type Attached struct {
 	OldSessionLeft bool
 }
 
-// RelinkRow reads a live number. A deleted one, or one of another
-// workspace, is ErrNotFound.
+// RelinkRow reads a live number, and whether a move out of its workspace,
+// and one of the number, runs. A deleted one, or one of another workspace,
+// is ErrNotFound.
 func (d *Devices) RelinkRow(ctx context.Context, tenant, device uuid.UUID) (RelinkRow, error) {
 	var row RelinkRow
 	var lid, pn string
 	err := pg.InTenantTx(ctx, d.pool, tenant.String(), func(tx pgx.Tx) error {
-		return tx.QueryRow(ctx, `SELECT id, tenant_id, coalesce(lid, ''), coalesce(pn, ''), status, status_reason,
+		err := tx.QueryRow(ctx, `SELECT id, tenant_id, coalesce(lid, ''), coalesce(pn, ''), status, status_reason,
 			paused, coalesce(pause_cause, ''), pause_seq, current_epoch, receipt_mode
 			FROM devices WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL`, device, tenant).Scan(
 			&row.ID, &row.TenantID, &lid, &pn, &row.Status, &row.StatusReason,
 			&row.Paused, &row.PauseCause, &row.PauseSeq, &row.Epoch, &row.ReceiptMode)
+		if err != nil {
+			return err
+		}
+		if row.MoveRunning, err = moveRunningTx(ctx, tx, tenant); err != nil {
+			return err
+		}
+		row.NumberMoving, err = numberMoveRunningTx(ctx, tx, tenant, device)
+		return err
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return RelinkRow{}, fmt.Errorf("%w: %s", ErrNotFound, device)
@@ -89,21 +112,27 @@ func (d *Devices) RelinkRow(ctx context.Context, tenant, device uuid.UUID) (Reli
 func (d *Devices) KeyHeld(ctx context.Context, tenant, device uuid.UUID) (bool, error) {
 	var held bool
 	err := pg.InTenantTx(ctx, d.pool, tenant.String(), func(tx pgx.Tx) error {
-		return tx.QueryRow(ctx, `SELECT EXISTS (
-			SELECT 1 FROM devices dv
-			  JOIN device_archive_keys k ON k.device_id = dv.id AND k.epoch = dv.current_epoch AND k.retired_at IS NULL
-			  JOIN device_key_grants g ON g.device_id = dv.id AND g.epoch = dv.current_epoch
-			  JOIN workspace_memberships m ON m.tenant_id = dv.tenant_id AND m.user_id = g.user_id
-			       AND m.status = 'active' AND m.expires_at IS NULL AND m.role <> 'service'
-			  JOIN users u ON u.id = m.user_id AND u.status IN ('active', 'disabled') AND u.role <> 'service'
-			 WHERE dv.id = $1 AND dv.tenant_id = $2 AND dv.current_epoch >= 1
-			   AND NOT EXISTS (SELECT 1 FROM mcp_connections c WHERE c.service_user_id = g.user_id))`,
+		return tx.QueryRow(ctx, `SELECT coalesce((SELECT `+keyHeldSQL("dv")+` FROM devices dv WHERE dv.id = $1 AND dv.tenant_id = $2), false)`,
 			device, tenant).Scan(&held)
 	})
 	if err != nil {
 		return false, fmt.Errorf("store: who holds a number's key: %w", err)
 	}
 	return held, nil
+}
+
+// keyHeldSQL is KeyHeld's test of the devices row named dv: a person holds
+// its key at its current epoch. The numbers section reads it for each
+// logged-out row (its can_relink), as the relink's Check reads KeyHeld.
+func keyHeldSQL(dv string) string {
+	return `EXISTS (SELECT 1 FROM device_archive_keys k
+		  JOIN device_key_grants g ON g.device_id = k.device_id AND g.epoch = k.epoch
+		  JOIN workspace_memberships m ON m.tenant_id = ` + dv + `.tenant_id AND m.user_id = g.user_id
+		       AND m.status = 'active' AND m.expires_at IS NULL AND m.role <> 'service'
+		  JOIN users u ON u.id = m.user_id AND u.status IN ('active', 'disabled') AND u.role <> 'service'
+		 WHERE k.device_id = ` + dv + `.id AND k.epoch = ` + dv + `.current_epoch AND k.retired_at IS NULL
+		   AND ` + dv + `.current_epoch >= 1
+		   AND NOT EXISTS (SELECT 1 FROM mcp_connections c WHERE c.service_user_id = g.user_id))`
 }
 
 // HeldElsewhere reports whether another live number of the workspace, not
@@ -135,11 +164,20 @@ func heldElsewhereTx(ctx context.Context, tx pgx.Tx, tenant, device uuid.UUID, a
 		return false, err
 	}
 	for _, p := range pairs {
-		if sameAccountUser(parseJID(p.PN), account.PN) || sameAccountUser(parseJID(p.LID), account.LID) {
+		if HoldsAccount(p.PN, p.LID, account) {
 			return true, nil
 		}
 	}
 	return false, nil
+}
+
+// HoldsAccount reports whether a number whose stored identity is pn and
+// lid (as stored, either maybe "") holds account: the user part of its
+// phone number or of its LID, whatever the device numbers. HeldElsewhere
+// asks it of every other live number of the workspace not logged out and
+// not banned; the numbers section's can_relink asks it of the same rows.
+func HoldsAccount(pn, lid string, account wa.Identity) bool {
+	return sameAccountUser(parseJID(pn), account.PN) || sameAccountUser(parseJID(lid), account.LID)
 }
 
 // sameAccountUser compares two JIDs by user and server, never by device.
@@ -147,13 +185,17 @@ func sameAccountUser(a, b types.JID) bool {
 	return a.User != "" && a.User == b.User && a.Server == b.Server
 }
 
-// RelinkState is the relink's read of the number and its workspace, with no
-// lock: ErrRelinkStateChanged unless the workspace is active and the number
-// is live, logged out, paused no more since the start (pause_seq) and not
-// held by a move; ErrStoragePaused when the workspace's storage is paused.
+// RelinkState is the relink's read of the number and its workspace while
+// it pairs, with no lock: ErrRelinkStateChanged unless the workspace is
+// active and the number is live, logged out and paused no more since the
+// start (pause_seq); ErrRelinkWorkspaceBusy, judged before the storage
+// pause and those, while a move of this number runs whose pause the number
+// shows; ErrStoragePaused when the workspace's storage is paused. A move
+// of another number of the workspace leaves a pairing alone, even when the
+// number shows a pause a finished move left.
 func (d *Devices) RelinkState(ctx context.Context, tenant, device uuid.UUID, seen RelinkSeen) error {
 	return pg.InTenantTx(ctx, d.pool, tenant.String(), func(tx pgx.Tx) error {
-		return relinkStateTx(ctx, tx, tenant, device, seen, false)
+		return relinkStateTx(ctx, tx, tenant, device, seen, false, false)
 	})
 }
 
@@ -161,8 +203,23 @@ func (d *Devices) RelinkState(ctx context.Context, tenant, device uuid.UUID, see
 // number of the workspace holds the account. The check in the session
 // store's first write of a new link runs it.
 func (d *Devices) RelinkRecheck(ctx context.Context, tenant, device uuid.UUID, seen RelinkSeen, account wa.Identity) error {
+	return d.relinkRecheck(ctx, tenant, device, seen, account, false)
+}
+
+// RelinkStartCheck is RelinkRecheck once the relink holds the number
+// (HoldRelink) and its pairing started, before its first QR:
+// ErrRelinkWorkspaceBusy for any move out of the workspace, as at the
+// relink's entry. A move takes its hold before it looks at the relink's
+// (RelinkLook), and the relink takes its hold before this look at the
+// move's, so one of the two always sees the other: no pause of a move
+// ever lands on a pairing it missed.
+func (d *Devices) RelinkStartCheck(ctx context.Context, tenant, device uuid.UUID, seen RelinkSeen, account wa.Identity) error {
+	return d.relinkRecheck(ctx, tenant, device, seen, account, true)
+}
+
+func (d *Devices) relinkRecheck(ctx context.Context, tenant, device uuid.UUID, seen RelinkSeen, account wa.Identity, entry bool) error {
 	return pg.InTenantTx(ctx, d.pool, tenant.String(), func(tx pgx.Tx) error {
-		if err := relinkStateTx(ctx, tx, tenant, device, seen, false); err != nil {
+		if err := relinkStateTx(ctx, tx, tenant, device, seen, false, entry); err != nil {
 			return err
 		}
 		held, err := heldElsewhereTx(ctx, tx, tenant, device, account)
@@ -178,8 +235,37 @@ func (d *Devices) RelinkRecheck(ctx context.Context, tenant, device uuid.UUID, s
 
 // relinkStateTx reads the workspace, then the number, locking both when
 // lock is set (tenants, then the device: the order Pause, MarkResumed, a
-// deletion and a move take).
-func relinkStateTx(ctx context.Context, tx pgx.Tx, tenant, device uuid.UUID, seen RelinkSeen, lock bool) error {
+// deletion and a move take). A running move is judged first, with no
+// lock, so a relink never waits on a move's transaction (which holds the
+// workspace's row) only to learn it: at entry any move of the workspace,
+// else a move of this number whose pause the number shows; and again once
+// the number is read, for a move of it that paused it meanwhile.
+func relinkStateTx(ctx context.Context, tx pgx.Tx, tenant, device uuid.UUID, seen RelinkSeen, lock, entry bool) error {
+	if entry {
+		running, err := moveRunningTx(ctx, tx, tenant)
+		if err != nil {
+			return err
+		}
+		if running {
+			return ErrRelinkWorkspaceBusy
+		}
+	} else {
+		running, err := numberMoveRunningTx(ctx, tx, tenant, device)
+		if err != nil {
+			return err
+		}
+		if running {
+			var cause string
+			err := tx.QueryRow(ctx, `SELECT coalesce(pause_cause, '') FROM devices WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL`,
+				device, tenant).Scan(&cause)
+			if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+				return err
+			}
+			if cause == PauseForMove {
+				return ErrRelinkWorkspaceBusy
+			}
+		}
+	}
 	forUpdate := ""
 	if lock {
 		forUpdate = " FOR UPDATE"
@@ -210,7 +296,18 @@ func relinkStateTx(ctx context.Context, tx pgx.Tx, tenant, device uuid.UUID, see
 	if err != nil {
 		return err
 	}
-	if devStatus != string(wa.StatusLoggedOut) || pauseSeq != seen.PauseSeq || cause == PauseForMove {
+	if cause == PauseForMove {
+		// A move of this number that paused it since the first look,
+		// judged before the pause_seq it counted; one that has ended left
+		// a pause the relink lifts when it saw it at its start.
+		if running, err := numberMoveRunningTx(ctx, tx, tenant, device); err != nil || running {
+			if err != nil {
+				return err
+			}
+			return ErrRelinkWorkspaceBusy
+		}
+	}
+	if devStatus != string(wa.StatusLoggedOut) || pauseSeq != seen.PauseSeq {
 		return ErrRelinkStateChanged
 	}
 	return nil
@@ -219,7 +316,8 @@ func relinkStateTx(ctx context.Context, tx pgx.Tx, tenant, device uuid.UUID, see
 // AttachRelink writes a new link into the number, in one transaction that
 // is a compare-and-set on what the relink saw at its start: the workspace
 // active with its storage running, the number live, still logged out, not
-// paused again since (pause_seq) and not held by a move, and the account
+// paused again since (pause_seq) and not paused by a move that still runs
+// (ErrRelinkWorkspaceBusy), and the account
 // held by no other live number of the workspace. It then names the new
 // link (pn, lid, push name), marks the number offline until its client
 // connects, and lifts its pause with its open sync_paused notices marked
@@ -234,68 +332,78 @@ func relinkStateTx(ctx context.Context, tx pgx.Tx, tenant, device uuid.UUID, see
 // link's privacy tokens go unless a session under its JID exists.
 func (d *Devices) AttachRelink(ctx context.Context, tenant, device uuid.UUID, seen RelinkSeen, linked wa.Identity) (Attached, error) {
 	var out Attached
-	if linked.PN.IsEmpty() || linked.LID.IsEmpty() {
-		return out, errors.New("store: a relink attaches both halves of the new link")
-	}
-	newPN, newLID := linked.PN.String(), linked.LID.String()
 	err := pg.InTenantTx(ctx, d.pool, tenant.String(), func(tx pgx.Tx) error {
-		if err := relinkStateTx(ctx, tx, tenant, device, seen, true); err != nil {
-			return err
-		}
-		var oldPN, oldLID string
-		var paused bool
-		if err := tx.QueryRow(ctx, `SELECT coalesce(pn, ''), coalesce(lid, ''), paused FROM devices WHERE id = $1`,
-			device).Scan(&oldPN, &oldLID, &paused); err != nil {
-			return err
-		}
-		held, err := heldElsewhereTx(ctx, tx, tenant, device, linked)
-		if err != nil {
-			return err
-		}
-		if held {
-			return ErrRelinkNumberHeld
-		}
-		stored, err := sessionStoredTx(ctx, tx, newPN)
-		if err != nil {
-			return err
-		}
-		if !stored {
-			return ErrRelinkNoSession
-		}
-		// The devices_pause_cause trigger clears pause_cause with paused.
-		_, err = tx.Exec(ctx, `UPDATE devices SET pn = $2, lid = $3,
-			push_name = CASE WHEN $4 <> '' THEN $4 ELSE push_name END,
-			status = 'offline', status_reason = 'linked again', paused = false
-			WHERE id = $1`, device, newPN, newLID, linked.PushName)
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
-			return ErrRelinkNumberHeld
-		}
-		if err != nil {
-			return err
-		}
-		if paused {
-			// MarkResumed's statement, in the attach: the notice and the
-			// resume commit together.
-			if _, err := tx.Exec(ctx, `UPDATE device_notices SET resumed_at = clock_timestamp()
-				WHERE tenant_id = $1 AND device_id = $2 AND kind = 'sync_paused' AND resumed_at IS NULL AND seen_at IS NULL`,
-				tenant, device); err != nil {
-				return err
-			}
-			out.ResumedPause = true
-		}
-		if oldPN == "" || oldPN == newPN {
-			return nil
-		}
-		if out.OldSessionLeft, err = sessionStoredTx(ctx, tx, oldPN); err != nil {
-			return err
-		}
-		return deletePrivacyTokensTx(ctx, tx, oldPN)
+		var err error
+		out, err = attachRelinkTx(ctx, tx, tenant, device, seen, linked)
+		return err
 	})
 	if err != nil {
 		return Attached{}, err
 	}
 	return out, nil
+}
+
+// attachRelinkTx is AttachRelink's body in tx, scoped to tenant: the
+// console's command runs it in the transaction that writes its result
+// (Contract.AttachRelinkCommand).
+func attachRelinkTx(ctx context.Context, tx pgx.Tx, tenant, device uuid.UUID, seen RelinkSeen, linked wa.Identity) (Attached, error) {
+	var out Attached
+	if linked.PN.IsEmpty() || linked.LID.IsEmpty() {
+		return out, errors.New("store: a relink attaches both halves of the new link")
+	}
+	newPN, newLID := linked.PN.String(), linked.LID.String()
+	if err := relinkStateTx(ctx, tx, tenant, device, seen, true, false); err != nil {
+		return out, err
+	}
+	var oldPN, oldLID string
+	var paused bool
+	if err := tx.QueryRow(ctx, `SELECT coalesce(pn, ''), coalesce(lid, ''), paused FROM devices WHERE id = $1`,
+		device).Scan(&oldPN, &oldLID, &paused); err != nil {
+		return out, err
+	}
+	held, err := heldElsewhereTx(ctx, tx, tenant, device, linked)
+	if err != nil {
+		return out, err
+	}
+	if held {
+		return out, ErrRelinkNumberHeld
+	}
+	stored, err := sessionStoredTx(ctx, tx, newPN)
+	if err != nil {
+		return out, err
+	}
+	if !stored {
+		return out, ErrRelinkNoSession
+	}
+	// The devices_pause_cause trigger clears pause_cause with paused.
+	_, err = tx.Exec(ctx, `UPDATE devices SET pn = $2, lid = $3,
+		push_name = CASE WHEN $4 <> '' THEN $4 ELSE push_name END,
+		status = 'offline', status_reason = 'linked again', paused = false
+		WHERE id = $1`, device, newPN, newLID, linked.PushName)
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+		return out, ErrRelinkNumberHeld
+	}
+	if err != nil {
+		return out, err
+	}
+	if paused {
+		// MarkResumed's statement, in the attach: the notice and the
+		// resume commit together.
+		if _, err := tx.Exec(ctx, `UPDATE device_notices SET resumed_at = clock_timestamp()
+			WHERE tenant_id = $1 AND device_id = $2 AND kind = 'sync_paused' AND resumed_at IS NULL AND seen_at IS NULL`,
+			tenant, device); err != nil {
+			return out, err
+		}
+		out.ResumedPause = true
+	}
+	if oldPN == "" || oldPN == newPN {
+		return out, nil
+	}
+	if out.OldSessionLeft, err = sessionStoredTx(ctx, tx, oldPN); err != nil {
+		return out, err
+	}
+	return out, deletePrivacyTokensTx(ctx, tx, oldPN)
 }
 
 // sessionStoredTx reports whether whatsmeow's session store holds a session

@@ -435,37 +435,48 @@ func TestResultsMatchTheKit(t *testing.T) {
 		t.Errorf("a label_changed with its detail: %q", why)
 	}
 
-	// A command of a kind the kit does not know (item.relink, v0.11.0's) is
-	// refused at take with no decoded field, so its row has no kind, and
-	// its invalid_command posts with Validate alone, which ValidateFor
+	// A command of a kind the kit does not know (item.teleport) is refused
+	// at take with no decoded field, so its row has no kind, and its
+	// invalid_command posts with Validate alone, which ValidateFor
 	// (refusing the kind) would never let go.
 	gen := "0199b1e0-0000-7000-8000-000000000001"
-	relink := fmt.Sprintf(`{"v":1,"type":"command","app":"wappie","generation":%q,"id":"0199f3c4-0000-7000-8000-000000000078",`+
-		`"retry_of":null,"cseq":5,"workspace_id":"01a034b7-d09c-7121-b7f8-41f210a9244a","wseq":3,"kind":"item.relink",`+
-		`"section":"numbers","actor":"0199a0c2-7d3e-7b51-9f0a-2c4e6b8d1f20","actor_role":"owner",`+
-		`"target":{"item":"0199e000-0000-7000-8000-000000000004"},"params":{},`+
-		`"based_on":{"state_seq":1791892800000,"docs":{"0199a0c2-7d3e-7b51-9f0a-2c4e6b8d1f20":7}},`+
-		`"issued_at":"2026-10-13T12:00:00Z","first_issued_at":"2026-10-13T12:00:00Z","expires_at":"2026-10-13T12:05:00Z",`+
-		`"confirm":null,"agreement":null,"secret":2}`, gen)
-	signedRelink, err := kc.SignCommand([]byte(relink), App, vectorSecretA)
-	if err != nil {
-		t.Fatal(err)
+	command := func(kind string) json.RawMessage {
+		raw := fmt.Sprintf(`{"v":1,"type":"command","app":"wappie","generation":%q,"id":"0199f3c4-0000-7000-8000-000000000078",`+
+			`"retry_of":null,"cseq":5,"workspace_id":"01a034b7-d09c-7121-b7f8-41f210a9244a","wseq":3,"kind":%q,`+
+			`"section":"numbers","actor":"0199a0c2-7d3e-7b51-9f0a-2c4e6b8d1f20","actor_role":"owner",`+
+			`"target":{"item":"0199e000-0000-7000-8000-000000000004"},"params":{},`+
+			`"based_on":{"state_seq":1791892800000,"docs":{"0199a0c2-7d3e-7b51-9f0a-2c4e6b8d1f20":7}},`+
+			`"issued_at":"2026-10-13T12:00:00Z","first_issued_at":"2026-10-13T12:00:00Z","expires_at":"2026-10-13T12:05:00Z",`+
+			`"confirm":null,"agreement":null,"secret":2}`, gen, kind)
+		signed, err := kc.SignCommand([]byte(raw), App, vectorSecretA)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return signed
 	}
 	verify := func(raw json.RawMessage) (kc.Command, error) {
 		return kc.VerifyCommand(raw, App, []string{vectorSecretA})
 	}
-	take, _, err := decideCommand(App, verify, gen, time.Date(2026, 10, 13, 12, 0, 1, 0, time.UTC),
-		kc.CommandFeedItem{CSeq: 5, Command: signedRelink}, func(uuid.UUID) (string, error) { return kc.KindTeam, nil })
+	team := func(uuid.UUID) (string, error) { return kc.KindTeam, nil }
+	at := time.Date(2026, 10, 13, 12, 0, 1, 0, time.UTC)
+	take, _, err := decideCommand(App, verify, gen, at, kc.CommandFeedItem{CSeq: 5, Command: command("item.teleport")}, team)
 	if err != nil || take.Verdict != store.CommandInvalid || take.Decoded != nil {
-		t.Fatalf("an item.relink at take: %+v %v", take, err)
+		t.Fatalf("an item.teleport at take: %+v %v", take, err)
 	}
 	row := store.ContractResult{ID: take.ID, Outcome: kc.OutcomeRefused, Code: kc.CodeInvalidCommand, At: time.Now()}
 	if _, why := resultOf(row); why != "" {
 		t.Errorf("an invalid_command with no kind is not posted: %s", why)
 	}
-	row.Kind = "item.relink"
+	row.Kind = "item.teleport"
 	if _, why := resultOf(row); why == "" {
 		t.Error("ValidateFor took a result of a kind the kit does not know")
+	}
+
+	// item.relink is a kind of kit v0.11.0: a signed one is taken, its
+	// fields decoded, and the executor judges it (R0 and on).
+	take, _, err = decideCommand(App, verify, gen, at, kc.CommandFeedItem{CSeq: 5, Command: command(kc.OpItemRelink)}, team)
+	if err != nil || take.Verdict != "" || take.Decoded == nil || take.Decoded.Kind != kc.OpItemRelink {
+		t.Fatalf("an item.relink at take: %+v %v", take, err)
 	}
 }
 

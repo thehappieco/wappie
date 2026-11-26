@@ -644,6 +644,9 @@ func TestSettingsModeOffStops(t *testing.T) {
 	if err != nil || !change.SettingsOff {
 		t.Fatalf("contract mode off: %+v %v", change, err)
 	}
+	// The leader sees the mode on its own clock: a request may still start
+	// between SetMode and the stop, so the quiet counts from the stop.
+	eventually(t, soon, "the settings stopped again", func() bool { return len(logs.Lines("contract: settings stopped")) > 1 })
 	quiet("contract off")
 	if s, err := w.contract.SettingsState(ctx); err != nil || s.Mode != store.SettingsOff {
 		t.Fatalf("the settings mode: %+v %v", s, err)

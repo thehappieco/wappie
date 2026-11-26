@@ -129,6 +129,7 @@ type fakePairer struct {
 	stale    map[string]bool
 	startErr error
 	started  []*fakePairing
+	opts     []wa.PairOptions
 }
 
 type fakePairing struct {
@@ -160,7 +161,7 @@ func (f *fakePairer) ReleaseStale(_ context.Context, id string) bool {
 	}
 	return false
 }
-func (f *fakePairer) StartPairing(context.Context, string, string, wa.ReceiptPolicy, wa.PairOptions) (relink.Pairing, error) {
+func (f *fakePairer) StartPairing(_ context.Context, _, _ string, _ wa.ReceiptPolicy, opts wa.PairOptions) (relink.Pairing, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.startErr != nil {
@@ -168,6 +169,7 @@ func (f *fakePairer) StartPairing(context.Context, string, string, wa.ReceiptPol
 	}
 	p := &fakePairing{events: make(chan wa.PairEvent, 8)}
 	f.started = append(f.started, p)
+	f.opts = append(f.opts, opts)
 	return p, nil
 }
 
@@ -216,13 +218,37 @@ func TestCheckTable(t *testing.T) {
 		t.Fatalf("a stale hold = %v", err)
 	}
 
+	// A move that has ended holds nothing: its pause is one the relink
+	// lifts (DS56).
 	w.exec(t, `UPDATE devices SET paused = true, pause_cause = 'move' WHERE id = $1`, device)
-	if r := code(t, func() error { _, err := svc.Check(ctx, w.tenant, device); return err }()); r.Code != relink.CodeItemBusy {
-		t.Fatalf("a move's pause = %+v", r)
+	if _, err := svc.Check(ctx, w.tenant, device); err != nil {
+		t.Fatalf("a finished move's pause = %v", err)
 	}
 	w.exec(t, `UPDATE devices SET pause_cause = 'person' WHERE id = $1`, device)
 	if _, err := svc.Check(ctx, w.tenant, device); err != nil {
 		t.Fatalf("a person's pause = %v", err)
+	}
+	// While a move out of the workspace runs, any number's relink is
+	// workspace_busy, before not logged out and before a hold.
+	release, err := w.devices.HoldMove(ctx, w.tenant, uuid.New())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	if r := code(t, func() error { _, err := svc.Check(ctx, w.tenant, device); return err }()); r.Code != relink.CodeWorkspaceBusy ||
+		r.RetryAfter != wstore.MoveBusyRetry || r.Message == "" {
+		t.Fatalf("a move running = %+v", r)
+	}
+	w.status(t, device, wa.StatusOnline)
+	pairer.held[device.String()], pairer.stale[device.String()] = true, false
+	if r := code(t, func() error { _, err := svc.Check(ctx, w.tenant, device); return err }()); r.Code != relink.CodeWorkspaceBusy {
+		t.Fatalf("a move before not logged out and a hold = %+v", r)
+	}
+	w.status(t, device, wa.StatusLoggedOut)
+	delete(pairer.held, device.String())
+	release()
+	if _, err := svc.Check(ctx, w.tenant, device); err != nil {
+		t.Fatalf("once the move ended = %v", err)
 	}
 
 	// A number held here and online is not one to link again, not busy.
@@ -302,6 +328,33 @@ func TestEndNamesTheCause(t *testing.T) {
 			}
 		}, end: wa.ErrLinkFailed, want: relink.CodeStoragePaused},
 		"the attach found it held": {end: wstore.ErrRelinkNumberHeld, want: relink.CodeNumberHeld},
+		// A move another process started as the pairing began: while it
+		// runs, workspace_busy (DS56), never state_changed or item_busy.
+		"a move that still runs": {change: func(t *testing.T, w *world, device uuid.UUID) {
+			release, err := w.devices.HoldMove(ctx, w.tenant, device)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(release)
+			if _, err := w.devices.PauseForMove(ctx, w.tenant, device); err != nil {
+				t.Fatal(err)
+			}
+		}, end: wa.ErrLinkFailed, want: relink.CodeWorkspaceBusy},
+		"the attach met a move that still runs": {end: wstore.ErrRelinkWorkspaceBusy, want: relink.CodeWorkspaceBusy},
+		// One that ended left a pause later than the start: state_changed.
+		"a move's pause, the move ended": {change: func(t *testing.T, w *world, device uuid.UUID) {
+			if _, err := w.devices.PauseForMove(ctx, w.tenant, device); err != nil {
+				t.Fatal(err)
+			}
+		}, end: wa.ErrLinkFailed, want: relink.CodeStateChanged},
+		// Another number's move leaves the pairing alone: its own end.
+		"another number's move": {change: func(t *testing.T, w *world, _ uuid.UUID) {
+			release, err := w.devices.HoldMove(ctx, w.tenant, uuid.New())
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(release)
+		}, end: wa.ErrLinkTimeout, want: relink.CodeLinkTimeout},
 	} {
 		t.Run(name, func(t *testing.T) {
 			ctx := context.Background()
@@ -313,7 +366,7 @@ func TestEndNamesTheCause(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			sess, err := svc.Start(ctx, target, relink.Actor{Kind: "person", ID: w.owner})
+			sess, err := svc.Start(ctx, target, relink.Actor{Kind: "person", ID: w.owner}, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -328,7 +381,117 @@ func TestEndNamesTheCause(t *testing.T) {
 			if r := code(t, sess.Result()); r.Code != tc.want {
 				t.Fatalf("end %+v, want %s", r, tc.want)
 			}
+			if r := code(t, sess.Result()); tc.want == relink.CodeWorkspaceBusy && r.RetryAfter != wstore.MoveBusyRetry {
+				t.Fatalf("workspace_busy's wait %s", r.RetryAfter)
+			}
 		})
+	}
+}
+
+// A move that took its hold after the Check, before the pairing's device
+// lock: the start's look sees the hold, cancels the pairing and ends
+// workspace_busy before any QR.
+func TestStartSeesAMove(t *testing.T) {
+	ctx := context.Background()
+	w := newWorld(t)
+	pairer := &fakePairer{}
+	svc := &relink.Service{Devices: w.devices, Pairer: pairer, Log: slog.New(slog.DiscardHandler)}
+	device := w.number(t, ownPN, ownLID)
+	target, err := svc.Check(ctx, w.tenant, device)
+	if err != nil {
+		t.Fatal(err)
+	}
+	release, err := w.devices.HoldMove(ctx, w.tenant, device)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	// The pairing-time read leaves a move with no pause of the number
+	// alone; the start's does not.
+	if err := w.devices.RelinkRecheck(ctx, w.tenant, device, target.Seen, target.Expect); err != nil {
+		t.Fatalf("the pairing's recheck = %v", err)
+	}
+	if err := w.devices.RelinkStartCheck(ctx, w.tenant, device, target.Seen, target.Expect); !errors.Is(err, wstore.ErrRelinkWorkspaceBusy) {
+		t.Fatalf("the start's look = %v", err)
+	}
+	sess, err := svc.Start(ctx, target, relink.Actor{Kind: "person", ID: w.owner}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := pairer.started[0]
+	p.cancelMu.Lock()
+	cancels := p.cancels
+	p.cancelMu.Unlock()
+	if cancels != 1 {
+		t.Fatalf("%d cancels", cancels)
+	}
+	close(p.events)
+	for range sess.Events() {
+	}
+	if r := code(t, sess.Result()); r.Code != relink.CodeWorkspaceBusy || r.RetryAfter != wstore.MoveBusyRetry {
+		t.Fatalf("end %+v", r)
+	}
+}
+
+// A relink holds its number (store.RelinkHoldKey) from before its
+// pairing to its end, which every process's move sees (RelinkLook): a
+// bare device lock does not say a relink pairs. A relink whose number
+// another relink holds is item_busy, WhatsApp's whole window, and starts
+// no pairing.
+func TestStartHoldsTheNumber(t *testing.T) {
+	ctx := context.Background()
+	w := newWorld(t)
+	pairer := &fakePairer{}
+	svc := &relink.Service{Devices: w.devices, Pairer: pairer, Log: slog.New(slog.DiscardHandler)}
+	device := w.number(t, ownPN, ownLID)
+	relinking := func() bool {
+		t.Helper()
+		loggedOut, relinking, err := w.devices.RelinkLook(ctx, w.tenant, device)
+		if err != nil || !loggedOut {
+			t.Fatalf("the look: logged out %v (%v)", loggedOut, err)
+		}
+		return relinking
+	}
+	// A registry's device lock alone, as a process keeps one for a
+	// number logged out while it held it.
+	lock, ok, err := pg.NewLocker(w.pool).TryLock(ctx, wa.DeviceLockKey(device.String()))
+	if err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	// Released on every path: a pool cannot close while its lock is held.
+	defer lock()
+	if relinking() {
+		t.Fatal("a device lock read as a relink")
+	}
+	lock()
+	target, err := svc.Check(ctx, w.tenant, device)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := svc.Start(ctx, target, relink.Actor{Kind: "person", ID: w.owner}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Ended on every path: the relink's hold keeps a pooled connection.
+	var end sync.Once
+	ended := func() {
+		end.Do(func() {
+			close(pairer.started[0].events)
+			for range sess.Events() {
+			}
+		})
+	}
+	defer ended()
+	if !relinking() {
+		t.Fatal("a pairing relink not seen")
+	}
+	if _, err := svc.Start(ctx, target, relink.Actor{Kind: "person", ID: w.owner}, nil); code(t, err).Code != relink.CodeItemBusy ||
+		code(t, err).RetryAfter != wa.PairWindow || len(pairer.started) != 1 {
+		t.Fatalf("a second relink = %v, %d pairings", err, len(pairer.started))
+	}
+	ended()
+	if relinking() {
+		t.Fatal("an ended relink kept its hold")
 	}
 }
 
@@ -435,7 +598,7 @@ func TestRelinkThroughTheRegistry(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		sess, err := rig.svc.Start(ctx, target, relink.Actor{Kind: "person", ID: rig.w.owner})
+		sess, err := rig.svc.Start(ctx, target, relink.Actor{Kind: "person", ID: rig.w.owner}, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -487,7 +650,7 @@ func TestRelinkThroughTheRegistry(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		sess, err := rig.svc.Start(ctx, target, relink.Actor{Kind: "person", ID: rig.w.owner})
+		sess, err := rig.svc.Start(ctx, target, relink.Actor{Kind: "person", ID: rig.w.owner}, nil)
 		if err != nil {
 			t.Fatal(err)
 		}

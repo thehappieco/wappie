@@ -11,6 +11,7 @@ import (
 
 	"whatserver2/internal/numberacts"
 	"whatserver2/internal/obs"
+	"whatserver2/internal/relink"
 	"whatserver2/internal/store"
 )
 
@@ -91,6 +92,10 @@ type SettingsConfig struct {
 	// Numbers is the leader's process's registry: the pending rows'
 	// pairing and retry. Nil: none pairs, none may be retried.
 	Numbers NumberLooks
+	// Identities is whatsmeow's map of LIDs and phone numbers, which
+	// fills a half of a logged-out number's identity for its can_relink,
+	// as the relink's Check fills it. Nil fills nothing.
+	Identities relink.PhoneBook
 
 	// Acts runs the numbers kinds (internal/numberacts), with the
 	// process's registry and socket server. Nil: the leader's own, over its
@@ -151,8 +156,25 @@ func newSettingsWork(l *Leader, accounts *follower) *settingsWork {
 			cfg.Acts.Devices = store.NewDevices(l.Pool)
 		}
 	}
-	return &settingsWork{l: l, cfg: cfg, accounts: accounts, sections: newSectionNotices(),
+	sw := &settingsWork{l: l, cfg: cfg, accounts: accounts, sections: newSectionNotices(),
 		executor: make(chan struct{}, 1), results: make(chan struct{}, 1)}
+	// A console relink's QRs go at the leader's pace, and its end wakes
+	// this term's results poster and section sender. Set before any loop
+	// starts; a relink captures them when it starts.
+	if cfg.Acts.PutPairing == nil {
+		m := l.Members
+		cfg.Acts.PutPairing = func(ctx context.Context, id uuid.UUID, q kc.PairingQR) (bool, error) {
+			if err := m.paced(ctx); err != nil {
+				return false, err
+			}
+			return m.Client.PutPairing(ctx, id, q)
+		}
+	}
+	cfg.Acts.Ended = func() {
+		kick(sw.results)
+		kick(sw.sections.wake)
+	}
+	return sw
 }
 
 // mode is the effective settings mode the loops run in, off while they do
@@ -196,6 +218,10 @@ func (sw *settingsWork) set(ctx context.Context, mode string) {
 		sw.mu.Unlock()
 		stop()
 		sw.wg.Wait()
+		// A console relink's pairing never outlives the leader that
+		// answers its command: its end is written now, and the next leader
+		// answers whatever is left (the sweep).
+		sw.cfg.Acts.Running.CancelAll()
 		sw.l.log().Info("contract: settings stopped")
 		return
 	}

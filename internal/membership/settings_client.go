@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/google/uuid"
 	kc "github.com/thehappieco/kit/contract"
 	"github.com/thehappieco/kit/jcs"
 )
@@ -63,6 +64,23 @@ func (c *Client) PostResults(ctx context.Context, results []kc.CommandResult) ([
 		return err
 	})
 	return a, err
+}
+
+// PutPairing sends one QR of a running item.relink, the command id
+// (PUT /contract/v1/commands/{id}/pairing, kit v0.11.0): true when the
+// platform holds it, false (no error) for a seq at or below the highest it
+// kept or a PUT past contract.PairingHold after the first QR, both counted
+// as delivered. A signed not_found (the platform holds a final result, or
+// never carried the command) is a *kc.Refusal: no more QRs go for it. The
+// kit refuses a body that fails ValidateAt on this clock before it sends
+// anything. The QR is never in an error, and never logged here.
+func (c *Client) PutPairing(ctx context.Context, id uuid.UUID, q kc.PairingQR) (bool, error) {
+	var ok bool
+	err := c.call(func(k *kc.Client) (err error) {
+		ok, err = k.PutPairing(ctx, id.String(), q)
+		return err
+	})
+	return ok, err
 }
 
 // VerifyCommand checks the MAC of raw, a command of page, with the secrets

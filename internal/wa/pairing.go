@@ -508,7 +508,7 @@ func (r *Registry) adopt(ctx context.Context, tenantID, deviceID string,
 
 	var release func()
 	if r.cfg.Locker != nil {
-		rel, ok, err := r.cfg.Locker.TryLock(ctx, "device:"+deviceID)
+		rel, ok, err := r.cfg.Locker.TryLock(ctx, DeviceLockKey(deviceID))
 		if err != nil {
 			return fail(fmt.Errorf("wa: lock device: %w", err))
 		}

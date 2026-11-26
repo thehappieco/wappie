@@ -68,7 +68,7 @@ func (s *session) handleRelink(ctx context.Context, f Frame, req PairRequest) {
 	if s.relinkRefused(f.ReqID, err) {
 		return
 	}
-	sess, err := svc.Start(ctx, target, relink.Actor{Kind: "person", ID: who.userID})
+	sess, err := svc.Start(ctx, target, relink.Actor{Kind: "person", ID: who.userID}, nil)
 	if s.relinkRefused(f.ReqID, err) {
 		return
 	}
