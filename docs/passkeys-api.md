@@ -17,7 +17,7 @@ Enable the feature with both environment variables:
 
 ```dotenv
 WS_PASSKEY_RP_ID=wappie.thehappie.co
-WS_PASSKEY_ORIGINS=https://app.wappie.thehappie.co,https://console.wappie.thehappie.co
+WS_PASSKEY_ORIGINS=https://app.wappie.thehappie.co
 ```
 
 Origins are exact HTTPS origins, including a non-default port when applicable.

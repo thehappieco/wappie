@@ -7,7 +7,9 @@ Wappie connects business systems to WhatsApp through HTTP and WebSocket, with
 shared workspaces, per-number permissions and a messaging client.
 
 - [Product and documentation](https://wappie.thehappie.co)
-- [Workspace console](https://console.wappie.thehappie.co)
+- [Workspace console](https://console.thehappie.co) (The Happie Co's; Wappie's own
+  screens for numbers, integrations and assistants are at
+  `https://app.wappie.thehappie.co/console`)
 - [Messaging client](https://app.wappie.thehappie.co)
 - Hosted API: `https://api.wappie.thehappie.co` (`/v1/ws` for WebSocket)
 - [Workspace model and API contracts](docs/workspaces.md)
