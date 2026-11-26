@@ -10,7 +10,7 @@
 - Pilot: two companies, four test numbers, free access and simulated payments, on the existing EC2. Maintenance interruptions are acceptable.
 - Public repository: https://github.com/thehappieco/wappie
 - Public site and documentation: `wappie.thehappie.co` and `/docs`.
-- Administration: `console.wappie.thehappie.co`; messaging: `app.wappie.thehappie.co`; HTTP/WebSocket: `api.wappie.thehappie.co`.
+- Administration: The Happie Co's console, `console.thehappie.co`, and Wappie's own screens at `app.wappie.thehappie.co/console`; messaging: `app.wappie.thehappie.co`; HTTP/WebSocket: `api.wappie.thehappie.co`.
 - Joining a workspace does not grant archive access. Explicit device key grants unlock all stored history covered by the granted epochs. Revocation cannot erase already obtained keys or content.
 
 The current personal/team signup, account profile and invitation lifecycle contracts are documented in [Accounts and workspaces](accounts-workspaces.md).

@@ -34,11 +34,10 @@ against malware, malicious extensions or a compromised browser profile.
 ## Hosted app and console
 
 The interactive application uses `https://app.wappie.thehappie.co/` for messages
-and `/console` for account/workspace management. The separate
-`https://console.wappie.thehappie.co/` address remains a public entry point and
-redirects HTML navigation to that canonical console route, preserving the
-workspace and payment-return parameters. API requests keep their existing
-addresses. This puts both screens in the same first-party storage origin,
+and `/console` for account/workspace management. The console's older address
+only redirects HTML navigation to that route, preserving the workspace and
+payment-return parameters. API requests keep their existing addresses. This
+puts both screens in the same first-party storage origin,
 including browsers that partition storage even between same-site subdomains.
 
 Each successful login writes an origin-local IndexedDB record. An invisible
