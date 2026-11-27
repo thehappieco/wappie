@@ -3559,10 +3559,22 @@ deploy waits for a health line with `clock_ok=true` after `enclave_ready`,
 since a boot can take up to 180 s at step 2b. A 24 h soak follows:
 `clock_ok` true throughout, `|nsm_skew_ms|` p99 under 50 ms,
 `clock_freq_ppm` settling near −17, `clock_corr_day_ms` under 3000 after
-the first day, the KMS range always containing 0, no `clock_state` change
-and `clock_steps` at most 1. After 7 days, with the residual under 500 ms
-and the frequency settled, the owner applies the steady policies, and the
-console lists 0.6.1 alone. Rollback is `deploy-enclave.sh rollback` to the 0.6.0 EIF while the
+the first day, the KMS range containing 0 on every line after boot
+convergence (not during the boot's slew, where `nsm_skew_ms` is still
+hundreds of ms), no `clock_state` change after the boot's own, and
+`clock_steps` at most 1. After 7 days, with the residual under 500 ms
+and the frequency settled, and after one planned restart whose boot
+passes the gate the same way, the owner applies the steady policies, and
+the console lists 0.6.1 alone. The residual is the largest
+`|nsm_skew_ms|` over the 7 days after boot convergence, with the KMS
+range containing 0 throughout. It is not `clock_corr_day_ms`: the ledger
+measures REALTIME − MONOTONIC_RAW, so it carries the crystal's own
+frequency term (about 18 ppm on the pilot, some 1.6 s a day) however well
+the clock is held. Nor is it the KMS range's centre: Date has whole
+seconds, so a range sits where the probe's own phase falls inside the
+second, and that phase slips with the timers (about 30 ms an hour on the
+pilot, wrapping every ~33 h). The range only brackets the error; it is
+narrow just around a wrap. Rollback is `deploy-enclave.sh rollback` to the 0.6.0 EIF while the
 transition policy is on: 0.6.0 has no clock gate and runs on whatever time
 the enclave boots with, as before.
 
