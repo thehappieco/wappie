@@ -1743,7 +1743,7 @@ console alike; a key keeps Manage.
 ## The contract's settings part (2026-11-08)
 
 Step 12a puts Wappie's `numbers` section in the platform's console through
-the contract's settings part (kit v0.10.1, now v0.11.0; the platform's spec, section 14).
+the contract's settings part (kit v0.10.1, now v0.12.0; the platform's spec, section 14).
 It ships in two releases: "read" sends the sections with `accepts: []`,
 follows the command feed and answers every command `kind_not_accepted`;
 "commands" runs the kinds. One migration, 0052, holds the schema of both.
