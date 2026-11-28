@@ -158,8 +158,8 @@ var (
 	// operator says the platform was told: from its first acknowledgement
 	// the platform's doctor alerts on documents left unacknowledged.
 	ErrEntTellPlatform = errors.New("store: tell the platform first")
-	// ErrEntEnforceHeld refuses the release of an enforce_in_e0 brake
-	// while the workspace's document says enforce.
+	// ErrEntEnforceHeld refuses the release of a brake while the
+	// workspace's document says enforce.
 	ErrEntEnforceHeld = errors.New("store: the workspace's document says enforce; this release keeps it held at observe")
 	// ErrEntNoBrake is a release of a workspace that is not held.
 	ErrEntNoBrake = errors.New("store: the workspace is not held")
@@ -315,7 +315,8 @@ type EntItemResult struct {
 	// Prev is the document it replaced, raw, nil when none was held.
 	Prev []byte
 	// Braked: the workspace is held at observe (any brake). NewBrake: this
-	// document's enforce set the brake now.
+	// document's enforce set the enforce_in_e0 brake now (a new one, or an
+	// operator's it found in place).
 	Braked, NewBrake bool
 	Doc              *EntDoc
 	Refused          *EntRefusal
@@ -559,8 +560,12 @@ func applyEntDocTx(ctx context.Context, tx pgx.Tx, d EntDoc, seq int64, signedAt
 		// E0 has no enforcing path: the workspace is held at observe
 		// before anything reads the document (the spec's 15.5, "A local
 		// brake"; Q54, Q67, P7). A trim it carries is stored, never run.
-		tag, err := tx.Exec(ctx, `INSERT INTO contract_ent_brakes (workspace_id, platform_told, by_kind)
-			VALUES ($1, false, 'enforce_in_e0') ON CONFLICT (workspace_id) DO NOTHING`, d.Workspace)
+		// An operator's hold found in place becomes E0's, not yet told:
+		// the enforce document is an incident of its own to report.
+		tag, err := tx.Exec(ctx, `INSERT INTO contract_ent_brakes AS b (workspace_id, platform_told, by_kind)
+			VALUES ($1, false, 'enforce_in_e0')
+			ON CONFLICT (workspace_id) DO UPDATE SET by_kind = 'enforce_in_e0', platform_told = false
+			WHERE b.by_kind <> 'enforce_in_e0'`, d.Workspace)
 		if err != nil {
 			return r, err
 		}
@@ -810,11 +815,20 @@ func (c *Contract) EntFeedFailed(ctx context.Context, class string) error {
 }
 
 // EntRecovered makes every GET that backs off due now, its tries
-// forgotten, once the feed answers again after a failure.
+// forgotten, once the feed answers again after a failure. It locks the
+// rows in id order, as every other writer of several rows does.
 func (c *Contract) EntRecovered(ctx context.Context) (int64, error) {
-	tag, err := c.pool.Exec(ctx, `UPDATE contract_ent_docs SET get_due_at = clock_timestamp(), get_tries = 0
-		WHERE get_due_at > clock_timestamp() AND get_tries > 0 AND not_found_since IS NULL`)
-	return tag.RowsAffected(), err
+	var n int64
+	err := retryDeadlock(ctx, func() error {
+		tag, err := c.pool.Exec(ctx, `UPDATE contract_ent_docs d SET get_due_at = clock_timestamp(), get_tries = 0
+			FROM (SELECT workspace_id FROM contract_ent_docs
+			      WHERE get_due_at > clock_timestamp() AND get_tries > 0 AND not_found_since IS NULL
+			      ORDER BY workspace_id FOR UPDATE) l
+			WHERE d.workspace_id = l.workspace_id AND d.get_due_at > clock_timestamp() AND d.get_tries > 0 AND d.not_found_since IS NULL`)
+		n = tag.RowsAffected()
+		return err
+	})
+	return n, err
 }
 
 // restartEntitlementsTx is the entitlements side of a reset (the spec's
@@ -876,8 +890,8 @@ func entNamedTx(ctx context.Context, tx pgx.Tx, ids []uuid.UUID) error {
 
 // EntBrake holds ws at observe (hold) or releases it, for the operator: a
 // hold made by E0 on an enforce document keeps its kind, and only says the
-// platform was told; a release of such a hold is refused while the
-// workspace's document says enforce (ErrEntEnforceHeld).
+// platform was told; a release of any hold, an operator's included, is
+// refused while the workspace's document says enforce (ErrEntEnforceHeld).
 func (c *Contract) EntBrake(ctx context.Context, ws uuid.UUID, hold, platformTold bool) (changed bool, err error) {
 	err = pg.InTx(ctx, c.pool, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, `SELECT 1 FROM contract_ent_state FOR UPDATE`); err != nil {
@@ -891,18 +905,18 @@ func (c *Contract) EntBrake(ctx context.Context, ws uuid.UUID, hold, platformTol
 			changed = tag.RowsAffected() == 1
 			return err
 		}
-		var kind string
 		var enforce bool
-		err := tx.QueryRow(ctx, `SELECT b.by_kind, coalesce(d.mode = 'enforce', false) FROM contract_ent_brakes b
+		err := tx.QueryRow(ctx, `SELECT coalesce(d.mode = 'enforce', false) FROM contract_ent_brakes b
 			LEFT JOIN contract_ent_docs d ON d.workspace_id = b.workspace_id WHERE b.workspace_id = $1 FOR UPDATE OF b`, ws).
-			Scan(&kind, &enforce)
+			Scan(&enforce)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrEntNoBrake
 		}
 		if err != nil {
 			return err
 		}
-		if kind == BrakeEnforceInE0 && enforce {
+		if enforce {
+			// The document is what keeps it held, whatever the kind.
 			return ErrEntEnforceHeld
 		}
 		_, err = tx.Exec(ctx, `DELETE FROM contract_ent_brakes WHERE workspace_id = $1`, ws)

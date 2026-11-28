@@ -622,3 +622,106 @@ func (w *snapshotWorld) settledDoc(t *testing.T, ws uuid.UUID) {
 		return ok && held && r.Version != nil && *r.Version == d.Version
 	})
 }
+
+// entWork is an entitlements part of w's leader that does not run: a test
+// calls its passes directly.
+func (w *snapshotWorld) entWork(logs *membershiptest.Logs) *entitlementsWork {
+	l := w.leader(w.members, logs, lockKeyOf(w.world))
+	l.Entitlements = entTimes()
+	return newEntitlementsWork(l, nil, nil)
+}
+
+// While the account side holds no generation (after a signed gone), no GET
+// goes: its answer could only ask for a reset.
+func TestEntitlementsGETWaitsWithoutGeneration(t *testing.T) {
+	w := newSnapshotWorld(t)
+	ctx := context.Background()
+	ew := w.entWork(&membershiptest.Logs{})
+	gen := w.state(t).Generation
+	if gen == nil {
+		t.Fatal("no generation")
+	}
+	if ok, err := w.contract.RestartFromEntitlements(ctx, *gen, nil); err != nil || !ok {
+		t.Fatalf("the reset to none: %v %v", ok, err)
+	}
+	due, err := w.contract.EntGetsDue(ctx, 10)
+	if err != nil || len(due) == 0 {
+		t.Fatalf("no GET due after the reset: %v", err)
+	}
+	n := w.fake.Count(contracttest.CallEntitlementsDoc)
+	loop, stop := context.WithTimeout(ctx, time.Second)
+	defer stop()
+	ew.getLoop(loop)
+	if got := w.fake.Count(contracttest.CallEntitlementsDoc) - n; got != 0 {
+		t.Fatalf("%d GETs with no generation", got)
+	}
+}
+
+// A GET's answer of the generation it went under, which a reset replaced
+// while it was in flight, is dropped: the reset is never taken back.
+func TestEntitlementsLateGETAnswerKeepsReset(t *testing.T) {
+	w := newSnapshotWorld(t)
+	ctx := context.Background()
+	logs := &membershiptest.Logs{}
+	ew := w.entWork(logs)
+	if _, err := w.fake.SetEntitlements(App, w.team.String(), teamDoc(kc.ModeObserve)); err != nil {
+		t.Fatal(err)
+	}
+	gen := *w.state(t).Generation
+	other := uuid.New()
+	if ok, err := w.contract.RestartFromEntitlements(ctx, gen, &other); err != nil || !ok {
+		t.Fatalf("the reset meanwhile: %v %v", ok, err)
+	}
+	if !ew.get(ctx, store.EntGetDue{Workspace: w.team}, gen) {
+		t.Fatal("ctx ended")
+	}
+	if now := w.state(t).Generation; now == nil || *now != other {
+		t.Fatalf("the generation after a late answer: %v, want %s", now, other)
+	}
+	if len(logs.Lines("the platform's generation changed")) != 0 {
+		t.Fatalf("a reset from a late answer:\n%s", logs.String())
+	}
+	if r, ok := w.entRow(t, w.team); !ok || r.GetDueAt == nil {
+		t.Fatalf("the GET not left due: %+v", r)
+	}
+}
+
+// A GET that answers enforce holds its workspace at observe, as a feed
+// document does, and the would-stop and cap lines carry the marker.
+func TestEntitlementsGETEnforceBraked(t *testing.T) {
+	w := newSnapshotWorld(t)
+	ctx := context.Background()
+	logs := &membershiptest.Logs{}
+	ew := w.entWork(logs)
+	d := teamDoc(kc.ModeEnforce, kc.SwitchNewLinks)
+	d.Storage = kc.EntitlementsStorage{QuotaBytes: 900001, AllowanceBytes: 900001, CapBytes: 945001}
+	if _, err := w.fake.SetEntitlements(App, w.team.String(), d); err != nil {
+		t.Fatal(err)
+	}
+	if !ew.get(ctx, store.EntGetDue{Workspace: w.team}, *w.state(t).Generation) {
+		t.Fatal("ctx ended")
+	}
+	r, ok := w.entRow(t, w.team)
+	if !ok || r.BrakeKind != store.BrakeEnforceInE0 || r.BrakeTold || r.Mode != kc.ModeEnforce || r.AppliedAt == nil {
+		t.Fatalf("the GET's enforce document: %+v", r)
+	}
+	for _, want := range [][]string{
+		{"level=ERROR", "contract: entitlements enforce document held (E0)", "workspace=" + w.team.String()},
+		{"contract: entitlements applied", "seq=get", "workspace=" + w.team.String(), "mode=enforce", "held_at_observe=true"},
+		{"contract: entitlements would stop", "switch=new_links", "held_at_observe=true"},
+	} {
+		if len(logs.Lines(want...)) == 0 {
+			t.Fatalf("no line %q:\n%s", want, logs.String())
+		}
+	}
+	if st := w.state(t); st.ErrorClass != store.ContractErrorEntEnforceInE0 {
+		t.Fatalf("the ERROR recorded: %q", st.ErrorClass)
+	}
+	if _, err := w.pool.Exec(ctx, `UPDATE tenants SET storage_archive_bytes = 945002, storage_object_bytes = 0 WHERE id = $1`, w.team); err != nil {
+		t.Fatal(err)
+	}
+	ew.checkCaps(ctx)
+	if len(logs.Lines("contract: entitlements cap would stop", "workspace="+w.team.String(), "held_at_observe=true")) != 1 {
+		t.Fatalf("the held workspace's cap line:\n%s", logs.String())
+	}
+}

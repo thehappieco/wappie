@@ -140,7 +140,7 @@ func (u *usageWork) run(ctx context.Context) {
 	var checked time.Time
 	for ctx.Err() == nil {
 		for _, ws := range u.take() {
-			if err := u.w.l.Members.Contract.UsageMark(ctx, ws, store.UsageEvent, time.Now()); err != nil && ctx.Err() == nil {
+			if err := u.w.l.Members.Contract.UsageMark(ctx, ws, store.UsageEvent, time.Time{}); err != nil && ctx.Err() == nil {
 				u.w.l.log().Warn("contract: could not make a usage report due", "error", err)
 			}
 		}
@@ -157,7 +157,7 @@ func (u *usageWork) run(ctx context.Context) {
 				return
 			}
 			for _, ws := range u.take() {
-				if err := u.w.l.Members.Contract.UsageMark(ctx, ws, store.UsageEvent, time.Now()); err != nil && ctx.Err() == nil {
+				if err := u.w.l.Members.Contract.UsageMark(ctx, ws, store.UsageEvent, time.Time{}); err != nil && ctx.Err() == nil {
 					u.w.l.log().Warn("contract: could not make a usage report due", "error", err)
 				}
 			}
@@ -169,9 +169,12 @@ func (u *usageWork) run(ctx context.Context) {
 }
 
 // check makes due each recorded workspace one of whose triggers holds,
-// once a minute: a crossing, the 1 % move, a usage_after, an event a
-// notice was lost for, and the floor; and stops or resumes a workspace on
-// its document's not_found.
+// once a minute: a crossing, the 1 % move (of its document's quota, or of
+// usagePercentFloor while it holds none), a usage_after, an event a notice
+// was lost for, and the floor; and stops or resumes a workspace on its
+// document's not_found. A mark "now" is on the database's clock (a zero
+// time), the one measured_at is read on; one made while a report backs off
+// waits its backoff (UsageMark).
 func (u *usageWork) check(ctx context.Context) {
 	c, log := u.w.l.Members.Contract, u.w.l.log()
 	rows, err := c.UsageRows(ctx)
@@ -222,30 +225,34 @@ func (u *usageWork) check(ctx context.Context) {
 		}
 		d := docs[r.Workspace]
 		if d != nil && d.Requests.UsageAfter != nil && (r.LastMeasuredAt == nil || d.Requests.UsageAfter.After(*r.LastMeasuredAt)) {
-			mark(r.Workspace, store.UsageAfter, now)
+			mark(r.Workspace, store.UsageAfter, time.Time{})
 		}
 		if r.LastMeasuredAt == nil {
 			continue
 		}
-		if d != nil && r.LastTotal != nil {
+		if r.LastTotal != nil {
 			if total, ok, err := c.EntTotal(ctx, r.Workspace); err == nil && ok {
 				last := *r.LastTotal
-				for _, line := range []int64{d.Storage.AllowanceBytes, d.Storage.CapBytes} {
-					if (last > line) != (total > line) {
-						mark(r.Workspace, store.UsageCrossing, now)
+				var quota int64
+				if d != nil {
+					quota = d.Storage.QuotaBytes
+					for _, line := range []int64{d.Storage.AllowanceBytes, d.Storage.CapBytes} {
+						if (last > line) != (total > line) {
+							mark(r.Workspace, store.UsageCrossing, time.Time{})
+						}
 					}
 				}
-				if moved := abs64(total - last); moved >= max(d.Storage.QuotaBytes/100, usagePercentFloor) {
-					at := now
-					if r.PctAfter != nil && r.PctAfter.After(at) {
+				if moved := abs64(total - last); moved >= max(quota/100, usagePercentFloor) {
+					var at time.Time
+					if r.PctAfter != nil && r.PctAfter.After(now) {
 						at = *r.PctAfter
 					}
 					mark(r.Workspace, store.UsagePercent, at)
 				}
 			}
 		}
-		if found, err := c.UsageEventsSince(ctx, r.Workspace, *r.LastMeasuredAt); err == nil && found {
-			mark(r.Workspace, store.UsageEvent, now)
+		if found, err := c.UsageEventsSince(ctx, r.Workspace, *r.LastMeasuredAt, r.LastEvents); err == nil && found {
+			mark(r.Workspace, store.UsageEvent, time.Time{})
 		}
 		mark(r.Workspace, store.UsageFloor, r.LastMeasuredAt.Add(or(u.cfg.Floor, usageFloor)))
 	}
@@ -329,6 +336,21 @@ func (u *usageWork) send(ctx context.Context, r store.UsageRow) bool {
 		failed("invalid", or(u.cfg.InvalidRetry, usageInvalidRetry))
 		return true
 	}
+	body, err := json.Marshal(report)
+	if err != nil {
+		failed("store", backoff)
+		return true
+	}
+	// Kept before the PUT goes: an answer lost after the platform took the
+	// report leaves it kept all the same (the spec's 15.8).
+	if err := c.UsageSending(ctx, measure, body); err != nil {
+		if ctx.Err() != nil {
+			return false
+		}
+		log.Warn("contract: usage not measured", "workspace", r.Workspace, "class", "store")
+		failed("store", backoff)
+		return true
+	}
 	if err := m.paced(ctx); err != nil {
 		return false
 	}
@@ -360,16 +382,17 @@ func (u *usageWork) send(ctx context.Context, r store.UsageRow) bool {
 		failed(feedClass(err), backoff)
 		return true
 	}
-	body, err := json.Marshal(report)
-	if err != nil {
-		failed("store", backoff)
-		return true
-	}
 	late := ""
-	if r.DueAt != nil {
+	// Lateness counts from when the trigger first made the report due,
+	// never from a backoff's due_at.
+	first := r.DueFirstAt
+	if first == nil {
+		first = r.DueAt
+	}
+	if first != nil {
 		deadline := map[string]time.Duration{store.UsageCrossing: or(u.cfg.CrossingDeadline, usageCrossingDeadline),
 			store.UsageAfter: or(u.cfg.AfterDeadline, usageAfterDeadline)}[r.DueTrigger]
-		if deadline > 0 && time.Since(*r.DueAt) > deadline {
+		if deadline > 0 && time.Since(*first) > deadline {
 			late = r.DueTrigger
 			log.Warn("contract: usage report late", "workspace", r.Workspace, "trigger", late)
 		}
@@ -378,9 +401,10 @@ func (u *usageWork) send(ctx context.Context, r store.UsageRow) bool {
 		log.Warn("contract: could not record a usage report sent", "error", err)
 	}
 	log.Info("contract: usage sent", "workspace", r.Workspace, "usage_seq", report.UsageSeq, "rule_version", report.RuleVersion, "kept", kept)
-	// A closed workspace's document, or one gone stale, is asked again
-	// with each report (the spec's 15.8).
-	if row, ok, err := c.EntRow(ctx, r.Workspace); err == nil && ok && row.State == kc.WorkspaceClosed {
+	// A closed workspace's document, or that of one no account document
+	// names any more, is asked again with each report, until a signed
+	// not_found stops its reports (the spec's 15.8).
+	if ask, err := c.UsageAsksGet(ctx, r.Workspace); err == nil && ask {
 		if err := c.EntGetDueNow(ctx, r.Workspace); err == nil {
 			kick(u.w.gets)
 		}

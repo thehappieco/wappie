@@ -43,11 +43,14 @@
 --                       locks. No foreign key, so the measurement's lock
 --                       never reaches contract_workspaces.
 --   contract_usage      per recorded workspace, the usage sender's cadence:
---                       due time, the 1 % trigger's coalescing, backoff, the
---                       last report's seq, times, kept and total (never
---                       logged), and a stop after a GET's not_found.
---   contract_usage_reports  each report sent, as sent, kept at least 8
---                       hours after its measured_at (the spec's 15.8).
+--                       due time, its trigger and when that trigger first
+--                       came, the 1 % trigger's coalescing, backoff, the
+--                       last report's seq, times, kept, total (never
+--                       logged) and the recent events its snapshot saw, and
+--                       a stop after a GET's not_found.
+--   contract_usage_reports  each report sent, as sent, written before its
+--                       PUT, kept at least 8 hours after its measured_at
+--                       (the spec's 15.8).
 --   contract_ent_mode   AFTER UPDATE OF mode, usage on contract_ent_state:
 --                       'entitlements' on the mode channel
 --                       (wappie_contract_mode), so the leader starts or
@@ -253,6 +256,9 @@ CREATE TABLE contract_usage (
     -- What made it due, the earliest deadline's: crossing, usage_after,
     -- event, percent or floor.
     due_trigger      text        CHECK (due_trigger IN ('crossing', 'usage_after', 'event', 'percent', 'floor')),
+    -- When that trigger first made it due: a report's lateness counts from
+    -- it, never from a backoff's due_at.
+    due_first_at     timestamptz,
     -- The 1 % trigger's coalescing: not before 15 minutes after the last
     -- report sent.
     pct_after        timestamptz,
@@ -265,6 +271,10 @@ CREATE TABLE contract_usage (
     last_kept        boolean,
     -- Never logged.
     last_total_bytes bigint      CHECK (last_total_bytes >= 0),
+    -- The deletion, recovery, purge and move-out events the last report's
+    -- snapshot saw among those written in the slack before its
+    -- measured_at: an event outside them is one it missed.
+    last_event_ids   uuid[]      NOT NULL DEFAULT '{}',
     -- The last report sent after its trigger's deadline, and which.
     late_at          timestamptz,
     late_trigger     text,
@@ -278,6 +288,8 @@ CREATE TABLE contract_usage_reports (
     usage_seq    bigint      NOT NULL CHECK (usage_seq >= 1),
     measured_at  timestamptz NOT NULL,
     body         bytea       NOT NULL,
+    -- Written before the PUT goes, so a report whose answer was lost is
+    -- kept all the same; set once an answer delivered it.
     sent_at      timestamptz,
     PRIMARY KEY (workspace_id, usage_seq)
 );

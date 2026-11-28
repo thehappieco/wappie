@@ -515,6 +515,21 @@ func TestEntEnforceBrakeStore(t *testing.T) {
 	if _, err := w.c.EntBrake(ctx, op, false, false); !errors.Is(err, store.ErrEntNoBrake) {
 		t.Fatalf("a release of nothing: %v", err)
 	}
+	// An operator's hold, told, that an enforce document finds in place
+	// becomes E0's, not yet told, and is not released while the document
+	// says enforce.
+	if changed, err := w.c.EntBrake(ctx, op, true, true); err != nil || !changed {
+		t.Fatalf("an operator's hold again: %v %v", changed, err)
+	}
+	if res := w.page(t, 4, false, docItem(t, entKitDoc(op, w.gen, 4, kc.ModeEnforce))); !res.Items[0].NewBrake || !res.Items[0].Braked {
+		t.Fatalf("an enforce document under an operator's hold: %+v", res.Items[0])
+	}
+	if r := w.row(t, op); r.BrakeKind != store.BrakeEnforceInE0 || r.BrakeTold || r.Mode != kc.ModeEnforce {
+		t.Fatalf("the operator's hold under an enforce document: %+v", r)
+	}
+	if _, err := w.c.EntBrake(ctx, op, false, false); !errors.Is(err, store.ErrEntEnforceHeld) {
+		t.Fatalf("releasing an operator's hold of an enforce document: %v", err)
+	}
 }
 
 // The modes: observe needs the contract on, enforce is refused, and off

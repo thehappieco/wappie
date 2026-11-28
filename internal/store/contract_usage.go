@@ -36,6 +36,16 @@ const UsageKeep = 8 * time.Hour
 // and the report stays due.
 const usageStatementTimeout = "300s"
 
+// usageEventSlack is how far before a measurement's measured_at its
+// snapshot records the events it saw (UsageMeasure.Events), longer than
+// any writer's transaction: an event written before measured_at but
+// committed after the snapshot is one it missed, and the minute's look at
+// item_events (UsageEventsSince) finds it.
+const usageEventSlack = 10 * time.Minute
+
+// usageEventTypes are the events that make a report due.
+const usageEventTypes = `('deleted', 'recovered', 'purged', 'moved_out')`
+
 // The classes of the usage sender's ERRORs and findings.
 const (
 	// ContractErrorUsageMismatch: a measurement whose items and shared
@@ -88,6 +98,10 @@ type UsageMeasure struct {
 	// Unattributed counts the record rows no number owns (expected none),
 	// folded into Shared.
 	Unattributed int
+	// Events are the deletion, recovery, purge and move-out events the
+	// snapshot saw among those written in usageEventSlack before
+	// MeasuredAt.
+	Events []uuid.UUID
 }
 
 // usageSeqTaken, nil but in a test, runs in MeasureUsage's transaction
@@ -200,6 +214,11 @@ func measureTx(ctx context.Context, tx pgx.Tx, out *UsageMeasure) error {
 		return err
 	}
 	out.Local, out.Total = true, archive+object
+	if err := tx.QueryRow(ctx, `SELECT coalesce(array_agg(event_id ORDER BY event_id), '{}') FROM item_events
+		WHERE tenant_id = $1 AND created_at > $2::timestamptz - $3::interval AND type IN `+usageEventTypes,
+		out.Workspace, out.MeasuredAt, usageEventSlack).Scan(&out.Events); err != nil {
+		return err
+	}
 	return withQuarantine(ctx, tx, func() error {
 		type device struct {
 			state   string
@@ -285,9 +304,12 @@ func ptrOr(id *uuid.UUID) uuid.UUID {
 // UsageRow is one recorded workspace's cadence, as the sender and the
 // status read it.
 type UsageRow struct {
-	Workspace      uuid.UUID
-	DueAt          *time.Time
-	DueTrigger     string
+	Workspace  uuid.UUID
+	DueAt      *time.Time
+	DueTrigger string
+	// DueFirstAt is when DueTrigger first made the report due: a report's
+	// lateness counts from it, not from a backoff's DueAt.
+	DueFirstAt     *time.Time
 	PctAfter       *time.Time
 	Tries          int
 	Error          string
@@ -297,21 +319,25 @@ type UsageRow struct {
 	LastSentAt     *time.Time
 	LastKept       *bool
 	// LastTotal is never logged.
-	LastTotal     *int64
+	LastTotal *int64
+	// LastEvents are the recent events the last report's snapshot saw
+	// (UsageMeasure.Events).
+	LastEvents    []uuid.UUID
 	LateAt        *time.Time
 	LateTrigger   string
 	StoppedSince  *time.Time
 	NotFoundSince *time.Time
 }
 
-const usageRowColumns = `u.workspace_id, u.due_at, coalesce(u.due_trigger, ''), u.pct_after, u.tries, coalesce(u.error, ''), u.error_at,
-	u.last_seq, u.last_measured_at, u.last_sent_at, u.last_kept, u.last_total_bytes, u.late_at, coalesce(u.late_trigger, ''),
-	u.stopped_since, d.not_found_since`
+const usageRowColumns = `u.workspace_id, u.due_at, coalesce(u.due_trigger, ''), u.due_first_at, u.pct_after, u.tries, coalesce(u.error, ''),
+	u.error_at, u.last_seq, u.last_measured_at, u.last_sent_at, u.last_kept, u.last_total_bytes, u.last_event_ids, u.late_at,
+	coalesce(u.late_trigger, ''), u.stopped_since, d.not_found_since`
 
 func scanUsageRow(row pgx.CollectableRow) (UsageRow, error) {
 	var r UsageRow
-	err := row.Scan(&r.Workspace, &r.DueAt, &r.DueTrigger, &r.PctAfter, &r.Tries, &r.Error, &r.ErrorAt, &r.LastSeq,
-		&r.LastMeasuredAt, &r.LastSentAt, &r.LastKept, &r.LastTotal, &r.LateAt, &r.LateTrigger, &r.StoppedSince, &r.NotFoundSince)
+	err := row.Scan(&r.Workspace, &r.DueAt, &r.DueTrigger, &r.DueFirstAt, &r.PctAfter, &r.Tries, &r.Error, &r.ErrorAt, &r.LastSeq,
+		&r.LastMeasuredAt, &r.LastSentAt, &r.LastKept, &r.LastTotal, &r.LastEvents, &r.LateAt, &r.LateTrigger, &r.StoppedSince,
+		&r.NotFoundSince)
 	return r, err
 }
 
@@ -319,8 +345,8 @@ func scanUsageRow(row pgx.CollectableRow) (UsageRow, error) {
 // recorded workspace that has none, in a short transaction of its own, and
 // reads every row in id order.
 func (c *Contract) UsageRows(ctx context.Context) ([]UsageRow, error) {
-	if _, err := c.pool.Exec(ctx, `INSERT INTO contract_usage (workspace_id, due_at, due_trigger)
-		SELECT workspace_id, clock_timestamp(), 'floor' FROM contract_workspaces ORDER BY workspace_id
+	if _, err := c.pool.Exec(ctx, `INSERT INTO contract_usage (workspace_id, due_at, due_trigger, due_first_at)
+		SELECT workspace_id, clock_timestamp(), 'floor', clock_timestamp() FROM contract_workspaces ORDER BY workspace_id
 		ON CONFLICT (workspace_id) DO NOTHING`); err != nil {
 		return nil, err
 	}
@@ -345,22 +371,50 @@ func (c *Contract) UsageDue(ctx context.Context, limit int) ([]UsageRow, error) 
 	return pgx.CollectRows(rows, scanUsageRow)
 }
 
-// UsageMark makes ws's report due at at for trigger, unless it is due
-// sooner already; a trigger of an earlier deadline replaces a later one's
-// (a report due for the floor is upgraded, never queued twice).
+// UsageMark makes ws's report due at at (the database's clock now, when
+// at is zero) for trigger, unless it is due sooner already; a trigger of
+// an earlier deadline replaces a later one's (a report due for the floor
+// is upgraded, never queued twice), and DueFirstAt keeps when the trigger
+// first came. A report backing off after a failure (UsageFailed) keeps its
+// due_at: a trigger that holds until a report is sent never brings the
+// retry forward.
 func (c *Contract) UsageMark(ctx context.Context, ws uuid.UUID, trigger string, at time.Time) error {
+	var when *time.Time
+	if !at.IsZero() {
+		when = &at
+	}
+	upgrade := `due_at IS NULL OR ` + fmt.Sprintf(usageTriggerSQL, "$2::text") + ` < ` + fmt.Sprintf(usageTriggerSQL, "due_trigger")
 	_, err := c.pool.Exec(ctx, `UPDATE contract_usage SET
-		due_trigger = CASE WHEN due_at IS NULL OR `+fmt.Sprintf(usageTriggerSQL, "$2::text")+` < `+fmt.Sprintf(usageTriggerSQL, "due_trigger")+`
-		                   THEN $2 ELSE due_trigger END,
-		due_at = least(coalesce(due_at, $3), $3)
-		WHERE workspace_id = $1`, ws, trigger, at)
+		due_trigger = CASE WHEN `+upgrade+` THEN $2 ELSE due_trigger END,
+		due_first_at = CASE WHEN `+upgrade+` THEN t.at
+		                    WHEN due_trigger = $2 THEN least(coalesce(due_first_at, t.at), t.at) ELSE due_first_at END,
+		due_at = CASE WHEN error IS NOT NULL AND due_at > t.clock THEN due_at ELSE least(coalesce(due_at, t.at), t.at) END
+		FROM (SELECT coalesce($3::timestamptz, clock_timestamp()) AS at, clock_timestamp() AS clock) t
+		WHERE workspace_id = $1`, ws, trigger, when)
 	return err
 }
 
+// UsageSending keeps a report about to be sent, before its PUT goes, so a
+// report whose answer is lost after the platform took it is kept all the
+// same (the spec's 15.8: an order's basis may name it), and prunes every
+// report kept past UsageKeep.
+func (c *Contract) UsageSending(ctx context.Context, m UsageMeasure, body []byte) error {
+	return pg.InTx(ctx, c.pool, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `INSERT INTO contract_usage_reports (workspace_id, usage_seq, measured_at, body)
+			VALUES ($1, $2, $3, $4) ON CONFLICT (workspace_id, usage_seq) DO NOTHING`, m.Workspace, m.Seq, m.MeasuredAt, body); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, `DELETE FROM contract_usage_reports WHERE measured_at < clock_timestamp() - $1::interval`, UsageKeep)
+		return err
+	})
+}
+
 // UsageSent records a report sent and answered (kept or not, both count
-// as delivered), keeps its body, makes the next due on the floor (6 hours
-// after measured_at), records a report sent past its trigger's deadline,
-// and prunes every report kept past UsageKeep.
+// as delivered): its kept body's sent_at (the body too, should
+// UsageSending not have kept it), the events its snapshot saw, the next
+// due on the floor (6 hours after measured_at) unless a trigger after
+// measured_at made it due sooner, a report sent past its trigger's
+// deadline; and prunes every report kept past UsageKeep.
 func (c *Contract) UsageSent(ctx context.Context, m UsageMeasure, body []byte, kept bool, floor, pct time.Duration, late string) error {
 	return pg.InTx(ctx, c.pool, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, `INSERT INTO contract_usage_reports (workspace_id, usage_seq, measured_at, body, sent_at)
@@ -372,14 +426,19 @@ func (c *Contract) UsageSent(ctx context.Context, m UsageMeasure, body []byte, k
 		if late != "" {
 			lateTrigger = &late
 		}
+		events := m.Events
+		if events == nil {
+			events = []uuid.UUID{}
+		}
 		if _, err := tx.Exec(ctx, `UPDATE contract_usage SET last_seq = $2, last_measured_at = $3, last_sent_at = clock_timestamp(),
 			last_kept = $4, last_total_bytes = $5, tries = 0, error = NULL, error_at = NULL,
-			pct_after = clock_timestamp() + $7::interval,
+			pct_after = clock_timestamp() + $7::interval, last_event_ids = $9,
 			due_trigger = CASE WHEN due_at > $3 THEN due_trigger ELSE 'floor' END,
+			due_first_at = CASE WHEN due_at > $3 THEN coalesce(due_first_at, due_at) ELSE $3 + $6::interval END,
 			due_at = CASE WHEN due_at > $3 THEN least(due_at, $3 + $6::interval) ELSE $3 + $6::interval END,
 			late_at = CASE WHEN $8::text IS NULL THEN late_at ELSE clock_timestamp() END,
 			late_trigger = coalesce($8, late_trigger), stopped_since = NULL
-			WHERE workspace_id = $1`, m.Workspace, m.Seq, m.MeasuredAt, kept, m.Total, floor, pct, lateTrigger); err != nil {
+			WHERE workspace_id = $1`, m.Workspace, m.Seq, m.MeasuredAt, kept, m.Total, floor, pct, lateTrigger, events); err != nil {
 			return err
 		}
 		_, err := tx.Exec(ctx, `DELETE FROM contract_usage_reports WHERE measured_at < clock_timestamp() - $1::interval`, UsageKeep)
@@ -399,32 +458,53 @@ func (c *Contract) UsageFailed(ctx context.Context, ws uuid.UUID, class string, 
 // not_found. No report is due until a document of it reaches the feed
 // (UsageResumed).
 func (c *Contract) UsageStopped(ctx context.Context, ws uuid.UUID) error {
-	_, err := c.pool.Exec(ctx, `UPDATE contract_usage SET stopped_since = coalesce(stopped_since, clock_timestamp()), due_at = NULL
-		WHERE workspace_id = $1`, ws)
+	_, err := c.pool.Exec(ctx, `UPDATE contract_usage SET stopped_since = coalesce(stopped_since, clock_timestamp()), due_at = NULL,
+		due_first_at = NULL WHERE workspace_id = $1`, ws)
 	return err
 }
 
 // UsageResumed makes a stopped workspace's report due now, once a document
 // of it reached the feed again.
 func (c *Contract) UsageResumed(ctx context.Context, ws uuid.UUID) error {
-	_, err := c.pool.Exec(ctx, `UPDATE contract_usage SET stopped_since = NULL, due_at = clock_timestamp(), due_trigger = 'event'
-		WHERE workspace_id = $1 AND stopped_since IS NOT NULL`, ws)
+	_, err := c.pool.Exec(ctx, `UPDATE contract_usage SET stopped_since = NULL, due_at = clock_timestamp(), due_trigger = 'event',
+		due_first_at = clock_timestamp() WHERE workspace_id = $1 AND stopped_since IS NOT NULL`, ws)
 	return err
 }
 
 // UsageEventsSince reports whether ws has a deletion, recovery, purge or
-// move out written after since: a notice lost while no leader ran.
-func (c *Contract) UsageEventsSince(ctx context.Context, ws uuid.UUID, since time.Time) (bool, error) {
+// move out the last report did not see: one written after its measured_at
+// since, or in the slack before it but not among seen (its snapshot's
+// events; a writer that committed after the snapshot). A notice lost while
+// no leader ran.
+func (c *Contract) UsageEventsSince(ctx context.Context, ws uuid.UUID, since time.Time, seen []uuid.UUID) (bool, error) {
+	if seen == nil {
+		seen = []uuid.UUID{}
+	}
 	var found bool
 	err := pg.InTenantTx(ctx, c.pool, ws.String(), func(tx pgx.Tx) error {
-		return tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM item_events WHERE tenant_id = $1 AND created_at > $2
-			AND type IN ('deleted', 'recovered', 'purged', 'moved_out'))`, ws, since).Scan(&found)
+		return tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM item_events WHERE tenant_id = $1
+			AND created_at > $2::timestamptz - $4::interval AND type IN `+usageEventTypes+` AND NOT (event_id = ANY ($3::uuid[])))`,
+			ws, since, seen, usageEventSlack).Scan(&found)
 	})
 	return found, err
 }
 
+// UsageAsksGet reports whether a report of ws sends ws's GET too (the
+// spec's 15.8): its document says closed, or no account document stored
+// names it any more (contract_workspaces keeps every workspace ever
+// named).
+func (c *Contract) UsageAsksGet(ctx context.Context, ws uuid.UUID) (bool, error) {
+	var ask bool
+	err := c.pool.QueryRow(ctx, `SELECT coalesce((SELECT state = 'closed' FROM contract_ent_docs WHERE workspace_id = $1), false)
+		OR NOT EXISTS (SELECT 1 FROM contract_accounts a,
+			jsonb_array_elements(CASE WHEN jsonb_typeof(a.doc->'workspaces') = 'array' THEN a.doc->'workspaces' ELSE '[]'::jsonb END) w
+			WHERE a.doc IS NOT NULL AND w->>'id' = $1::text)`, ws).Scan(&ask)
+	return ask, err
+}
+
 // EntGetDueNow makes ws's GET computed now due, as a report of a closed
-// workspace, or of one no account document names, asks (the spec's 15.8).
+// workspace, or of one no account document names (UsageAsksGet), asks
+// (the spec's 15.8).
 func (c *Contract) EntGetDueNow(ctx context.Context, ws uuid.UUID) error {
 	_, err := c.pool.Exec(ctx, `INSERT INTO contract_ent_docs AS d (workspace_id, get_due_at) VALUES ($1, clock_timestamp())
 		ON CONFLICT (workspace_id) DO UPDATE SET get_due_at = least(coalesce(d.get_due_at, clock_timestamp()), clock_timestamp())
@@ -438,18 +518,21 @@ type UsageReport struct {
 	Seq        int64
 	MeasuredAt time.Time
 	Body       []byte
+	// SentAt is when an answer delivered it; nil for one whose PUT got
+	// none (or a refusal).
+	SentAt *time.Time
 }
 
 // UsageReports lists the reports kept of ws, the latest first.
 func (c *Contract) UsageReports(ctx context.Context, ws uuid.UUID) ([]UsageReport, error) {
-	rows, err := c.pool.Query(ctx, `SELECT workspace_id, usage_seq, measured_at, body FROM contract_usage_reports
+	rows, err := c.pool.Query(ctx, `SELECT workspace_id, usage_seq, measured_at, body, sent_at FROM contract_usage_reports
 		WHERE workspace_id = $1 ORDER BY usage_seq DESC`, ws)
 	if err != nil {
 		return nil, err
 	}
 	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (UsageReport, error) {
 		var r UsageReport
-		err := row.Scan(&r.Workspace, &r.Seq, &r.MeasuredAt, &r.Body)
+		err := row.Scan(&r.Workspace, &r.Seq, &r.MeasuredAt, &r.Body, &r.SentAt)
 		return r, err
 	})
 }

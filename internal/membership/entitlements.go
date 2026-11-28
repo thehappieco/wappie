@@ -560,11 +560,27 @@ func (w *entitlementsWork) acks(ctx context.Context) {
 // getLoop sends the GET computed now of each workspace whose GET is due,
 // until ctx ends: after a bad document, a naming with no document, a
 // reset; one every GetPace while an unreadable bad document's pacing
-// holds.
+// holds. None goes while the account side holds no generation (after a
+// signed gone): its answer could only ask for a reset.
 func (w *entitlementsWork) getLoop(ctx context.Context) {
 	m := w.l.Members
 	paceEvery := or(w.cfg.GetPace, entGetPace)
 	for ctx.Err() == nil {
+		st, err := m.Contract.EntState(ctx)
+		if err != nil || st.Generation == nil {
+			if err != nil && ctx.Err() == nil {
+				w.l.log().Warn("contract: could not read the entitlements state", "error", err)
+			}
+			wait := noGeneration
+			if err != nil {
+				wait = or(w.cfg.GetBackoffMin, entGetBackoffMin)
+			}
+			if !pause(ctx, wait, w.gets) {
+				return
+			}
+			continue
+		}
+		seen := *st.Generation
 		due, err := m.Contract.EntGetsDue(ctx, roundBatch)
 		if err != nil {
 			if ctx.Err() == nil {
@@ -592,10 +608,16 @@ func (w *entitlementsWork) getLoop(ctx context.Context) {
 				}
 				ok, err := m.Contract.EntGetPaced(ctx, paceEvery)
 				if err != nil || !ok {
+					// Not its turn on the database's clock, which may
+					// run behind this one's, or no answer: a short wait
+					// before the due list is read again, never a spin.
+					if !pause(ctx, min(paceEvery, time.Second), nil) {
+						return
+					}
 					break
 				}
 			}
-			if !w.get(ctx, d) {
+			if !w.get(ctx, d, seen) {
 				return
 			}
 			if d.Paced {
@@ -606,8 +628,9 @@ func (w *entitlementsWork) getLoop(ctx context.Context) {
 	}
 }
 
-// get sends ws's GET and stores its answer; false when ctx ended.
-func (w *entitlementsWork) get(ctx context.Context, d store.EntGetDue) bool {
+// get sends ws's GET, under the generation seen read before it went, and
+// stores its answer; false when ctx ended.
+func (w *entitlementsWork) get(ctx context.Context, d store.EntGetDue, seen uuid.UUID) bool {
 	l, m := w.l, w.l.Members
 	backoff := min(or(w.cfg.GetBackoffMin, entGetBackoffMin)<<min(d.Tries, 20), or(w.cfg.GetBackoffMax, entGetBackoffMax))
 	if err := m.paced(ctx); err != nil {
@@ -632,12 +655,24 @@ func (w *entitlementsWork) get(ctx context.Context, d store.EntGetDue) bool {
 		}
 		switch res.Action {
 		case store.EntReset:
-			// A document of another generation: a reset, then the GET
-			// again (the reset makes every GET due).
-			st, err := m.Contract.EntState(ctx)
-			if err == nil && st.Generation != nil {
-				if _, err := w.reset(ctx, *st.Generation, &ed.Generation, "entitlements_get_generation"); err != nil && ctx.Err() == nil {
+			// A document of another generation than the one the GET went
+			// under: a reset from that one, then the GET again (the reset
+			// makes every GET due). Restart resets only while seen is
+			// still the account side's: an answer that crossed a reset
+			// made meanwhile is dropped, its GET left due by that reset,
+			// never taken back to the older generation.
+			done := false
+			if ed.Generation != seen {
+				var err error
+				if done, err = w.reset(ctx, seen, &ed.Generation, "entitlements_get_generation"); err != nil && ctx.Err() == nil {
 					l.log().Warn("contract: could not reset after a GET of another generation", "error", err)
+				}
+			}
+			if !done {
+				if st, err := m.Contract.EntState(ctx); err == nil && st.Generation != nil && *st.Generation == seen {
+					// No reset was made, and none came: the GET waits its
+					// backoff rather than going again at once.
+					w.failed(ctx, d.Workspace, "generation", backoff)
 				}
 			}
 			w.interrupt()
@@ -827,7 +862,11 @@ func (w *entitlementsWork) checkCaps(ctx context.Context) {
 			if side == capWithin {
 				msg, direction = "contract: entitlements cap would lift", "down"
 			}
-			log.Info(msg, "workspace", r.Workspace, "version", d.Version, "direction", direction)
+			attrs := []any{"workspace", r.Workspace, "version", d.Version, "direction", direction}
+			if r.BrakeKind != "" {
+				attrs = append(attrs, "held_at_observe", true)
+			}
+			log.Info(msg, attrs...)
 		}
 		if err := w.l.Members.Contract.EntCapSide(ctx, r.Workspace, side); err != nil && ctx.Err() == nil {
 			log.Warn("contract: could not record the cap's side", "error", err)

@@ -462,3 +462,224 @@ func TestUsageReportsKept8h(t *testing.T) {
 		t.Fatalf("the reports kept: %v (sent %d, recent %d, old %d)", seqs, m.Seq, recent.Seq, old.Seq)
 	}
 }
+
+// usageRow is ws's usage cadence row.
+func (w *world) usageRow(t *testing.T, ws uuid.UUID) store.UsageRow {
+	t.Helper()
+	rows, err := w.contract.UsageRows(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range rows {
+		if r.Workspace == ws {
+			return r
+		}
+	}
+	t.Fatalf("no usage row of %s", ws)
+	return store.UsageRow{}
+}
+
+// A report refused invalid_request waits out its park: the trigger that
+// made it due, still holding, never brings it forward; and the report was
+// kept before its PUT went, with no sent_at, as one whose answer was lost.
+func TestUsageRefusedWaitsItsPark(t *testing.T) {
+	w := newSnapshotWorld(t)
+	ctx := context.Background()
+	logs := &membershiptest.Logs{}
+	cfg := usageTimes()
+	cfg.InvalidRetry = 3 * time.Second
+	run(t, w.usageLeader(t, logs, cfg))
+	eventually(t, soon, "the first report", func() bool { return w.usageSeq(w.team) > 0 })
+	first := w.usageSeq(w.team)
+	w.fake.RefuseAlways(contracttest.CallUsage, kc.CodeInvalid)
+	if err := pg.InTenantTx(ctx, w.pool, w.team.String(), func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `INSERT INTO item_events (event_id, tenant_id, type, item_id, dedupe_key, occurred_at, actor_kind, deleted_at, purge_after)
+			VALUES (uuidv7(), $1, 'deleted', $2, 'deleted:park', clock_timestamp(), 'person', clock_timestamp(), clock_timestamp() + interval '30 days')`,
+			w.team, w.device)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	refused := func() int {
+		return len(logs.Lines("contract: usage refused", "workspace="+w.team.String(), "code="+kc.CodeInvalid))
+	}
+	eventually(t, 5*time.Second, "the refused report", func() bool { return refused() > 0 })
+	time.Sleep(cfg.InvalidRetry * 2 / 3)
+	if n := refused(); n != 1 {
+		t.Fatalf("%d refused reports within the park:\n%s", n, strings.Join(logs.Lines("contract: usage"), "\n"))
+	}
+	reports, err := w.contract.UsageReports(ctx, w.team)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reports) == 0 || reports[0].Seq <= first || reports[0].SentAt != nil {
+		t.Fatalf("the refused report not kept unsent: %d reports, first %d", len(reports), first)
+	}
+	w.fake.RefuseAlways(contracttest.CallUsage, "")
+	eventually(t, 5*time.Second, "the report after the park", func() bool { return w.usageSeq(w.team) > first })
+}
+
+// A mark made while a report backs off keeps the backoff's due_at, and
+// the trigger's first due time; a zero time marks on the database's clock.
+func TestUsageMarkKeepsBackoff(t *testing.T) {
+	w := newSnapshotWorld(t)
+	ctx := context.Background()
+	c := w.contract
+	if _, err := c.UsageRows(ctx); err != nil {
+		t.Fatal(err)
+	}
+	m, err := c.MeasureUsage(ctx, w.team)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.UsageSent(ctx, m, []byte(`{}`), true, time.Hour, time.Minute, ""); err != nil {
+		t.Fatal(err)
+	}
+	crossed := time.Now().Add(-2 * time.Minute).UTC().Truncate(time.Microsecond)
+	if err := c.UsageMark(ctx, w.team, store.UsageCrossing, crossed); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.UsageFailed(ctx, w.team, "timeout", time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	for _, trigger := range []string{store.UsageCrossing, store.UsageAfter, store.UsageEvent, store.UsagePercent} {
+		if err := c.UsageMark(ctx, w.team, trigger, time.Time{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := c.UsageMark(ctx, w.team, store.UsageFloor, time.Now().Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	r := w.usageRow(t, w.team)
+	if r.DueAt == nil || time.Until(*r.DueAt) < 50*time.Minute || r.DueTrigger != store.UsageCrossing ||
+		r.DueFirstAt == nil || !r.DueFirstAt.Equal(crossed) {
+		t.Fatalf("the marks within the backoff: %+v", r)
+	}
+	due, err := c.UsageDue(ctx, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range due {
+		if d.Workspace == w.team {
+			t.Fatal("a report backing off is due")
+		}
+	}
+	// Once the backoff ran out and a report was sent, a mark now is due
+	// now.
+	if _, err := w.pool.Exec(ctx, `UPDATE contract_usage SET due_at = clock_timestamp() WHERE workspace_id = $1`, w.team); err != nil {
+		t.Fatal(err)
+	}
+	if m, err = c.MeasureUsage(ctx, w.team); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.UsageSent(ctx, m, []byte(`{}`), true, time.Hour, time.Minute, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.UsageMark(ctx, w.team, store.UsageEvent, time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	if r := w.usageRow(t, w.team); r.DueTrigger != store.UsageEvent || r.DueAt == nil || r.DueFirstAt == nil || !r.DueAt.Equal(*r.DueFirstAt) {
+		t.Fatalf("a mark now: %+v", r)
+	}
+}
+
+// check marks the 1 % move of a workspace that holds no document from
+// 100 MB, and the minute's look at item_events finds an event the last
+// report's snapshot did not see, one written before its measured_at.
+func TestUsageCheckWithoutDocument(t *testing.T) {
+	w := newSnapshotWorld(t)
+	ctx := context.Background()
+	c := w.contract
+	l := w.leader(w.members, &membershiptest.Logs{}, lockKeyOf(w.world))
+	l.Entitlements = entTimes()
+	l.Entitlements.Usage = usageTimes()
+	u := newEntitlementsWork(l, nil, nil).usage
+	if _, err := c.UsageRows(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if r, ok := w.entRow(t, w.team); ok && r.Doc != nil {
+		t.Fatalf("the team holds a document: %+v", r)
+	}
+	m, err := c.MeasureUsage(ctx, w.team)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.UsageSent(ctx, m, []byte(`{}`), true, time.Hour, 0, ""); err != nil {
+		t.Fatal(err)
+	}
+	grow := func(by int64) {
+		t.Helper()
+		if _, err := w.pool.Exec(ctx, `UPDATE tenants SET storage_archive_bytes = storage_archive_bytes + $2 WHERE id = $1`, w.team, by); err != nil {
+			t.Fatal(err)
+		}
+	}
+	grow(usagePercentFloor - 1)
+	u.check(ctx)
+	if r := w.usageRow(t, w.team); r.DueTrigger != store.UsageFloor {
+		t.Fatalf("a move under 100 MB: %+v", r)
+	}
+	grow(1)
+	u.check(ctx)
+	if r := w.usageRow(t, w.team); r.DueTrigger != store.UsagePercent || r.DueAt == nil || time.Until(*r.DueAt) > time.Minute {
+		t.Fatalf("a move of 100 MB: %+v", r)
+	}
+	grow(-usagePercentFloor)
+
+	// An event written before measured_at, committed after the snapshot.
+	r := w.usageRow(t, w.team)
+	if found, err := c.UsageEventsSince(ctx, w.team, *r.LastMeasuredAt, r.LastEvents); err != nil || found {
+		t.Fatalf("an event before any: %v %v", found, err)
+	}
+	if err := pg.InTenantTx(ctx, w.pool, w.team.String(), func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `INSERT INTO item_events (event_id, tenant_id, type, item_id, dedupe_key, occurred_at, actor_kind, deleted_at, purge_after, created_at)
+			VALUES (uuidv7(), $1, 'deleted', $2, 'deleted:missed', clock_timestamp(), 'person', clock_timestamp(), clock_timestamp() + interval '30 days', $3)`,
+			w.team, w.device, r.LastMeasuredAt.Add(-time.Minute))
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if found, err := c.UsageEventsSince(ctx, w.team, *r.LastMeasuredAt, r.LastEvents); err != nil || !found {
+		t.Fatalf("the event the snapshot missed: %v %v", found, err)
+	}
+	// The next report's snapshot sees it: it is found no more.
+	m, err = c.MeasureUsage(ctx, w.team)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m.Events) != 1 {
+		t.Fatalf("the snapshot's events: %v", m.Events)
+	}
+	if err := c.UsageSent(ctx, m, []byte(`{}`), true, time.Hour, 0, ""); err != nil {
+		t.Fatal(err)
+	}
+	r = w.usageRow(t, w.team)
+	if found, err := c.UsageEventsSince(ctx, w.team, *r.LastMeasuredAt, r.LastEvents); err != nil || found {
+		t.Fatalf("an event the last report saw: %v %v", found, err)
+	}
+}
+
+// A report of a workspace no account document names any more asks its
+// GET, as one whose document says closed does.
+func TestUsageAsksGetUnnamed(t *testing.T) {
+	w := newSnapshotWorld(t)
+	ctx := context.Background()
+	ask := func() bool {
+		t.Helper()
+		ok, err := w.contract.UsageAsksGet(ctx, w.team)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ok
+	}
+	if ask() {
+		t.Fatal("a named workspace asks its GET")
+	}
+	if _, err := w.pool.Exec(ctx, `UPDATE contract_accounts SET doc = jsonb_set(doc, '{workspaces}',
+		coalesce((SELECT jsonb_agg(x) FROM jsonb_array_elements(doc->'workspaces') x WHERE x->>'id' <> $1::text), '[]'::jsonb))
+		WHERE doc IS NOT NULL`, w.team); err != nil {
+		t.Fatal(err)
+	}
+	if !ask() {
+		t.Fatal("a workspace no document names asks no GET")
+	}
+}

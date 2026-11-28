@@ -509,6 +509,11 @@ func TestEntitlementsVectors(t *testing.T) {
 		// links, codes_after, placed_at and places are slice 19's link
 		// check, events and placed_at; trial_stops and link_outcomes need
 		// the undo of a link, an enforcing release or an import (E2).
+		// Carried over: slice 19 runs links (every case in a workspace
+		// that does not enforce), codes_after and placed_at as recorded,
+		// and places as "would refuse" lines, then drops its four names
+		// from this skip. The GET answering enforce is braked in E0
+		// (TestEntitlementsGETEnforceBraked).
 		t.Skip("links, codes_after, placed_at, places: slice 19; trial_stops, link_outcomes: E2")
 	})
 }

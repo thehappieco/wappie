@@ -1184,8 +1184,10 @@ whatserverd contract entitlements status [--check]
   `trim_present`) and records `ent_enforce_in_e0`. The operator reports it
   to the platform's chat at once as an incident, then marks the hold told:
   `whatserverd contract entitlements hold -workspace <id> --platform-told`.
-  Such a hold is never released while the document says `enforce`. A trim
-  order it carries is stored with it and never run.
+  An operator's hold the document finds in place becomes this one, not
+  yet told. No hold is released while the workspace's document says
+  `enforce`. A trim order it carries is stored with it and
+  never run.
 
 **The follower** long-polls the feed (25 seconds), from the cursor of its
 own under the account side's one generation. A page of another
@@ -1212,6 +1214,10 @@ a bad document, and after a reset; its answer of the version held gives
 freshness only (the feed's bytes stay), a higher one is applied, a lower
 one ignored. A signed `not_found` on a named workspace keeps its last
 document, frozen, and asks no more until a document of it reaches the feed.
+No GET goes while the account side holds no generation (after a signed
+`gone`), and an answer of another generation resets only from the one the
+GET went under: an answer that crossed a reset is dropped, its GET left
+due. A failed GET waits 5 seconds, doubling to an hour.
 
 **Freshness** of a workspace is the later of its last valid GET answer of
 this generation and the feed's trusted `published_through` (from a page
@@ -1241,16 +1247,21 @@ its document's `allowance_bytes` or `cap_bytes` either way (within a
 minute), a `requests.usage_after` later than its last report (within 10
 minutes), a deletion, recovery, purge or move out of one of its numbers
 (0053's notice on `wappie_contract_usage`, and a look at `item_events` every
-minute for a notice lost), a move of 1 % of its quota (at least 100 MB,
-coalesced to one report every 15 minutes), and at least every 6 hours. A
-report sent past its trigger's deadline logs WARN "contract: usage report
-late" (`workspace`, `trigger`): the scan's cost on the pilot is unmeasured,
-and slice 20's counters are what guarantee the deadlines. A workspace whose
-GET answered `not_found` is not reported until a document of it reaches the
-feed again; each report of a workspace whose document says `closed` sends
-its GET. A signed `invalid_request` parks the report for an hour ("contract:
-usage refused", recorded `usage_invalid`); both `kept` answers count as
-delivered. Each report sent is kept at least 8 hours after its
+minute for an event the last report's snapshot did not see, a notice lost),
+a move of 1 % of its quota (at least 100 MB, and 100 MB while it holds no
+document; coalesced to one report every 15 minutes), and at least every 6
+hours. A report that got no answer waits 5 seconds, doubling to an hour, and
+a signed `invalid_request` parks it for an hour ("contract: usage refused",
+recorded `usage_invalid`); a trigger that holds meanwhile never brings the
+retry forward. A report sent past its trigger's deadline, counted from when
+that trigger first made it due, logs WARN "contract: usage report late"
+(`workspace`, `trigger`): the scan's cost on the pilot is unmeasured, and
+slice 20's counters are what guarantee the deadlines. A workspace whose GET
+answered `not_found` is not reported until a document of it reaches the
+feed again; each report of a workspace whose document says `closed`, or
+that no account document names any more, sends its GET. Both `kept`
+answers count as delivered. Each report is kept, written before its PUT
+goes so a lost answer loses no report, at least 8 hours after its
 `measured_at`. Its lines: "contract: usage started", "contract: usage
 stopped", "contract: usage sent" (`workspace`, `usage_seq`,
 `rule_version`, `kept`), WARN "contract: usage refused" (`workspace`,
