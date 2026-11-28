@@ -2,6 +2,7 @@ package wa
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -163,6 +164,18 @@ func OpenContainer(ctx context.Context, dsn string, lg *slog.Logger) (*sqlstore.
 		return nil, fmt.Errorf("wa: open session store: %w", err)
 	}
 	return c, nil
+}
+
+// OpenContainerAsIs connects whatsmeow's session store without upgrading
+// its schema: a maintenance start's, which changes no table and claims no
+// session, so nothing it does reads a session either. Nothing is asked of
+// the database until something reads a session.
+func OpenContainerAsIs(dsn string, lg *slog.Logger) (*sqlstore.Container, error) {
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		return nil, fmt.Errorf("wa: open session store: %w", err)
+	}
+	return sqlstore.NewWithDB(db, "pgx", NewWALogger(lg, "wastore")), nil
 }
 
 // ErrAlreadyRunning is returned when a device is supervised elsewhere.

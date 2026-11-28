@@ -377,10 +377,16 @@ func (c *cycleWhatsApp) asked() []string {
 // of its own, as a console reconnects after a deletion closes its socket.
 func askOnce(t *testing.T, srv *httptest.Server, token, frameType string, payload any) wsapi.Frame {
 	t.Helper()
+	return askAt(t, srv.URL, token, frameType, payload)
+}
+
+// askAt is askOnce of the server at base (http://host:port).
+func askAt(t *testing.T, base, token, frameType string, payload any) wsapi.Frame {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	//nolint:bodyclose // coder/websocket: "You never need to close resp.Body yourself."
-	conn, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(srv.URL, "http")+"/v1/ws", nil)
+	conn, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(base, "http")+"/v1/ws", nil)
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
@@ -467,7 +473,7 @@ func operator(t *testing.T, args ...string) (string, error) {
 	os.Stdout = wr
 	func() {
 		defer func() { os.Stdout = stdout }()
-		err = runCommand(args, func() error { return errors.New("a command line served") })
+		err = runCommand(args, func(serveOptions) error { return errors.New("a command line served") })
 	}()
 	wr.Close() //nolint:errcheck,gosec // the reader sees the end
 	return string(<-read), err

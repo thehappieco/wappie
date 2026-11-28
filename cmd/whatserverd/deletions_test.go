@@ -752,7 +752,8 @@ func TestServeChecksLedgerBeforeStarting(t *testing.T) {
 		t.Fatalf("a dev server checked its ledger: %+v", quiet.lines)
 	}
 
-	// In serve, the check comes after setup and before "starting".
+	// In serve (runServe), the check comes after either setup and before
+	// "starting".
 	file, err := parser.ParseFile(token.NewFileSet(), "main.go", nil, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -760,7 +761,7 @@ func TestServeChecksLedgerBeforeStarting(t *testing.T) {
 	var order []string
 	for _, decl := range file.Decls {
 		fn, ok := decl.(*ast.FuncDecl)
-		if !ok || fn.Name.Name != "serve" {
+		if !ok || fn.Name.Name != "runServe" {
 			continue
 		}
 		ast.Inspect(fn.Body, func(n ast.Node) bool {
@@ -770,7 +771,7 @@ func TestServeChecksLedgerBeforeStarting(t *testing.T) {
 			}
 			switch f := call.Fun.(type) {
 			case *ast.Ident:
-				if f.Name == "setup" || f.Name == "checkDeletionLedger" {
+				if f.Name == "setupMaintenance" || f.Name == "setup" || f.Name == "checkDeletionLedger" {
 					order = append(order, f.Name)
 				}
 			case *ast.SelectorExpr:
@@ -784,7 +785,7 @@ func TestServeChecksLedgerBeforeStarting(t *testing.T) {
 			return true
 		})
 	}
-	if !slices.Equal(order, []string{"setup", "checkDeletionLedger", "starting"}) {
+	if !slices.Equal(order, []string{"setupMaintenance", "setup", "checkDeletionLedger", "starting"}) {
 		t.Fatalf("serve's order: %v", order)
 	}
 
@@ -1061,10 +1062,13 @@ func noMailer(t *testing.T, path string) {
 // pass would purge what a restore's replay has yet to recover.
 func TestUnknownCommandNeverServes(t *testing.T) {
 	served := 0
-	serve := func() error { served++; return nil }
+	var got []serveOptions
+	serve := func(opts serveOptions) error { served++; got = append(got, opts); return nil }
 	for _, args := range [][]string{{"deletion", "replay", "-ledger", "x"}, {"device", "purge-deleted"}, {"-h"}, {"--help"},
 		{"help"}, {"serve", "now"}, {""}, {"deletions", "replai"}, {"deletions"}, {"devices"}, {"devices", "purge"},
-		{"contract"}, {"contract", "chek"}, {"contract-secret"}, {"contract-secret", "rotate"}} {
+		{"contract"}, {"contract", "chek"}, {"contract-secret"}, {"contract-secret", "rotate"},
+		{"serve", "-h"}, {"serve", "-maint"}, {"serve", "-maintenance", "now"}, {"serve", "maintenance"},
+		{"serve", "-maintenance=maybe"}} {
 		var usage usageError
 		if err := runCommand(args, serve); !errors.As(err, &usage) {
 			t.Fatalf("%q: %v", args, err)
@@ -1078,8 +1082,8 @@ func TestUnknownCommandNeverServes(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if served != 3 {
-		t.Fatalf("served %d times, want 3", served)
+	if served != 3 || slices.ContainsFunc(got, func(o serveOptions) bool { return o.maintenance }) {
+		t.Fatalf("served %d times, want 3 normal starts: %+v", served, got)
 	}
 }
 

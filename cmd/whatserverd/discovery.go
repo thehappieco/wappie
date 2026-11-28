@@ -61,6 +61,13 @@ func discoveryFor(mcp mcpEndpoints) http.HandlerFunc { return discoveryWith(mcp,
 // auth.platform.stepup.v1: the step-up at the provider
 // (/v1/auth/platform/step-up/start and /finish).
 func discoveryWith(mcp mcpEndpoints, platform *authapi.PlatformDiscovery) http.HandlerFunc {
+	return discoveryIn(mcp, platform, false)
+}
+
+// discoveryIn is discoveryWith, and "maintenance": true in a maintenance
+// start (docs/deployment.md, "Maintenance start"), so a console can say
+// why its writes are refused; the field is absent otherwise.
+func discoveryIn(mcp mcpEndpoints, platform *authapi.PlatformDiscovery, maintenance bool) http.HandlerFunc {
 	remoteMCP := mcp.Server != "" || mcp.Attested != ""
 	capabilities := []string{"archive.sealed.v1", "archive.rest.v1", "archive.contacts.v1", "archive.scan.v1", "apikeys.device-scope.v1", "workspaces.v1"}
 	if platform == nil || platform.LocalLogin != string(config.LocalLoginOff) {
@@ -103,7 +110,8 @@ func discoveryWith(mcp mcpEndpoints, platform *authapi.PlatformDiscovery) http.H
 			Capabilities  []string                   `json:"capabilities"`
 			Endpoints     map[string]string          `json:"endpoints"`
 			PlatformLogin *authapi.PlatformDiscovery `json:"platform_login,omitempty"`
-		}{"wappie", BuildVersion, 1, capabilities, endpoints, platform}); err != nil {
+			Maintenance   bool                       `json:"maintenance,omitempty"`
+		}{"wappie", BuildVersion, 1, capabilities, endpoints, platform, maintenance}); err != nil {
 			// A failed response write means the requester disconnected.
 			return
 		}

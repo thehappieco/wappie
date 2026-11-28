@@ -180,6 +180,23 @@ func TestStartContract(t *testing.T) {
 		b, err := os.ReadFile(filepath.Join(tmp, "pre.loaded"))
 		return p.contract.Loaded() && err == nil && strings.Contains(string(b), "\nerror=none\n")
 	})
+	// A maintenance start: the transport and the secret, so sign-in still
+	// asks the contract, and no leader, so no feed, round or sweep runs.
+	m := &app{
+		cfg: config.Config{Contract: config.Contract{Socket: served.Path, SecretFile: secretFile, LoadedFile: filepath.Join(tmp, "maint.loaded")}},
+		log: a.log, pools: &pg.Pools{API: pool}, ws: &wsapi.Server{}, maintenance: newMaintenance(nil),
+	}
+	m.startContract(ctx, make(chan os.Signal, 1))
+	if m.contract == nil || m.members == nil || m.members.Client != m.contract {
+		t.Fatalf("a maintenance start's sign-in has no contract: %+v", m.members)
+	}
+	if m.leader != nil {
+		t.Fatal("a maintenance start has a contract leader")
+	}
+	eventually(t, "the maintenance start's load", func() bool {
+		b, err := os.ReadFile(filepath.Join(tmp, "maint.loaded"))
+		return m.contract.Loaded() && err == nil && strings.Contains(string(b), "\nerror=none\n")
+	})
 	// An app startContract never built members for: no contract, and no
 	// typed nil the routes would take for one.
 	if h := (&app{log: b.log, ws: &wsapi.Server{}}).authHandler(); h.Membership != nil {

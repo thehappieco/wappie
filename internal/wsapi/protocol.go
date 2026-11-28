@@ -1895,6 +1895,11 @@ const (
 	// runs (DS56).
 	ErrCodeWorkspaceBusy = "workspace_busy"
 	ErrCodeStateChanged  = "state_changed"
+	// ErrCodeMaintenance answers what a maintenance start refuses: a
+	// hello with an API key, and a frame that is neither one of its reads
+	// nor a write it was told to allow (maintenance.go;
+	// docs/deployment.md, "Maintenance start").
+	ErrCodeMaintenance = "maintenance"
 )
 
 // Error is the failure payload. Readers comes with device_has_readers, and

@@ -322,15 +322,15 @@ func TestResetThenDeviceKeyWhileServing(t *testing.T) {
 	})
 }
 
-// TestServeListensForArchiveKeys: serve starts the listener, the
-// command line's setup does not, and the listener's failure line says
-// what still holds.
+// TestServeListensForArchiveKeys: serve starts the listener (begin, on a
+// normal start), the command line's setup does not, and the listener's
+// failure line says what still holds.
 func TestServeListensForArchiveKeys(t *testing.T) {
 	src := rawCode(t, ".")
-	if !strings.Contains(funcBody(t, src, "serve"), "go a.listenArchiveKeys(ctx)") {
+	if !strings.Contains(funcBody(t, src, "(a *app) begin"), `a.spawn(ctx, "archive key listener", a.listenArchiveKeys)`) {
 		t.Fatal("serve does not listen for archive key changes")
 	}
-	if strings.Contains(funcBody(t, src, "setupWith"), "listenArchiveKeys") {
+	if strings.Contains(funcBody(t, src, "setupOpts"), "listenArchiveKeys") {
 		t.Fatal("setupWith listens for archive key changes")
 	}
 	_, listen, ok := strings.Cut(src, "\nfunc (a *app) listenArchiveKeys(")
