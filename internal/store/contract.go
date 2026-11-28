@@ -672,7 +672,8 @@ func lockNamedTx(ctx context.Context, tx pgx.Tx, named map[uuid.UUID]ContractDoc
 
 // recordWorkspacesTx records every named workspace for good, in id order:
 // a new one with its kind and the time it was first named, and its status
-// only with a higher wversion (README 6.2).
+// only with a higher wversion (README 6.2); then the entitlements side's
+// hook (entNamedTx).
 func recordWorkspacesTx(ctx context.Context, tx pgx.Tx, named map[uuid.UUID]ContractDocWorkspace) error {
 	ids := make([]uuid.UUID, 0, len(named))
 	for id := range named {
@@ -688,7 +689,9 @@ func recordWorkspacesTx(ctx context.Context, tx pgx.Tx, named map[uuid.UUID]Cont
 			return err
 		}
 	}
-	return nil
+	// The entitlements side, after the records (the lock order): a named
+	// workspace with no document gets its GET, and one kept is applied.
+	return entNamedTx(ctx, tx, ids)
 }
 
 // ContractWorkspace is one recorded platform workspace.

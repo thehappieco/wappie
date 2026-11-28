@@ -81,7 +81,8 @@ const commandList = `usage: whatserverd [serve [-maintenance [-allow NAME]...]]
                    reader-alert-test ...
        whatserverd datacheck [-workspace ID] [-out FILE] [-objects ...] | compare [-expect E] BEFORE AFTER
        whatserverd contract check [--other|--only-current|--only-other] | status [--check] |
-                   diff [--tenant T] | mode off|observe | settings off|read|on|status
+                   diff [--tenant T] | mode off|observe | settings off|read|on|status |
+                   entitlements off|observe|usage|hold|release|status
        whatserverd contract-secret seal | promote | unpromote | drop | reset | capabilities ...
 `
 

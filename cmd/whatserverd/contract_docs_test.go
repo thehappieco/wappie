@@ -195,6 +195,32 @@ func TestContractDocsMatchTheCode(t *testing.T) {
 				"contract: a person's document is parked",
 				"contract: settings started",
 				"contract: settings stopped",
+				"contract: entitlements started",
+				"contract: entitlements stopped",
+				"contract: entitlements applied",
+				"contract: entitlements would stop",
+				"contract: entitlements step would fire",
+				"contract: entitlements step frozen",
+				"contract: entitlements cap would stop",
+				"contract: entitlements cap would lift",
+				"contract: entitlements document refused",
+				"contract: entitlements acknowledged",
+				"contract: entitlements GET failed",
+				"contract: entitlements not_found",
+				"contract: entitlements foreign document",
+				"contract: entitlements mode",
+				"contract: entitlements brake",
+				"contract: entitlements enforce document held (E0)",
+				"contract: no entitlements feed page for a long time",
+				"contract: a second reset from the entitlements feed within a minute waits",
+				"contract: entitlements acknowledgements fail",
+				"contract entitlements: this release observes only (E0); nothing changed",
+				"contract: usage started",
+				"contract: usage stopped",
+				"contract: usage sent",
+				"contract: usage refused",
+				"contract: usage not measured",
+				"contract: usage report late",
 				"settings: off with it",
 				"invite: this team's people join through The Happie Co; person invitations are paused here " +
 					"until Wappie applies the platform's members (a service invitation still works: -role service)",
@@ -263,9 +289,13 @@ func TestContractDocsMatchTheCode(t *testing.T) {
 			{"whatserverd contract mode off|observe", "mode off|observe"},
 			{"whatserverd contract settings off|read|on [--platform-told]", "settings off|read|on|status"},
 			{"whatserverd contract settings status [--check]", "settings off|read|on|status"},
+			{"whatserverd contract entitlements off|observe [--platform-told]", "entitlements off|observe|usage|hold|release|status"},
+			{"whatserverd contract entitlements usage off|on [--platform-told]", "entitlements off|observe|usage|hold|release|status"},
+			{"whatserverd contract entitlements hold|release -workspace <id> [--platform-told]", "entitlements off|observe|usage|hold|release|status"},
+			{"whatserverd contract entitlements status [--check]", "entitlements off|observe|usage|hold|release|status"},
 		} {
 			says("contract.md", c.doc)
-			if !strings.Contains(c.doc, "settings") {
+			if !strings.Contains(c.doc, "settings") && !strings.Contains(c.doc, "entitlements") {
 				says("deployment.md", c.doc)
 			}
 			if !strings.Contains(usage, c.usage) {
@@ -495,6 +525,16 @@ func TestContractDocsMatchTheCode(t *testing.T) {
 			"section accepted for over %d minutes (the console marks it stale after 90)",
 			"section is parked since ",
 			": it is not sent (",
+			": an enforce document held at observe (E0), not yet reported to the platform",
+			"a document refused in the last 24 hours",
+			"entitlements feed silent for over %d minutes",
+			"entitlements acknowledgement over %d minutes old",
+			": no document after a GET was due for over %d minutes",
+			": freshness over 24 hours",
+			"the entitlements part's state could not be read: ",
+			": usage refused (invalid_request) since ",
+			": usage report late (",
+			": no usage report for over 6 h 15 min",
 		} {
 			codeSays(f)
 			if strings.Contains(f, "%d") {
@@ -509,6 +549,12 @@ func TestContractDocsMatchTheCode(t *testing.T) {
 					bound = checkTaken
 				case strings.Contains(f, "section accepted"):
 					bound = checkSection
+				case strings.Contains(f, "entitlements feed silent"):
+					bound = checkEntSilent
+				case strings.Contains(f, "acknowledgement over"):
+					bound = checkEntAck
+				case strings.Contains(f, "GET was due"):
+					bound = checkEntGet
 				}
 				f = fmt.Sprintf(f, int(bound/time.Minute))
 				if strings.Contains(f, "failed runs") {
@@ -522,7 +568,9 @@ func TestContractDocsMatchTheCode(t *testing.T) {
 			store.ContractErrorKindChanged, store.ContractErrorRoundIncomplete, store.ContractErrorSnapshotParked,
 			store.ContractErrorSnapshotInvalid, store.ContractErrorEventParked, store.ContractErrorEventsRefused, store.ContractErrorEventActor,
 			store.ContractErrorCommandInvalid, store.ContractErrorCommandStuck, store.ContractErrorSectionInvalid,
-			store.ContractErrorSectionParked, store.ContractErrorResultParked} {
+			store.ContractErrorSectionParked, store.ContractErrorResultParked, store.ContractErrorEntFeedSilent,
+			store.ContractErrorEntResetLoop, store.ContractErrorEntAckFailing, store.ContractErrorEntEnforceInE0,
+			store.ContractErrorUsageMismatch, store.ContractErrorUsageInvalid} {
 			says("contract.md", "`"+class+"`")
 		}
 		says("contract-events.md", "`"+store.ContractErrorEventActor+"`")
@@ -734,6 +782,31 @@ func TestContractDocsMatchTheCode(t *testing.T) {
 		says("deployment.md", "It comes before 0051's down-step, whose guard refuses while 52 is applied")
 	})
 
+	t.Run("the 0053 down-step", func(t *testing.T) {
+		sql := docText(t, "../../internal/migrate/sql/0053_contract_entitlements.sql")
+		for _, msg := range []string{
+			"entitlements are on: run whatserverd contract entitlements off first",
+			"usage is on: run whatserverd contract entitlements usage off first",
+			"a migration after 0053 is applied; run its down-step first",
+		} {
+			if !strings.Contains(sql, msg) {
+				t.Errorf("0053's down-step no longer says %q", msg)
+			}
+			says("deployment.md", msg)
+		}
+		notice := "dropping % documents (% applied), % refusals owed, % brakes, % usage seqs, % usage reports"
+		if !strings.Contains(sql, notice) {
+			t.Errorf("0053's down-step no longer says %q", notice)
+		}
+		says("deployment.md", strings.ReplaceAll(notice, "%", "N"))
+		says("deployment.md", "`migration53_sha256`")
+		says("deployment.md", "`0053_contract_entitlements.sql`")
+		if !strings.Contains(sql, "It runs first: 0053 down, then 0052 down") {
+			t.Error("0053's header no longer says it comes down before 0052")
+		}
+		says("deployment.md", "It comes before 0052's down-step, whose guard refuses while 53 is applied")
+	})
+
 	t.Run("the event example", func(t *testing.T) {
 		golden, err := os.ReadFile("../../internal/membership/testdata/events/deleted.json")
 		if err != nil {
@@ -756,36 +829,42 @@ func TestContractDocsMatchTheCode(t *testing.T) {
 	t.Run("timings", func(t *testing.T) {
 		rows := tableRows(t, "../../docs/contract.md", "## Timings")
 		ours := map[string]string{
-			"fresh":              spoken(store.FreshFor),
-			"backup fresh":       spoken(store.BackupFreshFor),
-			"clock skew":         spoken(store.ContractClockSkew),
-			"orphan":             spoken(membership.OrphanAfter),
-			"heartbeat":          spoken(pg.HoldHeartbeat),
-			"long-poll":          spoken(time.Duration(kc.MaxWait) * time.Second),
-			"call timeout":       spoken(kc.CallTimeout),
-			"feed grace":         spoken(kc.FeedGrace),
-			"snapshot not found": spoken(store.SnapshotNotFoundFor),
-			"event not found":    spoken(store.ContractEventNotFoundFor),
-			"event expiry":       spoken(store.ContractEventExpiry),
-			"check feed":         spoken(checkFeedRead),
-			"check snapshot":     spoken(checkSnapshot),
-			"check published":    spoken(checkPublished),
-			"check errors":       spoken(checkErrors),
-			"check round":        spoken(checkRound),
-			"check parked":       spoken(checkParked),
-			"check events":       spoken(checkEvents),
-			"section not found":  spoken(store.SectionNotFoundFor),
-			"run backoff":        spoken(store.CommandRunBackoffMin) + " to " + spoken(store.CommandRunBackoffMax),
-			"ledger":             spoken(store.CommandRetention),
-			"check commands":     spoken(checkCommands),
-			"check results":      spoken(checkResults),
-			"check taken":        spoken(checkTaken),
-			"check section":      spoken(checkSection),
-			"person not found":   spoken(store.PersonNotFoundFor),
-			"resume repair":      spoken(store.ResumeRepairAfter),
-			"check person":       spoken(checkPerson),
-			"start bound":        spoken(numberacts.StartBound),
-			"failed start wait":  spoken(numberacts.FailedStartWait),
+			"fresh":                   spoken(store.FreshFor),
+			"backup fresh":            spoken(store.BackupFreshFor),
+			"clock skew":              spoken(store.ContractClockSkew),
+			"orphan":                  spoken(membership.OrphanAfter),
+			"heartbeat":               spoken(pg.HoldHeartbeat),
+			"long-poll":               spoken(time.Duration(kc.MaxWait) * time.Second),
+			"call timeout":            spoken(kc.CallTimeout),
+			"feed grace":              spoken(kc.FeedGrace),
+			"snapshot not found":      spoken(store.SnapshotNotFoundFor),
+			"event not found":         spoken(store.ContractEventNotFoundFor),
+			"event expiry":            spoken(store.ContractEventExpiry),
+			"check feed":              spoken(checkFeedRead),
+			"check snapshot":          spoken(checkSnapshot),
+			"check published":         spoken(checkPublished),
+			"check errors":            spoken(checkErrors),
+			"check round":             spoken(checkRound),
+			"check parked":            spoken(checkParked),
+			"check events":            spoken(checkEvents),
+			"section not found":       spoken(store.SectionNotFoundFor),
+			"run backoff":             spoken(store.CommandRunBackoffMin) + " to " + spoken(store.CommandRunBackoffMax),
+			"ledger":                  spoken(store.CommandRetention),
+			"check commands":          spoken(checkCommands),
+			"check results":           spoken(checkResults),
+			"check taken":             spoken(checkTaken),
+			"check section":           spoken(checkSection),
+			"person not found":        spoken(store.PersonNotFoundFor),
+			"resume repair":           spoken(store.ResumeRepairAfter),
+			"check person":            spoken(checkPerson),
+			"start bound":             spoken(numberacts.StartBound),
+			"failed start wait":       spoken(numberacts.FailedStartWait),
+			"check entitlements feed": spoken(checkEntSilent),
+			"check acknowledgement":   spoken(checkEntAck),
+			"check GET":               spoken(checkEntGet),
+			"check freshness":         spoken(checkEntFresh),
+			"check usage":             spoken(checkUsage),
+			"usage kept":              spoken(store.UsageKeep),
 		}
 		// The rows the membership package checks (TestContractTimingsMatchTheDocs,
 		// which lists these as checked here), and wsapi's and mcpauth's.
@@ -794,7 +873,10 @@ func TestContractDocsMatchTheCode(t *testing.T) {
 			"event backoff", "event scan", "load retry", "load retry for", "load retry late", "hot path", "hot path bound",
 			"command long-poll", "command backoff", "reset floor", "section debounce", "connection debounce", "section",
 			"section backoff", "pairing look", "results backoff", "settings idle", "ledger trim", "behind retry",
-			"relink window", "relink session", "QR ahead", "pairing hold"}
+			"relink window", "relink session", "QR ahead", "pairing hold",
+			"entitlements long-poll", "entitlements backoff", "entitlements silent", "ack every", "ack at least", "ack failing",
+			"GET backoff", "GET pace", "timeline look", "cap look", "entitlements idle",
+			"usage look", "usage floor", "usage coalesce", "usage backoff", "usage invalid", "usage crossing", "usage after"}
 		for name, want := range ours {
 			if got := rows[name]; len(got) == 0 || got[0] != want {
 				t.Errorf("docs/contract.md's timing %q is %q, the code's is %q", name, got, want)

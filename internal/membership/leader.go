@@ -100,6 +100,8 @@ type Leader struct {
 	EventsScanEvery, EventsIdle      time.Duration
 	// Settings is the settings part's (settings_work.go).
 	Settings SettingsConfig
+	// Entitlements is the entitlements part's (entitlements.go).
+	Entitlements EntitlementsConfig
 
 	// ours, set by tests only, tells the dirty and due notices this
 	// installation's sessions sent from any other's: every test schema
@@ -140,7 +142,7 @@ func (l *Leader) Run(ctx context.Context) {
 		pause, woken := retry, (<-chan string)(wake)
 		if l.ready(ctx) {
 			held, ok, err := locker.Hold(ctx, key, l.Heartbeat, store.ContractDirtyChannel, store.ContractModeChannel,
-				store.ContractDueChannel, store.ContractEventsChannel, store.ContractSettingsChannel)
+				store.ContractDueChannel, store.ContractEventsChannel, store.ContractSettingsChannel, store.ContractUsageChannel)
 			switch {
 			case err != nil:
 				l.log().Warn("contract: could not try the leader's lock", "error", err)
@@ -239,7 +241,12 @@ func (l *Leader) lead(held *pg.Held, wake <-chan string) (lost bool) {
 	l.log().Info("contract: leading")
 	f := &follower{l: l, round: make(chan struct{}, 1)}
 	settings := newSettingsWork(l, f)
-	f.commands = settings.interrupt
+	ent := newEntitlementsWork(l, f, settings)
+	// The account follower's reset cuts both other long-polls.
+	f.commands = func() {
+		settings.interrupt()
+		ent.interrupt()
+	}
 	snaps := &snapshotSender{l: l, notices: newNotices(), logged: map[uuid.UUID]time.Time{}}
 	events := newEventSender(l)
 	var wg sync.WaitGroup
@@ -247,8 +254,9 @@ func (l *Leader) lead(held *pg.Held, wake <-chan string) (lost bool) {
 	wg.Go(func() { l.rounds(ctx, f.round) })
 	wg.Go(func() { snaps.run(ctx) })
 	wg.Go(func() { events.run(ctx) })
-	wg.Go(func() { l.watchMode(ctx, stop, f, settings, snaps.notices, events, held, wake) })
+	wg.Go(func() { l.watchMode(ctx, stop, f, settings, ent, snaps.notices, events, held, wake) })
 	wg.Wait()
+	ent.halt()
 	settings.halt()
 	lost = errors.Is(context.Cause(held.Context()), pg.ErrLockLost)
 	if lost {
@@ -260,16 +268,17 @@ func (l *Leader) lead(held *pg.Held, wake <-chan string) (lost bool) {
 }
 
 // watchMode stops the leader when the mode is off, and starts or stops the
-// settings part with the settings mode, both read at its start, every
-// ModeCheck and at each mode notice, and passes the other notices on,
+// settings part with the settings mode and the entitlements part with its
+// own, each read at its start, every ModeCheck and at each mode notice
+// ("entitlements" among them), and passes the other notices on,
 // never waiting on their loops: a round to run now, a generation to look
 // for at once (both long-polls in flight are cut), to the snapshot sender
 // and the section sender the workspaces a change touched and the due times
 // made sooner, to the section sender the settings channel's notices, and
 // to the event sender the queues with new rows or due again. It is the
 // held connection's one reader.
-func (l *Leader) watchMode(ctx context.Context, stop context.CancelFunc, f *follower, settings *settingsWork, snaps *notices,
-	events *eventSender, held *pg.Held, wake <-chan string) {
+func (l *Leader) watchMode(ctx context.Context, stop context.CancelFunc, f *follower, settings *settingsWork,
+	ent *entitlementsWork, snaps *notices, events *eventSender, held *pg.Held, wake <-chan string) {
 	tick := time.NewTicker(or(l.ModeCheck, modeCheck))
 	defer tick.Stop()
 	check := func() {
@@ -289,6 +298,14 @@ func (l *Leader) watchMode(ctx context.Context, stop context.CancelFunc, f *foll
 			return
 		}
 		settings.set(ctx, sst.Effective())
+		est, err := l.Members.Contract.EntState(ctx)
+		if err != nil {
+			if ctx.Err() == nil {
+				l.log().Warn("contract: could not read the entitlements mode", "error", err)
+			}
+			return
+		}
+		ent.set(ctx, est)
 	}
 	notice := func(payload string) {
 		switch payload {
@@ -297,6 +314,7 @@ func (l *Leader) watchMode(ctx context.Context, stop context.CancelFunc, f *foll
 		case "generation":
 			f.interrupt()
 			settings.interrupt()
+			ent.interrupt()
 		default:
 			// "settings" among them: a switch of the settings mode.
 			check()
@@ -328,6 +346,8 @@ func (l *Leader) watchMode(ctx context.Context, stop context.CancelFunc, f *foll
 				snaps.due()
 			case n.Channel == store.ContractEventsChannel:
 				events.notice(n.Payload)
+			case n.Channel == store.ContractUsageChannel:
+				ent.usage.notice(n.Payload)
 			}
 		}
 	}

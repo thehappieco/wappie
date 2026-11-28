@@ -212,7 +212,8 @@ func sameGeneration(a, b *uuid.UUID) bool {
 // snapshot (the platform may hold none of this generation), nothing
 // parked and no not_found run, and every workspace's events parked
 // not_found are sent again (the plan's 4.7 and 4.11). The command feed
-// resets in the same transaction (restartCommandsTx). It reports whether
+// and the entitlements feed reset in the same transaction
+// (restartCommandsTx, restartEntitlementsTx). It reports whether
 // it restarted: false when the state moved since it was read.
 func (c *Contract) Restart(ctx context.Context, seenGeneration *uuid.UUID, seenCursor int64, gen *uuid.UUID, confirmed bool) (bool, error) {
 	done := false
@@ -270,6 +271,9 @@ func (c *Contract) Restart(ctx context.Context, seenGeneration *uuid.UUID, seenC
 				return err
 			}
 			if err := restartCommandsTx(ctx, tx, gen); err != nil {
+				return err
+			}
+			if err := restartEntitlementsTx(ctx, tx); err != nil {
 				return err
 			}
 			done = true
