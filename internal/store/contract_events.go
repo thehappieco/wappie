@@ -98,7 +98,7 @@ type ContractEvent struct {
 	EventID uuid.UUID
 	Seq     int64
 	// Type is item_events.type: deleted, sync_paused, recovered, purged,
-	// moved_out or stranded.
+	// moved_out, stranded, linked or identity_updated.
 	Type       string
 	ItemID     uuid.UUID
 	OccurredAt time.Time
@@ -124,6 +124,11 @@ type ContractEvent struct {
 	Replayed  bool
 	// Folded counts the rows folded into it.
 	Folded int
+	// PN and LID are an item.linked's and an item.identity_updated's
+	// number's identity, read with the batch, from which its codes are
+	// made at send time ("" for a half not known, or a number gone).
+	// Personal data: never logged.
+	PN, LID string
 }
 
 // ActorUnknown reports a person, or a key whose creator is known, with no
@@ -138,7 +143,9 @@ func (e ContractEvent) ActorUnknown() bool {
 	}
 	switch e.ActorKind {
 	case actorPerson:
-		return e.ActorSub == nil
+		// A full key's pairing links with nobody behind it: actor null
+		// (README 15.12), no fault.
+		return e.ActorSub == nil && (e.Type != eventLinked || e.ActorUser != nil)
 	case actorKey:
 		return e.ActorSub == nil && e.ActorUser != nil
 	}
@@ -254,6 +261,9 @@ func (c *Contract) EventBatch(ctx context.Context, workspace uuid.UUID, limit in
 			}
 			foldEvents(rows, delivered, limit, &out)
 			if err := writeFoldsTx(ctx, tx, workspace, rows); err != nil {
+				return err
+			}
+			if err := eventIdentitiesTx(ctx, tx, out.Events); err != nil {
 				return err
 			}
 			return replayedLabelsTx(ctx, tx, out.Events)

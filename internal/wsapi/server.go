@@ -108,6 +108,10 @@ type Config struct {
 	// exporter's to report, and the janitor exports again within the hour.
 	// Called after each such commit, before its reply. Nil exports nothing.
 	ExportLedger func(ctx context.Context, tenant uuid.UUID)
+	// Links is the contract's link hooks (internal/membership; E0 slice
+	// 19): a new pairing's item.linked, placed_at and link check, and a
+	// move's check before its transaction. Nil records and checks nothing.
+	Links LinkHooks
 	// Membership is the contract's freshness hook (internal/membership;
 	// README 7.1, the plan's 4.12): every act it gates asks it before the
 	// act's store transaction, and a person's sends and group
@@ -134,6 +138,18 @@ type Config struct {
 	// transferHook, for tests, stands in for Devices.TransferPersonal: a
 	// move that fails, or one that commits and loses its answer.
 	transferHook func(ctx context.Context, source, actor, device, target uuid.UUID) (store.PersonalTransferPreview, error)
+}
+
+// LinkHooks are the contract's hooks on a link and a move
+// (*membership.Members). Neither ever refuses, delays past its budget or
+// undoes the act.
+type LinkHooks interface {
+	// Linked is told of a new pairing's link, by actor (nil for a key's),
+	// and returns at once.
+	Linked(ctx context.Context, tenant, device uuid.UUID, actor *uuid.UUID, linked wa.Identity)
+	// BeforeMove checks a move into target before its transaction opens,
+	// in a few seconds at most; moved is the preview's bytes.
+	BeforeMove(ctx context.Context, source, target, device uuid.UUID, moved int64)
 }
 
 // MCPReaders tells a connection's reader it ended (*mcpauth.Handler's

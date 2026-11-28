@@ -461,6 +461,21 @@ func (d *Devices) TransferPersonal(ctx context.Context, source, actor, device, t
 		}); err != nil {
 			return err
 		}
+		// A move in is a link there (spec 15.11, 15.12; Q58): placed_at the
+		// move's completion, and item.linked in the destination's queue,
+		// the mover its actor. The row moved long before completed existed,
+		// so placed_at is written here, under the destination's scope.
+		if err := inWorkspaceTx(ctx, tx, target, func() error {
+			if _, err := tx.Exec(ctx, `UPDATE devices SET placed_at = $2 WHERE id = $1`, device, completed); err != nil {
+				return err
+			}
+			return recordEvent(ctx, tx, target, itemEvent{
+				Type: eventLinked, ItemID: device, DedupeKey: dedupeKey(eventLinked, device, completed), OccurredAt: completed,
+				ActorKind: actorPerson, ActorSub: sub, ActorUserID: &actor, Label: itemName, Hint: hint,
+			})
+		}); err != nil {
+			return err
+		}
 		// And in Wappie's own pages (DB14): each other active owner of the
 		// Team, never the actor. Only the Team's only owner moves a number
 		// (decision 0043), so there is nobody to tell unless an owner joined

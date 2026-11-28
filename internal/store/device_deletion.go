@@ -1288,11 +1288,20 @@ func (d *Devices) Recover(ctx context.Context, tenant, actor, device uuid.UUID) 
 				return err
 			}
 			itemName, hint := itemLabel(device, name, pn)
-			return recordEvent(ctx, tx, tenant, itemEvent{
+			if err := recordEvent(ctx, tx, tenant, itemEvent{
 				Type: eventRecovered, ItemID: device, DedupeKey: dedupeKey(eventRecovered, device, deletedAt),
 				OccurredAt: at, ActorKind: "person", ActorSub: sub, ActorUserID: &actor, ReaderSubs: subs, ReaderUserIDs: users,
 				Label: itemName, Hint: hint, DeletedAt: &deletedAt,
-			})
+			}); err != nil {
+				return err
+			}
+			// A recovery places the number again (spec 15.5), and is no link
+			// (15.11): placed_at, no item.linked. In a workspace on trial it
+			// asks for codes (15.12, P1).
+			if _, err := tx.Exec(ctx, `UPDATE devices SET placed_at = $2 WHERE id = $1`, device, at); err != nil {
+				return err
+			}
+			return recoveryCodesTx(ctx, tx, tenant, at, actor)
 		})
 	})
 	return out, err

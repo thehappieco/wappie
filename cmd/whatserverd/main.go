@@ -81,7 +81,8 @@ const commandList = `usage: whatserverd [serve]
        whatserverd datacheck [-workspace ID] [-out FILE] [-objects ...] | compare [-expect E] BEFORE AFTER
        whatserverd contract check [--other|--only-current|--only-other] | status [--check] |
                    diff [--tenant T] | mode off|observe | settings off|read|on|status |
-                   entitlements off|observe|usage|hold|release|status
+                   entitlements off|observe|usage|hold|release|status |
+                   trial-key init|check --probe|suspend|resume
        whatserverd contract-secret seal | promote | unpromote | drop | reset | capabilities ...
 `
 
@@ -322,7 +323,7 @@ func setupWith(ctx context.Context, withWA, migrations bool) (*app, func(), erro
 	// The contract's part in signing in and its freshness hook, in every
 	// configuration: the socket's acts ask it from the first frame
 	// (startContract gives it its transport).
-	a.members = &membership.Members{Contract: store.NewContract(pools.API), Log: lg}
+	a.members = &membership.Members{Contract: store.NewContract(pools.API), Log: lg, Trial: trialKeyConfig(cfg.Contract)}
 	if cfg.Deletion.Ledger != "" {
 		a.ledger = &ledger.File{Path: cfg.Deletion.Ledger}
 	}
@@ -558,7 +559,7 @@ func setupWith(ctx context.Context, withWA, migrations bool) (*app, func(), erro
 
 	a.relink = &relink.Service{
 		Devices: a.devices, Pairer: relink.FromRegistry(registry), LIDs: wa.NewLIDMap(container),
-		Receipts: a.recordReceipt, Log: lg,
+		Receipts: a.recordReceipt, Log: lg, Relinked: a.members.Relinked,
 	}
 	a.relinks = &relink.Running{}
 	ws = wsapi.NewServer(wsapi.Config{
@@ -585,6 +586,9 @@ func setupWith(ctx context.Context, withWA, migrations bool) (*app, func(), erro
 		// Every act README 7.1 gates asks the contract's freshness first;
 		// release B only logs the verdicts.
 		Membership: a.members,
+		// A pairing's item.linked, placed_at and link check, and a move's
+		// check (E0 slice 19).
+		Links: a.members,
 		// A grant.revoke that took a person's Read tells the readers of
 		// their connections it ended (DS48).
 		MCPReaders: &a.readers,

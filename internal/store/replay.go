@@ -331,6 +331,10 @@ func ReplayLedger(ctx context.Context, pool *pgxpool.Pool, lines []ledger.Line, 
 	return out, nil
 }
 
+// replayPlacedSQL is a replayed recovery's placed_at: the recovery placed
+// the number when it happened, and never earlier than it was placed.
+const replayPlacedSQL = `UPDATE devices SET placed_at = greatest(placed_at, $2) WHERE id = $1`
+
 // replayStepTx applies one step, in the workspace of tx, with excluded
 // numbers visible.
 func replayStepTx(ctx context.Context, tx pgx.Tx, tenant uuid.UUID, s replayStep) (ReplayChange, error) {
@@ -354,6 +358,10 @@ func replayStepTx(ctx context.Context, tx pgx.Tx, tenant uuid.UUID, s replayStep
 			return change, err
 		}
 		if err := recoveredStrandedTx(ctx, tx, d.DeviceID); err != nil {
+			return change, err
+		}
+		// The recovery placed the number when it happened (spec 15.5).
+		if _, err := tx.Exec(ctx, replayPlacedSQL, d.DeviceID, s.reversal.OccurredAt); err != nil {
 			return change, err
 		}
 		at := s.reversal.DeletedAt

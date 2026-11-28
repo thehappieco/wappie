@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	kc "github.com/thehappieco/kit/contract"
 
+	"whatserver2/internal/obs"
 	"whatserver2/internal/pg"
 	"whatserver2/internal/wa"
 )
@@ -247,6 +248,11 @@ func (c *Contract) AttachRelinkCommand(ctx context.Context, run ContractRun, dev
 	})
 	if err != nil {
 		return ContractAct{}, Attached{}, err
+	}
+	if att.eventFailed {
+		if err := c.RecordError(context.WithoutCancel(ctx), ContractErrorEventRecord); err != nil {
+			obs.LoggerFrom(ctx).Warn("contract: could not record an ERROR", "error", err)
+		}
 	}
 	return out, att, nil
 }

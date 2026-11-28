@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"time"
 
@@ -320,6 +321,9 @@ type EntItemResult struct {
 	Braked, NewBrake bool
 	Doc              *EntDoc
 	Refused          *EntRefusal
+	// Codes counts the item.identity_updated its apply recorded (slice
+	// 19: a trial, a codes_after).
+	Codes int
 }
 
 // EntPageResult is what CommitEntPage did.
@@ -349,10 +353,31 @@ func lockEntRowsTx(ctx context.Context, tx pgx.Tx, ids []uuid.UUID, all bool) er
 	return err
 }
 
+// lockCodesWorkspacesTx takes, in id order, the workspace rows (tenants,
+// FOR UPDATE) of every document of items that may ask for codes (its
+// trial_ends_at or its codes_after set), before any is applied: slice 19's
+// triggers (entCodesTx) then write under rows already held, never taking
+// two workspaces in the page's order against a move's id order.
+func lockCodesWorkspacesTx(ctx context.Context, tx pgx.Tx, items []EntPageItem) error {
+	var ids []uuid.UUID
+	for _, it := range items {
+		if it.Doc != nil && (it.Doc.Doc.State.TrialEndsAt != nil || it.Doc.Doc.Requests.CodesAfter != nil) {
+			ids = append(ids, it.Doc.Workspace)
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	slices.SortFunc(ids, compareIDs)
+	_, err := tx.Exec(ctx, `SELECT 1 FROM tenants WHERE id = ANY ($1) ORDER BY id FOR UPDATE`, slices.Compact(ids))
+	return err
+}
+
 // CommitEntPage stores a page of the entitlements feed in one transaction,
 // in the lock order: contract_state FOR SHARE, contract_ent_state, then
 // the document rows the page touches (every kept one when a refusal's
-// workspace cannot be read). It commits only while the generation and the
+// workspace cannot be read), then the workspace rows of the documents that
+// may ask for codes (lockCodesWorkspacesTx). It commits only while the generation and the
 // cursor are the ones the page was asked with. A valid document is stored
 // when no row holds one, the held one's version was forgotten, or its
 // version is higher; it then counts as applied when an account document
@@ -401,6 +426,9 @@ func (c *Contract) CommitEntPage(ctx context.Context, p EntPage) (EntPageResult,
 			}
 			slices.SortFunc(ids, compareIDs)
 			if err := lockEntRowsTx(ctx, tx, slices.Compact(ids), unreadable); err != nil {
+				return err
+			}
+			if err := lockCodesWorkspacesTx(ctx, tx, p.Items); err != nil {
 				return err
 			}
 			for _, it := range p.Items {
@@ -487,8 +515,11 @@ func applyEntDocTx(ctx context.Context, tx pgx.Tx, d EntDoc, seq int64, signedAt
 	r := EntItemResult{Workspace: d.Workspace, Doc: &d}
 	var version *int64
 	var prev []byte
+	var codes entCodesPrev
 	exists := true
-	err := tx.QueryRow(ctx, `SELECT version, doc FROM contract_ent_docs WHERE workspace_id = $1`, d.Workspace).Scan(&version, &prev)
+	err := tx.QueryRow(ctx, `SELECT version, doc, applied_at IS NOT NULL, trial_ends_at, codes_after_answered, first_after_reset
+		FROM contract_ent_docs WHERE workspace_id = $1`, d.Workspace).
+		Scan(&version, &prev, &codes.Applied, &codes.Trial, &codes.Answered, &codes.FirstAfterReset)
 	if errors.Is(err, pgx.ErrNoRows) {
 		exists, err = false, nil
 	}
@@ -571,6 +602,15 @@ func applyEntDocTx(ctx context.Context, tx pgx.Tx, d EntDoc, seq int64, signedAt
 		}
 		r.NewBrake = tag.RowsAffected() == 1
 		r.Braked = true
+	}
+	if r.Action == EntApply {
+		// Slice 19's triggers, in the apply's transaction: in E0 "applying"
+		// includes a document only observed (Q73).
+		n, err := entCodesTx(ctx, tx, d.Workspace, doc, codes)
+		if err != nil {
+			return r, err
+		}
+		r.Codes = n
 	}
 	return r, nil
 }
@@ -879,9 +919,26 @@ func entNamedTx(ctx context.Context, tx pgx.Tx, ids []uuid.UUID) error {
 		return err
 	}
 	for _, id := range ids {
-		if _, err := tx.Exec(ctx, `INSERT INTO contract_ent_docs AS d (workspace_id, get_due_at) VALUES ($1, clock_timestamp())
+		// The late apply returns the document it applied, whose triggers
+		// (slice 19) run now: none was applied for the workspace before.
+		var raw []byte
+		var answered *time.Time
+		var reset bool
+		err := tx.QueryRow(ctx, `INSERT INTO contract_ent_docs AS d (workspace_id, get_due_at) VALUES ($1, clock_timestamp())
 			ON CONFLICT (workspace_id) DO UPDATE SET applied_at = clock_timestamp()
-			WHERE d.applied_at IS NULL AND d.doc IS NOT NULL`, id); err != nil {
+			WHERE d.applied_at IS NULL AND d.doc IS NOT NULL
+			RETURNING d.doc, d.codes_after_answered, d.first_after_reset`, id).Scan(&raw, &answered, &reset)
+		if errors.Is(err, pgx.ErrNoRows) || (err == nil && raw == nil) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		var doc kc.EntitlementsDoc
+		if err := json.Unmarshal(raw, &doc); err != nil {
+			return fmt.Errorf("store: a kept document applied late: %w", err)
+		}
+		if _, err := entCodesTx(ctx, tx, id, doc, entCodesPrev{Answered: answered, FirstAfterReset: reset}); err != nil {
 			return err
 		}
 	}
@@ -956,6 +1013,9 @@ type EntRow struct {
 	BrakeKind   string
 	BrakeTold   bool
 	BrakeHeldAt *time.Time
+	// Generation is the held document's, nil while none is held and after
+	// a reset.
+	Generation *uuid.UUID
 }
 
 // entFreshness is a workspace's freshness (the spec's 15.6 and 15.7): the
@@ -988,13 +1048,13 @@ const entRowColumns = `d.workspace_id, d.version, coalesce(d.mode, ''), coalesce
 	EXISTS (SELECT 1 FROM contract_workspaces w WHERE w.workspace_id = d.workspace_id), d.applied_at, d.received_at,
 	d.feed_held_back, d.feed_fresh_at, d.get_fresh_at, d.get_due_at, d.get_tries, coalesce(d.get_error, ''), d.get_error_at,
 	d.not_found_since, d.ever_enforce_at, d.timeline_logged_through, coalesce(d.cap_side, ''),
-	coalesce(b.by_kind, ''), coalesce(b.platform_told, false), b.held_at`
+	coalesce(b.by_kind, ''), coalesce(b.platform_told, false), b.held_at, d.generation`
 
 func scanEntRow(row pgx.CollectableRow) (EntRow, error) {
 	var r EntRow
 	err := row.Scan(&r.Workspace, &r.Version, &r.Mode, &r.State, &r.Doc, &r.Named, &r.AppliedAt, &r.ReceivedAt,
 		&r.FeedHeldBack, &r.FeedFreshAt, &r.GetFreshAt, &r.GetDueAt, &r.GetTries, &r.GetError, &r.GetErrorAt, &r.NotFoundSince,
-		&r.EverEnforceAt, &r.TimelineLoggedThrough, &r.CapSide, &r.BrakeKind, &r.BrakeTold, &r.BrakeHeldAt)
+		&r.EverEnforceAt, &r.TimelineLoggedThrough, &r.CapSide, &r.BrakeKind, &r.BrakeTold, &r.BrakeHeldAt, &r.Generation)
 	return r, err
 }
 

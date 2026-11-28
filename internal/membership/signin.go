@@ -77,6 +77,10 @@ type Members struct {
 	// Enforce makes RequireFresh's verdicts refusals. Release B never sets
 	// it (the plan's DB4): observe only logs them.
 	Enforce bool
+	// Trial is how K_app is opened (trialkey.go); its zero opens none.
+	Trial TrialKeyConfig
+	// LinkTimings are the link check's (linkcheck.go); tests shorten them.
+	LinkTimings LinkTimings
 
 	mu    sync.Mutex
 	state store.ContractState
@@ -85,6 +89,8 @@ type Members struct {
 	calls *callBudget
 	// pacing gives the leader's calls their turns (Pace).
 	pacing pacer
+	// trial is K_app as this process last opened it.
+	trial trialKeys
 }
 
 // SignUp is a new account's subscription: its home and document when the

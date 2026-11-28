@@ -88,3 +88,16 @@ func (c *Contract) SnapshotSeqForTest(ctx context.Context, workspace uuid.UUID, 
 	}
 	return seq, err == nil, err
 }
+
+// RecordWorkspacesForTest is recordWorkspacesTx: an account page's
+// records, and the entitlements side's hook (its late apply).
+func RecordWorkspacesForTest(ctx context.Context, tx pgx.Tx, named map[uuid.UUID]ContractDocWorkspace) error {
+	return recordWorkspacesTx(ctx, tx, named)
+}
+
+// ReplayRecoveryPlacedForTest is a replayed recovery's placed_at, the
+// statement replayStepTx runs.
+func ReplayRecoveryPlacedForTest(ctx context.Context, tx pgx.Tx, device uuid.UUID, occurred time.Time) error {
+	_, err := tx.Exec(ctx, replayPlacedSQL, device, occurred)
+	return err
+}

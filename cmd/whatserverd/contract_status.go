@@ -100,6 +100,9 @@ func contractStatus(ctx context.Context, c *store.Contract, cfg config.Contract,
 	// too.
 	sst, serr := c.SettingsStatus(ctx)
 	est, eerr := c.EntStatus(ctx)
+	tst, terr := c.TrialKeyState(ctx)
+	checks, cerr := c.LinkChecks(ctx)
+	terr = errors.Join(terr, cerr)
 	w := &lines{w: out}
 	s := st.State
 	w.f("mode: %s (since %s)", s.Mode, stamp(s.ModeChangedAt))
@@ -182,6 +185,11 @@ func contractStatus(ctx context.Context, c *store.Contract, cfg config.Contract,
 	} else {
 		entitlementsLines(w, est)
 	}
+	if terr != nil {
+		w.f("trial key: unreadable: %v", terr)
+	} else {
+		trialKeyLines(w, tst, cfg, checks)
+	}
 	// Person invitations into a recorded team are paused (the plan's DB6):
 	// before the switch, B2b reads here how many of a team's will stop
 	// being redeemable once a document names it.
@@ -210,6 +218,11 @@ func contractStatus(ctx context.Context, c *store.Contract, cfg config.Contract,
 		found = append(found, fmt.Sprintf("the entitlements part's state could not be read: %v", eerr))
 	} else {
 		found = append(found, entitlementsFindings(est)...)
+	}
+	if terr != nil {
+		found = append(found, fmt.Sprintf("the trial key's state could not be read: %v", terr))
+	} else {
+		found = append(found, trialKeyFindings(tst)...)
 	}
 	for _, f := range found {
 		w.f("finding: %s", f)

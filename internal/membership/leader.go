@@ -102,6 +102,8 @@ type Leader struct {
 	Settings SettingsConfig
 	// Entitlements is the entitlements part's (entitlements.go).
 	Entitlements EntitlementsConfig
+	// Trial is the trial key's (trialkey.go).
+	Trial TrialTimings
 
 	// ours, set by tests only, tells the dirty and due notices this
 	// installation's sessions sent from any other's: every test schema
@@ -249,15 +251,20 @@ func (l *Leader) lead(held *pg.Held, wake <-chan string) (lost bool) {
 	}
 	snaps := &snapshotSender{l: l, notices: newNotices(), logged: map[uuid.UUID]time.Time{}}
 	events := newEventSender(l)
+	trial := newTrialWork(l)
+	events.ready = trial.ready
 	var wg sync.WaitGroup
 	wg.Go(func() { f.run(ctx) })
 	wg.Go(func() { l.rounds(ctx, f.round) })
 	wg.Go(func() { snaps.run(ctx) })
 	wg.Go(func() { events.run(ctx) })
-	wg.Go(func() { l.watchMode(ctx, stop, f, settings, ent, snaps.notices, events, held, wake) })
+	wg.Go(func() { trial.run(ctx) })
+	wg.Go(func() { l.watchMode(ctx, stop, f, settings, ent, snaps.notices, events, trial, held, wake) })
 	wg.Wait()
 	ent.halt()
 	settings.halt()
+	// A process that no longer leads reads no key state: it makes no code.
+	l.Members.forgetTrialKey()
 	lost = errors.Is(context.Cause(held.Context()), pg.ErrLockLost)
 	if lost {
 		l.log().Warn("contract: the leader's lock is lost; stopping", "error", context.Cause(held.Context()))
@@ -270,7 +277,9 @@ func (l *Leader) lead(held *pg.Held, wake <-chan string) (lost bool) {
 // watchMode stops the leader when the mode is off, and starts or stops the
 // settings part with the settings mode and the entitlements part with its
 // own, each read at its start, every ModeCheck and at each mode notice
-// ("entitlements" among them), and passes the other notices on,
+// ("entitlements" among them), and passes the other notices on (a key
+// installed or the codes switched to the trial key, a link's GET due to
+// the entitlements part's GETs),
 // never waiting on their loops: a round to run now, a generation to look
 // for at once (both long-polls in flight are cut), to the snapshot sender
 // and the section sender the workspaces a change touched and the due times
@@ -278,7 +287,7 @@ func (l *Leader) lead(held *pg.Held, wake <-chan string) (lost bool) {
 // to the event sender the queues with new rows or due again. It is the
 // held connection's one reader.
 func (l *Leader) watchMode(ctx context.Context, stop context.CancelFunc, f *follower, settings *settingsWork,
-	ent *entitlementsWork, snaps *notices, events *eventSender, held *pg.Held, wake <-chan string) {
+	ent *entitlementsWork, snaps *notices, events *eventSender, trial *trialWork, held *pg.Held, wake <-chan string) {
 	tick := time.NewTicker(or(l.ModeCheck, modeCheck))
 	defer tick.Stop()
 	check := func() {
@@ -315,6 +324,12 @@ func (l *Leader) watchMode(ctx context.Context, stop context.CancelFunc, f *foll
 			f.interrupt()
 			settings.interrupt()
 			ent.interrupt()
+		case "trial_key":
+			// A key installed, or the codes switched (0054).
+			kick(trial.wake)
+		case "ent_get":
+			// A link's check made a GET due now (EntGetNow).
+			kick(ent.gets)
 		default:
 			// "settings" among them: a switch of the settings mode.
 			check()

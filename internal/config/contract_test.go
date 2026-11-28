@@ -202,3 +202,22 @@ WS_LOGIN_DECOY_KEY_HEX=01
 		t.Fatalf("empty key: %v", err)
 	}
 }
+
+// WS_TRIAL_KEY_RETIRED lists sha256 sums, by commas or spaces; anything
+// else is refused, naming the setting, never its value.
+func TestTrialKeyRetired(t *testing.T) {
+	minimalEnv(t)
+	a, b := strings.Repeat("ab", 32), strings.Repeat("0F", 32)
+	t.Setenv("WS_TRIAL_KEY_RETIRED", a+", "+b)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Contract.TrialKeyRetiredSums(); len(got) != 2 || got[0] != a || got[1] != strings.ToLower(b) {
+		t.Fatalf("the sums: %v", got)
+	}
+	t.Setenv("WS_TRIAL_KEY_RETIRED", "not-a-sum")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "WS_TRIAL_KEY_RETIRED") || strings.Contains(err.Error(), "not-a-sum") {
+		t.Fatalf("a bad sum: %v", err)
+	}
+}

@@ -109,6 +109,11 @@ func (s *session) handleDeviceTransfer(ctx context.Context, f Frame) {
 	if !s.freshMover(ctx, f.ReqID, source, who.userID) {
 		return
 	}
+	// The destination's link check, before anything is held or paused
+	// (E0 slice 19; spec 15.11): observe only, within its few seconds.
+	if links := s.srv.cfg.Links; links != nil {
+		links.BeforeMove(ctx, source, target, device, out.ArchiveBytes+out.ObjectBytes)
+	}
 	// The sessions that see the number now, the Team's owners and admins
 	// who manage it by role, are told it is gone once it moved; nobody else
 	// can be reading it.

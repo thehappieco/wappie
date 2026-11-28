@@ -45,6 +45,21 @@ type Contract struct {
 	// state directory): fingerprints of the envelopes, never the secret.
 	// The installer waits for it before it calls a step done.
 	LoadedFile string
+	// TrialKeyRetired lists the sha256 (64 lowercase hex characters) of
+	// every K_app envelope recorded as exposed (WS_TRIAL_KEY_RETIRED,
+	// separated by commas or spaces): wappie-api never opens one, and
+	// contract trial-key resume is refused while the installed one is
+	// listed, so a database restore never brings an exposed key back into
+	// use (the platform's spec, 15.10). Kept outside the database on
+	// purpose. As set; TrialKeyRetiredSums lists them.
+	TrialKeyRetired string
+}
+
+// TrialKeyRetiredSums are WS_TRIAL_KEY_RETIRED's sums, lowercased.
+func (c Contract) TrialKeyRetiredSums() []string {
+	return strings.FieldsFunc(strings.ToLower(c.TrialKeyRetired), func(r rune) bool {
+		return r == ',' || r == ' ' || r == '\t' || r == '\n'
+	})
 }
 
 // DefaultContractLoaded is the published load's path unless
@@ -94,6 +109,7 @@ func loadContract() Contract {
 		KMSKeyARN:       strings.TrimSpace(os.Getenv("WS_CONTRACT_KMS_KEY_ARN")),
 		KMSRegion:       strings.TrimSpace(os.Getenv("WS_CONTRACT_KMS_REGION")),
 		LoadedFile:      strings.TrimSpace(str("WS_CONTRACT_LOADED_FILE", DefaultContractLoaded)),
+		TrialKeyRetired: strings.TrimSpace(os.Getenv("WS_TRIAL_KEY_RETIRED")),
 	}
 }
 
@@ -107,6 +123,12 @@ func (c Contract) Validate(prod bool) error {
 	// refusing it everywhere keeps it from being set by mistake.
 	if _, set := os.LookupEnv("WS_CONTRACT_SECRET"); set {
 		bad("WS_CONTRACT_SECRET is refused: the contract secret lives in WS_CONTRACT_SECRET_FILE, a THCSEAL envelope in prod")
+	}
+	for _, sum := range c.TrialKeyRetiredSums() {
+		if !sha256Hex(sum) {
+			bad("WS_TRIAL_KEY_RETIRED lists the sha256 of each retired envelope, 64 hexadecimal characters each")
+			break
+		}
 	}
 	if !c.Configured() {
 		if c.SecretFile != "" || c.SecretOtherFile != "" || c.KMSKeyARN != "" || c.KMSRegion != "" {
@@ -179,4 +201,17 @@ func kmsKeyARN(arn, region string) bool {
 	parts := strings.SplitN(arn, ":", 6)
 	return len(parts) == 6 && parts[0] == "arn" && parts[1] != "" && parts[2] == "kms" &&
 		parts[3] == region && parts[4] != "" && strings.HasPrefix(parts[5], "key/") && len(parts[5]) > len("key/")
+}
+
+// sha256Hex reports 64 lowercase hexadecimal characters.
+func sha256Hex(s string) bool {
+	if len(s) != 64 {
+		return false
+	}
+	for _, r := range s {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return false
+		}
+	}
+	return true
 }

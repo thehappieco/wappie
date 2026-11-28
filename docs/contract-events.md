@@ -23,6 +23,8 @@ row.
 | `purged` | `item.purged` | null, `app` | `[]` | |
 | `moved_out` | `item.moved_out` | the mover's sub, `person` | the team's readers before the move: at most the mover | `to`: `personal` |
 | `stranded` | `item.stranded` | the owner's sub, `person` | who read it just before the change, the person stranded among them | `person`: the stranded person's sub (omitted when they have none); `cause`: `revoked` (a removal) or `disabled` (a disable) |
+| `linked` | `item.linked` | the person who paired it, or the mover, `person` (a full key's pairing: null) | `[]` | `codes`: the number's trial codes, made at send time (0054) |
+| `identity_updated` | `item.identity_updated` | null, `app`; a recovery's: the recoverer's sub, `person` | `[]` | `codes`, as `item.linked`'s |
 
 Every event carries `event_id` (the row's UUIDv7, the platform's
 idempotency key), `workspace_id` (the row's workspace, which is the
@@ -97,9 +99,9 @@ named it), it is neither settled nor parked, and either:
 
 - it was written (not replayed) at or after both the first switch to
   observe (`contract_state.events_from`) and the workspace's naming
-  (`named_at`); and, for a pause, a stranding or a move, not while the
-  contract was `off` after an observe (`events_off`, the off periods, and
-  the current one);
+  (`named_at`); and, for a pause, a stranding, a move, a link or an
+  identity's update, not while the contract was `off` after an observe
+  (`events_off`, the off periods, and the current one);
 - or it was replayed, a deletion, a recovery or a purge (the three a
   restore's replay writes, with the ledger's own `event_id` and time), and
   it occurred at or after both.
@@ -111,8 +113,13 @@ recoveries and purges written while `off` after an observe **are** sent on
 the return to observe: the spec always sends them, an off period after the
 first observe is not "before the transport", and without them a purge
 could arrive with no deletion. A late `item.deleted` can therefore mail the
-owners after the fact. Pauses, strandings and moves written while `off` are
-local only. `whatserverd contract mode observe` prints how many of each it
+owners after the fact. Pauses, strandings, moves, links and identities'
+updates written while `off` are local only; a number whose codes went that
+way gets them from the codes' catch-up once events go again
+([trial codes](contract.md#trial-codes-itemlinked-itemidentity_updated-and-the-link-check)).
+An `item.linked` or `item.identity_updated` whose number has no code when
+it goes (no usable trial key, codes suspended, an identity that makes none)
+settles `not_sent` and goes nowhere. `whatserverd contract mode observe` prints how many of each it
 will send and hold back ([the mode](contract.md#the-mode)).
 
 A replayed row the platform already holds comes back `duplicate`: its rule

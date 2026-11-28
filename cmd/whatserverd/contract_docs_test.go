@@ -221,6 +221,18 @@ func TestContractDocsMatchTheCode(t *testing.T) {
 				"contract: usage refused",
 				"contract: usage not measured",
 				"contract: usage report late",
+				"contract: trial key opened",
+				"contract: trial key not used; links go with no code",
+				"contract: trial codes suspended; links go with no code",
+				"contract: trial codes",
+				"contract: trial key created",
+				"contract: an item.linked could not be written; the catch-up covers the number",
+				"contract: an item.identity_updated could not be written; the catch-up covers the number",
+				"contract: codes caught up",
+				"contract: an event goes with no code; not sent",
+				"contract: link check",
+				"contract: link check failed",
+				"contract: link would be refused (observe)",
 				"settings: off with it",
 				"invite: this team's people join through The Happie Co; person invitations are paused here " +
 					"until Wappie applies the platform's members (a service invitation still works: -role service)",
@@ -293,9 +305,12 @@ func TestContractDocsMatchTheCode(t *testing.T) {
 			{"whatserverd contract entitlements usage off|on [--platform-told]", "entitlements off|observe|usage|hold|release|status"},
 			{"whatserverd contract entitlements hold|release -workspace <id> [--platform-told]", "entitlements off|observe|usage|hold|release|status"},
 			{"whatserverd contract entitlements status [--check]", "entitlements off|observe|usage|hold|release|status"},
+			{"whatserverd contract trial-key init", "trial-key init|check --probe|suspend|resume"},
+			{"whatserverd contract trial-key check --probe", "trial-key init|check --probe|suspend|resume"},
+			{"whatserverd contract trial-key suspend|resume [--platform-told]", "trial-key init|check --probe|suspend|resume"},
 		} {
 			says("contract.md", c.doc)
-			if !strings.Contains(c.doc, "settings") && !strings.Contains(c.doc, "entitlements") {
+			if !strings.Contains(c.doc, "settings") && !strings.Contains(c.doc, "entitlements") && !strings.Contains(c.doc, "trial-key") {
 				says("deployment.md", c.doc)
 			}
 			if !strings.Contains(usage, c.usage) {
@@ -535,6 +550,9 @@ func TestContractDocsMatchTheCode(t *testing.T) {
 			": usage refused (invalid_request) since ",
 			": usage report late (",
 			": no usage report for over 6 h 15 min",
+			"trial key does not open (",
+			"a key row exists but wappie-api has recorded no open of it",
+			"the trial key's state could not be read: ",
 		} {
 			codeSays(f)
 			if strings.Contains(f, "%d") {
@@ -570,7 +588,8 @@ func TestContractDocsMatchTheCode(t *testing.T) {
 			store.ContractErrorCommandInvalid, store.ContractErrorCommandStuck, store.ContractErrorSectionInvalid,
 			store.ContractErrorSectionParked, store.ContractErrorResultParked, store.ContractErrorEntFeedSilent,
 			store.ContractErrorEntResetLoop, store.ContractErrorEntAckFailing, store.ContractErrorEntEnforceInE0,
-			store.ContractErrorUsageMismatch, store.ContractErrorUsageInvalid} {
+			store.ContractErrorUsageMismatch, store.ContractErrorUsageInvalid, store.ContractErrorTrialKey,
+			store.ContractErrorEventRecord} {
 			says("contract.md", "`"+class+"`")
 		}
 		says("contract-events.md", "`"+store.ContractErrorEventActor+"`")
@@ -807,6 +826,32 @@ func TestContractDocsMatchTheCode(t *testing.T) {
 		says("deployment.md", "It comes before 0052's down-step, whose guard refuses while 53 is applied")
 	})
 
+	t.Run("the 0054 down-step", func(t *testing.T) {
+		sql := docText(t, "../../internal/migrate/sql/0054_trial_codes.sql")
+		for _, msg := range []string{
+			"entitlements are on: run whatserverd contract entitlements off first",
+			"trial codes are on: run whatserverd contract trial-key suspend first",
+			"item.linked or item.identity_updated events are still owed: let the leader send them first",
+			"a migration after 0054 is applied; run its down-step first",
+		} {
+			if !strings.Contains(sql, msg) {
+				t.Errorf("0054's down-step no longer says %q", msg)
+			}
+			says("deployment.md", msg)
+		}
+		notice := "dropping % linked and identity_updated rows, % placed numbers, % link checks; the trial key is kept"
+		if !strings.Contains(sql, notice) {
+			t.Errorf("0054's down-step no longer says %q", notice)
+		}
+		says("deployment.md", strings.ReplaceAll(notice, "%", "N"))
+		says("deployment.md", "`migration54_sha256`")
+		says("deployment.md", "`0054_trial_codes.sql`")
+		if !strings.Contains(sql, "It runs first: 0054 down, then 0053 down") {
+			t.Error("0054's header no longer says it comes down before 0053")
+		}
+		says("deployment.md", "It comes before 0053's down-step, whose guard refuses while 54 is applied")
+	})
+
 	t.Run("the event example", func(t *testing.T) {
 		golden, err := os.ReadFile("../../internal/membership/testdata/events/deleted.json")
 		if err != nil {
@@ -876,7 +921,8 @@ func TestContractDocsMatchTheCode(t *testing.T) {
 			"relink window", "relink session", "QR ahead", "pairing hold",
 			"entitlements long-poll", "entitlements backoff", "entitlements silent", "ack every", "ack at least", "ack failing",
 			"GET backoff", "GET pace", "timeline look", "cap look", "entitlements idle",
-			"usage look", "usage floor", "usage coalesce", "usage backoff", "usage invalid", "usage crossing", "usage after"}
+			"usage look", "usage floor", "usage coalesce", "usage backoff", "usage invalid", "usage crossing", "usage after",
+			"trial retry", "trial poll", "trial error", "catch-up daily", "catch-up pace", "link GET wait", "move check", "link fresh"}
 		for name, want := range ours {
 			if got := rows[name]; len(got) == 0 || got[0] != want {
 				t.Errorf("docs/contract.md's timing %q is %q, the code's is %q", name, got, want)

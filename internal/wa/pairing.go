@@ -81,6 +81,13 @@ type PairOptions struct {
 	// Relink links a number Wappie already holds again, by QR only, and
 	// keeps the link only for the number's own account (relink.go).
 	Relink *Relink
+
+	// OnLinked is told of a new link once WhatsApp completed it, with the
+	// paired session's own identity, before the success event goes; never
+	// for a relink. It must return at once and cannot fail the pairing:
+	// the contract's item.linked, placed_at and link check (E0 slice 19)
+	// run in its own goroutine.
+	OnLinked func(ctx context.Context, linked Identity)
 }
 
 // defaultDisplayName is a combination WhatsApp accepts.
@@ -350,6 +357,16 @@ func (r *Registry) runPairing(ctx context.Context, s *PairSession, p pairRun) {
 				if relink {
 					r.finishRelink(ctx, p, final)
 					return
+				}
+				if p.opts.OnLinked != nil {
+					// From the session's own store, as finishRelink takes
+					// it: whatsmeow's QR channel may say success before
+					// PairSuccess persisted the identity.
+					linked := Identity{LID: p.ds.LID}
+					if p.ds.ID != nil {
+						linked.PN = *p.ds.ID
+					}
+					p.opts.OnLinked(ctx, linked)
 				}
 				r.endPairing(p.deviceID, p.dev)
 				emit(PairEvent{Kind: PairEventSuccess})

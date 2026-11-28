@@ -89,6 +89,15 @@ func TestContractTimingsMatchTheDocs(t *testing.T) {
 		"timeline look":          spoken(entTimelineEvery),
 		"cap look":               spoken(entCapEvery),
 		"entitlements idle":      spoken(entIdle),
+		// The trial key's and the link check's (trialkey.go, linkcheck.go).
+		"trial retry":    spoken(trialRetry),
+		"trial poll":     spoken(trialPoll),
+		"trial error":    spoken(trialErrorEvery),
+		"catch-up daily": spoken(trialDaily),
+		"catch-up pace":  spoken(trialPace),
+		"link GET wait":  spoken(linkGetWait),
+		"move check":     spoken(linkMoveBudget),
+		"link fresh":     spoken(linkFreshFor),
 		// The usage sender's (usage.go).
 		"usage look":     spoken(usageEvery),
 		"usage floor":    spoken(usageFloor),

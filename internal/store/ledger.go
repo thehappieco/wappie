@@ -95,7 +95,10 @@ type DeletionHousekeepingCounts struct {
 //     eligible, neither settled nor parked). A row the ledger has not taken
 //     stays, however old. An owed row whose 29 days are spent is parked as
 //     expired first, so none is kept past them, whether or not a leader
-//     sends;
+//     sends. A live number's newest item.linked or item.identity_updated
+//     row in its own workspace stays: the codes' catch-up reads it to send
+//     each number's codes once (slice 19). One of a number deleted, or moved
+//     out, goes by the 30 days as any other;
 //   - a seen notice 30 days after it was seen; a pause notice still unseen
 //     30 days after its pause ended; a deletion notice still unseen 30 days
 //     after its number was purged;
@@ -118,7 +121,10 @@ func DeletionHousekeeping(ctx context.Context, pool *pgxpool.Pool, tenant uuid.U
 		tag, err := tx.Exec(ctx, `DELETE FROM item_events e
 			WHERE e.ledgered_at IS NOT NULL AND e.created_at < clock_timestamp() - interval '30 days'
 			  AND NOT EXISTS (SELECT 1 FROM contract_state s JOIN contract_workspaces w ON w.workspace_id = e.tenant_id
-			                   WHERE `+eligibleEventSQL+`)`)
+			                   WHERE `+eligibleEventSQL+`)
+			  AND NOT (e.type IN ('linked', 'identity_updated') AND e.seq = (SELECT max(x.seq) FROM item_events x
+			           WHERE x.tenant_id = e.tenant_id AND x.item_id = e.item_id AND x.type IN ('linked', 'identity_updated'))
+			           AND EXISTS (SELECT 1 FROM devices d WHERE d.id = e.item_id AND d.tenant_id = e.tenant_id AND d.deleted_at IS NULL))`)
 		if err != nil {
 			return fmt.Errorf("store: event housekeeping: %w", err)
 		}

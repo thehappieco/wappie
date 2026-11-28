@@ -52,6 +52,10 @@ var eventTypes = map[string]string{
 	"purged":      kc.EventPurged,
 	"moved_out":   kc.EventMovedOut,
 	"stranded":    kc.EventStranded,
+	// Slice 19's (spec 15.12): their codes are made at send time
+	// (eventSender.send).
+	"linked":           kc.EventLinked,
+	"identity_updated": kc.EventIdentityUpdated,
 }
 
 // EventOf is the wire's event (README 9) of a queue's event in workspace:
@@ -159,6 +163,10 @@ func eventResults(events []kc.Event, results []kc.EventResult) ([]store.Contract
 type eventSender struct {
 	l    *Leader
 	wake chan struct{}
+	// ready, when set, closes after the leader's first load of the trial
+	// key (trialWork.ready): run sends nothing before it, so an
+	// item.linked owed at a restart goes with its codes.
+	ready <-chan struct{}
 
 	mu sync.Mutex
 	// named are the workspaces the notices named since the last look.
@@ -230,6 +238,13 @@ func (s *eventSender) run(ctx context.Context) {
 		case <-time.After(d):
 		}
 		return true
+	}
+	if s.ready != nil {
+		select {
+		case <-ctx.Done():
+			return
+		case <-s.ready:
+		}
 	}
 	queues := map[uuid.UUID]bool{}
 	var scanAt time.Time
@@ -322,7 +337,9 @@ func (s *eventSender) run(ctx context.Context) {
 // rows parked and logged, the events Wappie would not send parked, the
 // rest in one batch under the body's bound. It reports whether the queue
 // may hold more, and false for ok when the store could not be read or
-// written (the queue is then due as it was).
+// written, or a row that carries codes was met before this process loaded
+// the trial key (trialNotLoaded: that row and those after it are held,
+// never settled): the queue is then due as it was, after a backoff.
 func (s *eventSender) send(ctx context.Context, ws uuid.UUID) (more, ok bool) {
 	l, c := s.l, s.l.Members.Contract
 	batch, err := c.EventBatch(ctx, ws, kc.MaxEvents)
@@ -342,8 +359,29 @@ func (s *eventSender) send(ctx context.Context, ws uuid.UUID) (more, ok bool) {
 	}
 	events := make([]kc.Event, 0, len(batch.Events))
 	var invalid []store.ContractEventPark
+	var noCode []uuid.UUID
+	held := false
 	for _, e := range batch.Events {
 		ev := EventOf(ws, e)
+		if store.IsCodeEvent(e.Type) {
+			// The codes, made now and never stored (spec 15.10); with none
+			// (no usable K_app, codes suspended, an identity that makes
+			// none) the row settles not_sent (15.12 "An item with no code").
+			codes, why := l.Members.trialCodesNow(e.PN, e.LID)
+			if why == trialNotLoaded {
+				// No verdict on the key yet: the row and those after it
+				// stay owed, in order, for a later pass.
+				held = true
+				break
+			}
+			if len(codes) == 0 {
+				l.log().Info("contract: an event goes with no code; not sent", "workspace", ws, "event", e.EventID, "type", e.Type,
+					"reason", why)
+				noCode = append(noCode, e.EventID)
+				continue
+			}
+			ev.Codes = codes
+		}
 		if e.ActorUnknown() {
 			s.actorUnknown(ctx, ws, e)
 		}
@@ -355,6 +393,17 @@ func (s *eventSender) send(ctx context.Context, ws uuid.UUID) (more, ok bool) {
 			continue
 		}
 		events = append(events, ev)
+	}
+	if len(noCode) > 0 {
+		if _, err := c.EventsNotSent(ctx, ws, noCode); err != nil {
+			if ctx.Err() == nil {
+				l.log().Warn("contract: could not settle the events with no code", "workspace", ws, "error", err)
+			}
+			return true, false
+		}
+		if len(events) == 0 && len(invalid) == 0 {
+			return true, !held
+		}
 	}
 	n, err := fitEvents(events)
 	if err != nil {
@@ -376,7 +425,9 @@ func (s *eventSender) send(ctx context.Context, ws uuid.UUID) (more, ok bool) {
 		s.recordError(ctx, store.ContractErrorEventParked)
 	}
 	if n == 0 {
-		return true, true
+		// A batch held whole for the trial key is due again after a
+		// backoff, not at once.
+		return true, !held || len(invalid) > 0
 	}
 	return true, s.post(ctx, ws, batch.ReadAt, events[:n])
 }

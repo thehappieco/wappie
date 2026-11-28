@@ -49,6 +49,10 @@ type KMS struct {
 	// fail, as awskms.New does when DescribeKey does.
 	fail, describe error
 	calls          int
+	// decrypts counts Decrypt alone; purposes are the contexts' purposes
+	// of every call, in order.
+	decrypts int
+	purposes []string
 }
 
 // NewKMS is a key of its own: envelopes of another KMS never open.
@@ -94,6 +98,20 @@ func (k *KMS) Calls() int {
 	return k.calls
 }
 
+// Decrypts counts Decrypt alone: an open of an envelope.
+func (k *KMS) Decrypts() int {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	return k.decrypts
+}
+
+// Purposes are the encryption contexts' purposes of every call, in order.
+func (k *KMS) Purposes() []string {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	return append([]string(nil), k.purposes...)
+}
+
 // Open is a membership.OpenWrapper over k: as awskms.New, it fails when
 // DescribeKey would (SetDescribeFail).
 func (k *KMS) Open(context.Context, string, string) (kms.Wrapper, error) {
@@ -114,6 +132,7 @@ func (k *KMS) GenerateDataKey(_ context.Context, ec kms.Context) ([]byte, []byte
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	k.calls++
+	k.purposes = append(k.purposes, ec.Purpose)
 	if k.fail != nil {
 		return nil, nil, k.fail
 	}
@@ -136,6 +155,8 @@ func (k *KMS) Decrypt(_ context.Context, wrapped []byte, ec kms.Context) ([]byte
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	k.calls++
+	k.decrypts++
+	k.purposes = append(k.purposes, ec.Purpose)
 	if k.fail != nil {
 		return nil, k.fail
 	}

@@ -425,7 +425,7 @@ func offPeriodCountsTx(ctx context.Context, tx pgx.Tx, paused time.Time) (toSend
 		if err := tx.QueryRow(ctx, `SELECT
 				count(*) FILTER (WHERE `+eligibleEventSQL+`),
 				count(*) FILTER (WHERE e.settled_at IS NULL AND e.parked_at IS NULL AND e.replayed_at IS NULL
-				                   AND e.type IN ('sync_paused', 'stranded', 'moved_out')
+				                   AND e.type IN ('sync_paused', 'stranded', 'moved_out', 'linked', 'identity_updated')
 				                   AND e.created_at >= greatest(s.events_from, w.named_at) AND e.created_at >= $2)
 			FROM item_events e CROSS JOIN contract_state s JOIN contract_workspaces w ON w.workspace_id = $1
 			WHERE e.tenant_id = $1`, ws, paused).Scan(&send, &held); err != nil {

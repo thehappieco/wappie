@@ -813,6 +813,8 @@ func TestQuarantineScopeHasOneDoor(t *testing.T) {
 		// The data check (whatserverd datacheck), which reads every deleted
 		// number's devices row in its READ ONLY snapshot.
 		"ReadExcludedTx": true,
+		// Slice 19's codes at send time: a deleted number keeps its identity until its purge.
+		"eventIdentitiesTx": true,
 	}
 	const guc = "app.device_quarantine"
 	var found []string

@@ -84,7 +84,7 @@ func newContractClient(cfg config.Contract, log *slog.Logger) *membership.Client
 // contract: mode=… transport=… secret=….
 func (a *app) startContract(ctx context.Context, hup <-chan os.Signal) {
 	if a.members == nil && a.pools != nil {
-		a.members = &membership.Members{Contract: store.NewContract(a.pools.API), Log: a.log}
+		a.members = &membership.Members{Contract: store.NewContract(a.pools.API), Log: a.log, Trial: trialKeyConfig(a.cfg.Contract)}
 	}
 	defer a.logContractStart(ctx)
 	if !a.cfg.Contract.Configured() {
@@ -155,6 +155,8 @@ func contractCommand(args []string, stdout io.Writer) error {
 		return contractSettingsCommand(args[1:], stdout)
 	case "entitlements":
 		return contractEntitlementsCommand(args[1:], stdout)
+	case "trial-key":
+		return contractTrialKeyCommand(args[1:], stdout)
 	}
 	return usageError{arg: "contract " + strings.Join(args, " ")}
 }
