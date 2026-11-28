@@ -221,6 +221,18 @@ func TestContractDocsMatchTheCode(t *testing.T) {
 				"contract: usage refused",
 				"contract: usage not measured",
 				"contract: usage report late",
+				"contract: trial key opened",
+				"contract: trial key not used; links go with no code",
+				"contract: trial codes suspended; links go with no code",
+				"contract: trial codes",
+				"contract: trial key created",
+				"contract: an item.linked could not be written; the catch-up covers the number",
+				"contract: an item.identity_updated could not be written; the catch-up covers the number",
+				"contract: codes caught up",
+				"contract: an event goes with no code; not sent",
+				"contract: link check",
+				"contract: link check failed",
+				"contract: link would be refused (observe)",
 				"settings: off with it",
 				"invite: this team's people join through The Happie Co; person invitations are paused here " +
 					"until Wappie applies the platform's members (a service invitation still works: -role service)",
@@ -293,9 +305,12 @@ func TestContractDocsMatchTheCode(t *testing.T) {
 			{"whatserverd contract entitlements usage off|on [--platform-told]", "entitlements off|observe|usage|hold|release|status"},
 			{"whatserverd contract entitlements hold|release -workspace <id> [--platform-told]", "entitlements off|observe|usage|hold|release|status"},
 			{"whatserverd contract entitlements status [--check]", "entitlements off|observe|usage|hold|release|status"},
+			{"whatserverd contract trial-key init", "trial-key init|check --probe|suspend|resume"},
+			{"whatserverd contract trial-key check --probe", "trial-key init|check --probe|suspend|resume"},
+			{"whatserverd contract trial-key suspend|resume [--platform-told]", "trial-key init|check --probe|suspend|resume"},
 		} {
 			says("contract.md", c.doc)
-			if !strings.Contains(c.doc, "settings") && !strings.Contains(c.doc, "entitlements") {
+			if !strings.Contains(c.doc, "settings") && !strings.Contains(c.doc, "entitlements") && !strings.Contains(c.doc, "trial-key") {
 				says("deployment.md", c.doc)
 			}
 			if !strings.Contains(usage, c.usage) {
@@ -535,6 +550,9 @@ func TestContractDocsMatchTheCode(t *testing.T) {
 			": usage refused (invalid_request) since ",
 			": usage report late (",
 			": no usage report for over 6 h 15 min",
+			"trial key does not open (",
+			"a key row exists but wappie-api has recorded no open of it",
+			"the trial key's state could not be read: ",
 		} {
 			codeSays(f)
 			if strings.Contains(f, "%d") {
@@ -570,7 +588,8 @@ func TestContractDocsMatchTheCode(t *testing.T) {
 			store.ContractErrorCommandInvalid, store.ContractErrorCommandStuck, store.ContractErrorSectionInvalid,
 			store.ContractErrorSectionParked, store.ContractErrorResultParked, store.ContractErrorEntFeedSilent,
 			store.ContractErrorEntResetLoop, store.ContractErrorEntAckFailing, store.ContractErrorEntEnforceInE0,
-			store.ContractErrorUsageMismatch, store.ContractErrorUsageInvalid} {
+			store.ContractErrorUsageMismatch, store.ContractErrorUsageInvalid, store.ContractErrorTrialKey,
+			store.ContractErrorEventRecord} {
 			says("contract.md", "`"+class+"`")
 		}
 		says("contract-events.md", "`"+store.ContractErrorEventActor+"`")
@@ -902,7 +921,8 @@ func TestContractDocsMatchTheCode(t *testing.T) {
 			"relink window", "relink session", "QR ahead", "pairing hold",
 			"entitlements long-poll", "entitlements backoff", "entitlements silent", "ack every", "ack at least", "ack failing",
 			"GET backoff", "GET pace", "timeline look", "cap look", "entitlements idle",
-			"usage look", "usage floor", "usage coalesce", "usage backoff", "usage invalid", "usage crossing", "usage after"}
+			"usage look", "usage floor", "usage coalesce", "usage backoff", "usage invalid", "usage crossing", "usage after",
+			"trial retry", "trial poll", "trial error", "catch-up daily", "catch-up pace", "link GET wait", "move check", "link fresh"}
 		for name, want := range ours {
 			if got := rows[name]; len(got) == 0 || got[0] != want {
 				t.Errorf("docs/contract.md's timing %q is %q, the code's is %q", name, got, want)

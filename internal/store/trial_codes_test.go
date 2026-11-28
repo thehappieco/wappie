@@ -704,71 +704,14 @@ func TestPlacedAtVectors(t *testing.T) {
 	if err := json.Unmarshal(b, &v); err != nil || len(v.PlacedAt) != 9 {
 		t.Fatalf("the vectors: %d %v", len(v.PlacedAt), err)
 	}
-	ctx := context.Background()
 	w := newCodesWorld(t)
 	sessionStore(t, w.pool)
-	// at runs the event on a number placed before it, and returns its
-	// placed_at before and after, and the event's own time.
-	run := map[string]func(t *testing.T) (before, after *time.Time, at time.Time){
-		"link": func(t *testing.T) (*time.Time, *time.Time, time.Time) {
-			device := w.pending(t)
-			at, err := w.c.RecordLinked(ctx, w.tenant, device, &w.owner, identity(40))
-			if err != nil {
-				t.Fatal(err)
-			}
-			return nil, w.placedAt(t, device), at
-		},
-		"recovery": func(t *testing.T) (*time.Time, *time.Time, time.Time) {
-			device := w.linked(t, 41)
-			w.reads(t, w.owner, device)
-			before := w.placedAt(t, device)
-			w.quarantine(t, device)
-			w.recover(t, device)
-			rec := eventsOf(t, w.pool, w.tenant, device, "recovered")
-			return before, w.placedAt(t, device), rec[len(rec)-1].OccurredAt
-		},
-		"move_in": func(t *testing.T) (*time.Time, *time.Time, time.Time) {
-			device := w.linked(t, 42)
-			w.reads(t, w.owner, device)
-			before := w.placedAt(t, device)
-			if err := w.devices.SetPaused(ctx, w.tenant.String(), device.String(), true); err != nil {
-				t.Fatal(err)
-			}
-			var personal uuid.UUID
-			if err := w.pool.QueryRow(ctx, `SELECT id FROM tenants WHERE personal_owner_id=$1`, w.owner).Scan(&personal); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := w.devices.TransferPersonal(ctx, w.tenant, w.owner, device, personal); err != nil {
-				t.Fatal(err)
-			}
-			in := eventsOf(t, w.pool, personal, device, "linked")
-			var after *time.Time
-			inTenantTx(ctx, t, w.pool, personal, func(tx pgx.Tx) error {
-				return tx.QueryRow(ctx, `SELECT placed_at FROM devices WHERE id = $1`, device).Scan(&after)
-			})
-			return before, after, in[0].OccurredAt
-		},
-		"relink": func(t *testing.T) (*time.Time, *time.Time, time.Time) {
-			device, id := w.loggedOutNumber(t, "Loja", "155501000601", "100000000000601")
-			if _, err := w.c.RecordLinked(ctx, w.tenant, device, &w.owner, id); err != nil {
-				t.Fatal(err)
-			}
-			before := w.placedAt(t, device)
-			linked := newLink(id)
-			w.putSession(t, linked.PN.String())
-			if _, err := w.devices.AttachRelink(ctx, w.tenant, device, w.seen(t, device), linked); err != nil {
-				t.Fatal(err)
-			}
-			return before, w.placedAt(t, device), time.Now()
-		},
-	}
 	for _, c := range v.PlacedAt {
-		fn, ok := run[c.Event]
-		if c.App != "wappie" || !ok {
+		if c.App != "wappie" || !slices.Contains([]string{"link", "recovery", "move_in", "relink"}, c.Event) {
 			t.Logf("%s: not Wappie's in E0 (%s, %s)", c.Name, c.App, c.Event)
 			continue
 		}
-		before, after, at := fn(t)
+		before, after, at := placedAtEvent(t, w, c.Event)
 		switch c.Action {
 		case "set":
 			if after == nil || !after.Equal(at) {
@@ -781,5 +724,61 @@ func TestPlacedAtVectors(t *testing.T) {
 		default:
 			t.Errorf("%s: action %q", c.Name, c.Action)
 		}
+	}
+}
+
+// placedAtEvent runs a placed_at vector's event on a number of w placed
+// before it, through the store's own path, and returns its placed_at
+// before and after, and the event's own time.
+func placedAtEvent(t *testing.T, w codesWorld, event string) (before, after *time.Time, at time.Time) {
+	t.Helper()
+	switch event {
+	case "link":
+		device := w.pending(t)
+		at, err := w.c.RecordLinked(context.Background(), w.tenant, device, &w.owner, identity(40))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return nil, w.placedAt(t, device), at
+	case "recovery":
+		device := w.linked(t, 41)
+		w.reads(t, w.owner, device)
+		before := w.placedAt(t, device)
+		w.quarantine(t, device)
+		w.recover(t, device)
+		rec := eventsOf(t, w.pool, w.tenant, device, "recovered")
+		return before, w.placedAt(t, device), rec[len(rec)-1].OccurredAt
+	case "move_in":
+		device := w.linked(t, 42)
+		w.reads(t, w.owner, device)
+		before := w.placedAt(t, device)
+		if err := w.devices.SetPaused(context.Background(), w.tenant.String(), device.String(), true); err != nil {
+			t.Fatal(err)
+		}
+		var personal uuid.UUID
+		if err := w.pool.QueryRow(context.Background(), `SELECT id FROM tenants WHERE personal_owner_id=$1`, w.owner).Scan(&personal); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.devices.TransferPersonal(context.Background(), w.tenant, w.owner, device, personal); err != nil {
+			t.Fatal(err)
+		}
+		in := eventsOf(t, w.pool, personal, device, "linked")
+		var after *time.Time
+		inTenantTx(context.Background(), t, w.pool, personal, func(tx pgx.Tx) error {
+			return tx.QueryRow(context.Background(), `SELECT placed_at FROM devices WHERE id = $1`, device).Scan(&after)
+		})
+		return before, after, in[0].OccurredAt
+	default: // relink
+		device, id := w.loggedOutNumber(t, "Loja", "155501000601", "100000000000601")
+		if _, err := w.c.RecordLinked(context.Background(), w.tenant, device, &w.owner, id); err != nil {
+			t.Fatal(err)
+		}
+		before := w.placedAt(t, device)
+		linked := newLink(id)
+		w.putSession(t, linked.PN.String())
+		if _, err := w.devices.AttachRelink(context.Background(), w.tenant, device, w.seen(t, device), linked); err != nil {
+			t.Fatal(err)
+		}
+		return before, w.placedAt(t, device), time.Now()
 	}
 }

@@ -679,7 +679,12 @@ says each one's rules):
   default `/var/lib/wappie/contract-secrets.loaded`, in the unit's state
   directory;
 - `WS_CONTRACT_ADDR`, development only; `WS_CONTRACT_SECRET` is refused
-  everywhere.
+  everywhere;
+- `WS_TRIAL_KEY_RETIRED`: the sha256 of every `K_app` envelope recorded as
+  exposed, empty until one is ([contract](contract.md), "Replacing an
+  exposed key"). It lives in the runtime configuration on purpose: a
+  rebuild of the host's configuration must keep it, or a restore could
+  bring an exposed key back.
 
 The secret's value is never in `runtime.env`, a backup or an argument: it
 reaches the host only through a pipe from the platform's `platform-cli

@@ -145,7 +145,7 @@ func (e ContractEvent) ActorUnknown() bool {
 	case actorPerson:
 		// A full key's pairing links with nobody behind it: actor null
 		// (README 15.12), no fault.
-		return e.ActorSub == nil && !(e.Type == eventLinked && e.ActorUser == nil)
+		return e.ActorSub == nil && (e.Type != eventLinked || e.ActorUser != nil)
 	case actorKey:
 		return e.ActorSub == nil && e.ActorUser != nil
 	}

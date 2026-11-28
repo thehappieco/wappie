@@ -306,7 +306,7 @@ func TestLinkWouldBeRefusedLogged(t *testing.T) {
 func TestRelinkWouldBeRefusedLogged(t *testing.T) {
 	w := linkWorld(t)
 	ctx := context.Background()
-	gets, checks := w.fake.Count(contracttest.CallEntitlementsDoc), w.fake.Count(contracttest.CallLinkCheck)
+	checks := w.fake.Count(contracttest.CallLinkCheck)
 	w.members.Relinked(ctx, w.team, w.device)
 	if len(w.logs.Lines("act=relink")) != 0 {
 		t.Fatal("a relink with new_links on was logged")
@@ -316,7 +316,7 @@ func TestRelinkWouldBeRefusedLogged(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.applied(t, w.team, v)
-	gets = w.fake.Count(contracttest.CallEntitlementsDoc)
+	gets := w.fake.Count(contracttest.CallEntitlementsDoc)
 	w.members.Relinked(ctx, w.team, w.device)
 	if lines := w.logs.Lines("contract: link would be refused (observe)", "act=relink", "reason=new_links_off"); len(lines) != 1 {
 		t.Fatalf("the line:\n%s", w.logs.String())

@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -183,7 +184,7 @@ func TestTrialCodeVectors(t *testing.T) {
 		}
 		// Through the kit, which trialCodes calls: an ErrNoCode drops the
 		// kind. And a JID that does not parse makes none either.
-		if _, err := kc.TrialCode(key, App, c.Kind, c.Input); err != kc.ErrNoCode {
+		if _, err := kc.TrialCode(key, App, c.Kind, c.Input); !errors.Is(err, kc.ErrNoCode) {
 			t.Errorf("%s: %v", c.Name, err)
 		}
 		if got := codesOf(c.Kind, c.Input); len(got) != 0 && c.Input != strings.TrimSpace(c.Input) {

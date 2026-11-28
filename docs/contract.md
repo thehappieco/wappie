@@ -90,6 +90,7 @@ their verdict, log "would refuse", and let the act go on
 | `WS_CONTRACT_SECRET_OTHER_FILE` | During a rotation, the other secret, also accepted on answers. May be absent on disk: no rotation is under way. Required in prod, and never the same file. |
 | `WS_CONTRACT_KMS_KEY_ARN`, `WS_CONTRACT_KMS_REGION` | Wappie's own key, a full key ARN (never an alias), and its region. Required in prod with the transport. |
 | `WS_CONTRACT_LOADED_FILE` | Where the server publishes what it loaded, by default `/var/lib/wappie/contract-secrets.loaded`. |
+| `WS_TRIAL_KEY_RETIRED` | The sha256 (64 hexadecimal characters) of every `K_app` envelope recorded as exposed, separated by commas or spaces: never opened, and `contract trial-key resume` refused while the installed one is listed ([trial codes](#trial-codes-itemlinked-itemidentity_updated-and-the-link-check)). Kept outside the database. |
 
 All or nothing, as object storage is: a file or a key without a transport
 is refused, and so are relative paths in prod. **The secret is never a
@@ -1318,6 +1319,160 @@ failing since … (<class>)` where they hold. Its `--check` findings, in
   is on, `<ws>: no usage report for over 6 h 15 min`;
 - `the entitlements part's state could not be read: …`.
 
+### Trial codes, `item.linked`, `item.identity_updated` and the link check
+
+The spec's 15.10 to 15.12 (E0 slice 19; migration 0054). What is written
+here is written **whatever the entitlements mode says**: each number's
+`placed_at`, and the rows of the two events. A code is made only when an
+event or a link check goes, and only while `K_app` is usable; the link check
+goes only while the workspace is named and entitlements observe.
+
+```
+whatserverd contract trial-key init
+whatserverd contract trial-key check --probe
+whatserverd contract trial-key suspend|resume [--platform-told]
+```
+
+**`K_app`** is 32 random bytes, sealed (THCSEAL) under Wappie's KMS key with
+the encryption context `{wappie, prod, trial-codes, platform}`: the
+contract secret's, but for its purpose, so the key policy must allow
+`GenerateDataKey` and `Decrypt` under `trial-codes` (the owner's KMS step).
+Its envelope is `contract_trial_key`'s one row, restored with the database,
+never updated or deleted (a trigger refuses both: `the trial key is never
+rotated (spec 15.10)`); 0054's down-step keeps it.
+
+- **`trial-key init`**, run once as the service user, makes the 32 bytes
+  (`crypto/rand`, checked by the kit), seals them, installs the envelope
+  and clears the bytes; it never opens the envelope again, and prints `trial
+  key: created` (and logs "contract: trial key created"), or `trial key:
+  present` and refuses when one is installed.
+  The kit runs it before its second snapshot, so the snapshot holds the key.
+- **`trial-key check --probe`** proves the owner's KMS step with a throwaway
+  data key, `GenerateDataKey` then `Decrypt` under `trial-codes`, as
+  `contract-secret seal --check-kms` does; it reads no database and never the
+  envelope. It prints `kms: ok`, or names the step that failed (`describe`,
+  `generate`, `decrypt`) and its error's class.
+- **`trial-key suspend`** stops every code (the spec's exposure step 1):
+  links go as items with no code, link checks without codes; **`resume`**
+  makes them again, and is refused while the installed envelope is on
+  `WS_TRIAL_KEY_RETIRED`. Each logs "contract: trial codes" (`codes`,
+  `platform_told`) and is reported to the platform's chat.
+- **Only `wappie-api` opens the key**, in the leader (at its start, at once
+  on 0054's `trial_key` notice when a key is installed or the codes switch,
+  every minute beside it, and every 10 minutes while it is absent or does
+  not open). It records each open, the envelope's sha256 and when (or the
+  failure's class) in `contract_trial_key_state`, which `contract status`
+  reads: no command opens it. An envelope whose sha256 is on
+  `WS_TRIAL_KEY_RETIRED` (a list of sums kept in the runtime configuration,
+  outside the database) is never opened, so a restore never brings an
+  exposed key back into use. A key that does not open, or is retired, logs
+  the ERROR "contract: trial key not used; links go with no code" (`class`)
+  at most once an hour and records `trial_key`; a suspension logs "contract:
+  trial codes suspended; links go with no code" once; an open logs
+  "contract: trial key opened".
+
+**Codes** are made at send time and never stored: the `e164` code of `+`
+and the user part of the number's own phone-number JID, and the `wa_lid`
+code of its LID's user part, each only when the identifier makes one (the
+kit normalizes and refuses the rest). The identity is the paired session's
+own (its store at the pairing, `PairSuccess`, a relink's attach), never one
+a person typed or filled in from the LID map.
+
+**`item.linked`** goes for a new pairing (and a retried pairing of a number
+never linked), written by the pairing's hook in the background before the
+success event goes: the session's identity, `placed_at` and the event, in
+one transaction under the workspace's row, the person who paired it its
+actor (a full key's pairing: actor null). It never fails the pairing: it is
+retried three times (1, 5 and 30 seconds), then logs the ERROR "contract:
+an item.linked could not be written; the catch-up covers the number" and
+records `event_record`. A move to Personal records it in the destination,
+the mover its actor, at the move's completion. A relink and a recovery are
+no link (spec 15.11) and record none.
+
+**`placed_at`** (spec 15.5) is the latest of the number's link, recovery
+(a replayed one's own time, never earlier) and move in; a relink, a resume
+and an unpause never move it. 0054 filled it from each number's creation,
+latest recovery and latest move in.
+
+**`item.identity_updated`** goes, `app` its actor:
+
+- for a half of the identity learned after the link (a LID seen after
+  pairing, a phone number learned later), written with the identity inside
+  a savepoint: a failed insert logs the ERROR "contract: an
+  item.identity_updated could not be written; the catch-up covers the
+  number", records `event_record`, and the identity still commits;
+- in a document's apply (or the late apply of a naming), in its
+  transaction, for each linked number its `items` do not list, when the
+  document has `state.trial_ends_at` and the last one applied had none,
+  none was applied, or it is the first after a reset; or when its
+  `requests.codes_after` is later than the last answered (then answered);
+- in a recovery into a workspace whose applied document has
+  `state.trial_ends_at`, for every linked number the document's `items` do
+  not list, the recovered one included (P1's literal reading), the
+  recoverer its actor;
+- **the catch-up** (P2): when the key becomes usable (its first load, a
+  resume, an open that works again) and daily while it is, one for each
+  live number of a named workspace with an identity whose newest row of the
+  two types went with no code (`not_sent`), or which has none, or whose
+  newest was delivered under an older key; a few a second (one every 300
+  milliseconds), each once ("contract: codes caught up", `workspace`,
+  `count`). A number whose newest row is still owed or parked is left to it.
+  Housekeeping keeps each number's newest row of the two types for this.
+
+A row whose number makes no code when it is sent (no usable key, codes
+suspended, a retired envelope, an identity that makes none, a number gone)
+settles `not_sent` and goes nowhere: "contract: an event goes with no code;
+not sent" (`workspace`, `event`, `type`, `reason`: `no_key`, `suspended`,
+`retired`, `does_not_open`, `no_identity`).
+
+**The link check** (spec 15.11, observe; Q57: "do not hold sync"). After a
+pairing the check goes at once, with the number's codes (none without a
+usable key: the place alone), and, beside it, when no document is held or
+its freshness is over an hour, the GET computed now, awaited up to 10
+seconds. History sync goes on whatever comes back. A move's check runs after
+its preview and before its transaction opens, so it holds no workspace's
+row: the GET when the destination's freshness is over an hour, then the
+check, in one budget of 5 seconds; the move is never blocked. A relink asks
+nothing: it follows the last applied document's `new_links`. Each check
+logs "contract: link check" (`workspace`, `device`, `act`, `place`, `trial`,
+`trial_ends_at_set`, `new_links`, `computed_at`), or WARN "contract: link
+check failed" (`workspace`, `device`, `act`, `class`; a `rate_limited` or a
+transport's failure, never retried), and what an enforcing release would
+refuse: "contract: link would be refused (observe)" (`workspace`,
+`device`, `act`: `link`, `relink` or `move`; `reason`: `not_found`,
+`no_document`, `stale`, `new_links_off`, `allowance` (a move's bytes past the
+destination's `allowance_bytes`), `no_place` (Wappie's own count of hosted
+numbers at or above `places.total`, with `count=hosted_only`: E0 counts no
+licence binding) or `used_up` (in a workspace on trial)), with
+`held_at_observe=true` where a brake holds the workspace or its document
+says `enforce`. No line carries a code, a JID or a figure. The checks of the
+last 24 hours are kept (`contract_link_checks`, ids and enums) for `contract
+status`.
+
+**`contract status`** prints `trial key: opened by wappie-api at …`, `trial
+key: none (items have no code)`, `trial key: does not open (<class>) at …`,
+`trial key: retired (not used)` or `trial key: installed, not opened by
+wappie-api yet`; `trial codes: on` or `trial codes: suspended since …`; and
+`link checks (24 h): N answered, N failed; would refuse: N`. It never opens
+the key. Its `--check` findings, only once a key is installed: `trial key
+does not open (<class>)`; `a key row exists but wappie-api has recorded no
+open of it`; and `the trial key's state could not be read: …`.
+
+**Replacing an exposed key** (spec 15.10, in this order; no command beyond
+these):
+
+1. `whatserverd contract trial-key suspend --platform-told`.
+2. Report the exposure to the platform's chat as an incident (0049).
+3. Wait for the platform's word that it deleted every trial code it holds
+   for Wappie.
+4. Add the old envelope's sha256 to `WS_TRIAL_KEY_RETIRED` and restart
+   `wappie-api`.
+5. As the table owner: disable `contract_trial_key_never_rotated`, delete
+   the row, enable the trigger again; then `whatserverd contract trial-key
+   init`. E0 keeps no other keyed hash, so nothing else is deleted.
+6. `whatserverd contract trial-key resume`: the catch-up sends every
+   number's new codes. Trials may start again, in the customer's favour.
+
 ## contract status
 
 ```
@@ -1338,7 +1493,9 @@ sealed files; never calls the platform. It prints:
 - each platform workspace: its kind and status, when it was named, the age
   of its last accepted snapshot, its events pending, parked and coalesced,
   and its parks and failing runs;
-- the entitlements part's lines ([entitlements and usage](#entitlements-and-usage));
+- the entitlements part's lines ([entitlements and usage](#entitlements-and-usage)),
+  and the trial key's, the codes switch's and the link checks' ([trial
+  codes](#trial-codes-itemlinked-itemidentity_updated-and-the-link-check));
 - the pending person invitations of each team here.
 
 No name, no email, no label, no secret, no figure of a report.
@@ -1357,7 +1514,8 @@ clean until its bounds pass:
   `command_stuck`, `command_reset_loop`, `section_invalid`, `section_parked`,
   `result_parked`, `person_invalid`, and the entitlements part's
   `ent_feed_silent`, `ent_reset_loop`, `ent_ack_failing`,
-  `ent_enforce_in_e0`, `usage_mismatch`, `usage_invalid`;
+  `ent_enforce_in_e0`, `usage_mismatch`, `usage_invalid`, and slice 19's
+  `trial_key`, `event_record`;
 - while the contract is on:
   - `the feed was last read … (the platform alerts after 10 minutes)`, past
     5 minutes;
@@ -1583,6 +1741,14 @@ Each value below is the code's, and `TestContractDocsMatchTheCode` and
 | timeline look | 30 seconds | how often the steps whose time came are logged |
 | cap look | 1 minute | how often each workspace's total is compared with its `cap_bytes` |
 | entitlements idle | 30 seconds | the longest the acknowledgement and the GETs wait without looking |
+| trial retry | 10 minutes | between two opens of a `K_app` that is absent or does not open |
+| trial poll | 1 minute | how often `wappie-api` reads the key's state beside its notices |
+| trial error | 1 hour | between two ERRORs of a `K_app` that does not open or is retired |
+| catch-up daily | 24 hours | the codes' catch-up while the key is usable, beside its becoming usable |
+| catch-up pace | 300 milliseconds | between two of the catch-up's events |
+| link GET wait | 10 seconds | the longest a pairing's link check awaits the GET it asked |
+| move check | 5 seconds | a move's GET and link check together, before its transaction |
+| link fresh | 1 hour | the freshness past which a link or a move asks the GET first |
 | check entitlements feed | 15 minutes | `--check`: the entitlements feed's last page, while observing |
 | check acknowledgement | 10 minutes | `--check`: the last acknowledgement accepted, while observing |
 | check GET | 10 minutes | `--check`: a workspace with no document since its GET was due |
