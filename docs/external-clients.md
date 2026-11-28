@@ -15,9 +15,10 @@ reject incompatible versions before authenticating. The first version requires
 
 An installation in a maintenance start (`whatserverd serve -maintenance`,
 [deployment](deployment.md#maintenance-start)) adds `"maintenance": true`:
-it answers sign-in and reads only, refuses API keys, and answers any other
-write `503` with code `maintenance` over HTTP and error `maintenance` on the
-WebSocket. The field is absent otherwise.
+it answers a person's sign-in and reads only. It answers an API key, and
+any other write, `503` with code `maintenance` over HTTP and error
+`maintenance` on the WebSocket: a key is not revoked by it, so keep it and
+retry after the window. The field is absent otherwise.
 
 ### Remote MCP connector
 

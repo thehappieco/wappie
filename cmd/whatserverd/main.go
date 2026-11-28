@@ -759,9 +759,7 @@ func runServe(ctx context.Context, hup <-chan os.Signal, opts serveOptions, list
 
 	var probesSrv *http.Server
 	if a.cfg.MetricsAddr != "" {
-		mux := http.NewServeMux()
-		a.probes(mux)
-		probesSrv = &http.Server{Addr: a.cfg.MetricsAddr, Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+		probesSrv = &http.Server{Addr: a.cfg.MetricsAddr, Handler: a.probesHandler(), ReadHeaderTimeout: 10 * time.Second}
 		pln, err := listenPatiently(ctx, a.cfg.MetricsAddr, a.log)
 		if err != nil {
 			return err
@@ -965,7 +963,6 @@ func (a *app) probes(mux *http.ServeMux) {
 	// Liveness never touches a dependency, so a database blip cannot get the
 	// container killed and restarted straight into the same blip.
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
-		a.markMaintenance(w)
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		//nolint:errcheck // a failed probe write means the prober hung up
 		_, _ = w.Write([]byte("ok\n"))
@@ -974,7 +971,6 @@ func (a *app) probes(mux *http.ServeMux) {
 	// Readiness does check dependencies, so a load balancer stops routing here
 	// while Postgres is unreachable.
 	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
-		a.markMaintenance(w)
 		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 		defer cancel()
 		if err := a.pools.Ping(ctx); err != nil {
@@ -990,13 +986,13 @@ func (a *app) probes(mux *http.ServeMux) {
 	mux.Handle("GET /metrics", a.metrics.Handler())
 }
 
-// markMaintenance puts the maintenance header on a probe's answer in a
-// maintenance start: on its own listener (WS_METRICS_ADDR) the gate does
-// not see it.
-func (a *app) markMaintenance(w http.ResponseWriter) {
-	if a.maintenance != nil {
-		w.Header().Set(maintenanceHeader, "on")
-	}
+// probesHandler is the probes' and metrics' own listener (WS_METRICS_ADDR),
+// whose every answer carries the maintenance header in a maintenance start:
+// the gate does not see this listener.
+func (a *app) probesHandler() http.Handler {
+	mux := http.NewServeMux()
+	a.probes(mux)
+	return a.maintenance.marked(mux)
 }
 
 // advertisedMCP is what discovery says of the connector: nothing in a

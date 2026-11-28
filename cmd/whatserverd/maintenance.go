@@ -110,8 +110,21 @@ func (m *maintenance) socket() *wsapi.Maintenance {
 }
 
 // maintenanceHeader is on every answer of a maintenance start, its probes
-// included, so a kit sees which start answered it.
+// and metrics included, so a kit sees which start answered it.
 const maintenanceHeader = "Wappie-Maintenance"
+
+// marked is next with the maintenance header on every answer, for the
+// probes' own listener (WS_METRICS_ADDR), which the gate does not see. A
+// nil m is next.
+func (m *maintenance) marked(next http.Handler) http.Handler {
+	if m == nil {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(maintenanceHeader, "on")
+		next.ServeHTTP(w, r)
+	})
+}
 
 // signInRoutes are the writes every maintenance start lets through: a
 // person signing in (by password, passkey or the platform) and out, into
@@ -135,6 +148,20 @@ var signInRoutes = map[string]bool{
 	"POST /v1/auth/platform/step-up/finish": true,
 }
 
+// keyBearer reports whether r carries an API key as its bearer. A key is
+// its prefix, a dot and its secret (store.APIKeys.Issue); a person's
+// session token is base64url and has no dot, and no route takes anything
+// else as a bearer (the platform's tokens come in the body).
+func keyBearer(r *http.Request) bool {
+	for _, value := range r.Header.Values("Authorization") {
+		scheme, token, ok := strings.Cut(strings.TrimSpace(value), " ")
+		if ok && strings.EqualFold(scheme, "Bearer") && strings.Contains(token, ".") {
+			return true
+		}
+	}
+	return false
+}
+
 // lets reports whether a maintenance start answers r: a read (GET, HEAD,
 // OPTIONS; the socket's own frames are judged by the socket), a sign-in,
 // an allowed route, or what no route claims, which unrouted answers with
@@ -149,15 +176,18 @@ func (m *maintenance) lets(mux *http.ServeMux, r *http.Request) bool {
 }
 
 // gate is next behind a maintenance start's HTTP limits: every answer says
-// it is a maintenance start, and a write it does not let through is
-// refused 503 maintenance before any handler runs. A nil m is next.
+// it is a maintenance start, and a request with an API key, or a write it
+// does not let through, is refused 503 maintenance before any handler
+// runs. The key gets maintenance, as on the socket, and not the 401 of a
+// revoked key, so a client keeps a key that works again after the window.
+// A nil m is next.
 func (m *maintenance) gate(mux *http.ServeMux, next http.Handler) http.Handler {
 	if m == nil {
 		return next
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set(maintenanceHeader, "on")
-		if m.lets(mux, r) {
+		if !keyBearer(r) && m.lets(mux, r) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -172,7 +202,7 @@ func (m *maintenance) gate(mux *http.ServeMux, next http.Handler) http.Handler {
 }
 
 // maintenanceRefusal is a refused write's body, in the API's error shape.
-const maintenanceRefusal = `{"code":"` + wsapi.ErrCodeMaintenance + `","message":"this server is in maintenance: it answers reads and sign-in only"}` + "\n"
+const maintenanceRefusal = `{"code":"` + wsapi.ErrCodeMaintenance + `","message":"this server is in maintenance: it answers a person's reads and sign-in only; API keys are off"}` + "\n"
 
 // logMaintenance says, once at the start, that this is a maintenance
 // start and what it leaves off, with the allowed writes by name.

@@ -417,8 +417,11 @@ the interim of pausing every number. Next to a normal start it:
   process.
 - **turns MCP and API keys off.** The connector and the AI routes are not
   mounted whatever `WS_MCP_ENABLED` says, and discovery advertises none of
-  them; the socket refuses a hello with an API key (`maintenance`), and the
-  REST and attachment routes take a person's session only (`401` for a key).
+  them; the socket refuses a hello with an API key (`maintenance`), and
+  over HTTP a request whose bearer is an API key is answered `503`
+  `{"code":"maintenance",…}` before any handler, a read included: never
+  the `401` of a revoked key, so a client keeps its key for after the
+  window. The REST and attachment routes take a person's session only.
 - **refuses writes.** Over HTTP, a GET, HEAD or OPTIONS goes through, and
   of the other methods only the sign-in routes: `/v1/auth/challenge`,
   `login`, `logout`, `passkeys/login/options` and `/finish`,
@@ -447,28 +450,42 @@ kit's manifest declares, with a test that it is refused without `-allow`.
 the start with exit status 2, as a mistyped flag does.
 
 **How it shows.** The log says at the start, at WARN, `MAINTENANCE START:
-…` with `maintenance=true` and `allowed=[…]`. Every HTTP answer, `/healthz`
-and `/readyz` included (on their own listener too), carries the header
-`Wappie-Maintenance: on`, and `/v1/discovery` and `/.well-known/wappie`
+…` with `maintenance=true` and `allowed=[…]`. Every HTTP answer, `/healthz`,
+`/readyz` and `/metrics` included (on their own listener too), carries the
+header `Wappie-Maintenance: on`, and `/v1/discovery` and `/.well-known/wappie`
 carry `"maintenance": true` (absent on a normal start). `/readyz` answers
 `200` as usual, so a kit that waits for it waits the same way.
 
 Run it with the server's configuration, as the server's user, with
 `wappie-api` stopped: never beside a normal start, though it claims no
-session. On the cloud host, for example:
+session. It runs the contract's client and holds its secret, so it takes
+what `wappie-api` has from its unit and its drop-ins: the
+`platform-contract` group (the socket is `root:platform-contract` 0660;
+without it every contract call fails and sign-in falls back to what it
+holds), no core dump, the ledger's directory and the same protections. On
+the cloud host, for example:
 
 ```
 sudo systemctl stop wappie-api
-sudo systemd-run --unit=wappie-maintenance --uid=wappie --gid=wappie \
+sudo systemd-run --unit=wappie-maintenance --collect --uid=wappie --gid=wappie \
+  -p SupplementaryGroups=platform-contract -p LimitCORE=0 \
+  -p StateDirectory=wappie -p StateDirectoryMode=0700 \
+  -p NoNewPrivileges=true -p PrivateTmp=true -p ProtectSystem=strict \
+  -p ProtectHome=true -p ProtectKernelTunables=true -p ProtectKernelModules=true \
+  -p ProtectControlGroups=true -p RestrictSUIDSGID=true -p UMask=0077 \
   -p EnvironmentFile=/opt/wappie/runtime.env -p WorkingDirectory=/opt/wappie/release \
   /opt/wappie/release/bin/whatserverd serve -maintenance
 # ... the check; then
 sudo systemctl stop wappie-maintenance
 ```
 
-A transient unit ends with the window: nothing in `runtime.env` or the
-unit file changes, so the next `systemctl start wappie-api` is a normal
-start. Start it normally only at the procedure's step 12, after the second
+Compare the properties with `systemctl cat wappie-api` first: the unit
+file is the reference, and a host whose unit has no `platform-contract`
+drop-in (no such group yet) leaves out `SupplementaryGroups`, which would
+fail the start (216/GROUP). `--collect` lets a failed run go, so the name
+can be used again without `systemctl reset-failed`. A transient unit ends
+with the window: nothing in `runtime.env` or the unit file changes, so the
+next `systemctl start wappie-api` is a normal start. Start it normally only at the procedure's step 12, after the second
 snapshot.
 
 ### Restoring a backup

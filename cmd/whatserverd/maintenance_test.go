@@ -25,6 +25,7 @@ import (
 	"whatserver2/internal/authapi"
 	"whatserver2/internal/config"
 	"whatserver2/internal/migrate"
+	"whatserver2/internal/obs"
 	"whatserver2/internal/pg"
 	"whatserver2/internal/pgtest"
 	"whatserver2/internal/store"
@@ -152,11 +153,52 @@ func TestMaintenanceRoutes(t *testing.T) {
 	if rec.Header().Get(maintenanceHeader) != "on" {
 		t.Fatal("discovery: no maintenance header")
 	}
-	for _, probe := range []string{"/healthz", "/readyz"} {
-		rec := httptest.NewRecorder()
-		a.markMaintenance(rec)
-		if rec.Header().Get(maintenanceHeader) != "on" {
-			t.Fatalf("%s: no maintenance header", probe)
+	// The probes' own listener (WS_METRICS_ADDR), which the gate does not
+	// see: every answer, the metrics and a 404 included. /readyz asks the
+	// database and is checked on the real start (TestMaintenanceStart).
+	a.metrics = obs.NewMetrics()
+	probes := a.probesHandler()
+	for _, probe := range []string{"/healthz", "/metrics", "/nothing"} {
+		if rec := ask(probes, http.MethodGet, "http://127.0.0.1:9090"+probe); rec.Header().Get(maintenanceHeader) != "on" {
+			t.Errorf("%s: %d, no maintenance header", probe, rec.Code)
+		}
+	}
+	normalProbes := (&app{metrics: obs.NewMetrics(), log: slog.New(slog.DiscardHandler)}).probesHandler()
+	if rec := ask(normalProbes, http.MethodGet, "http://127.0.0.1:9090/metrics"); rec.Code != http.StatusOK || rec.Header().Get(maintenanceHeader) != "" {
+		t.Fatalf("a normal start's metrics: %d %q", rec.Code, rec.Header().Get(maintenanceHeader))
+	}
+
+	// An API key is refused maintenance, never 401 as a revoked key would
+	// be, on a read as on a write and whatever the route; a person's
+	// session token (no dot) reaches the handlers.
+	for _, tc := range []struct{ method, route string }{
+		{http.MethodGet, "/v1/devices"},
+		{http.MethodGet, "/v1/media/" + uuid.NewString()},
+		{http.MethodHead, "/v1/media/" + uuid.NewString()},
+		{http.MethodPost, "/v1/upload"},
+		{http.MethodGet, "/v1/auth/me"},
+		{http.MethodPost, "/v1/auth/login"},
+	} {
+		for _, header := range []string{"Bearer abcdefgh.secret", "bearer  abcdefgh.secret"} {
+			req := httptest.NewRequest(tc.method, "https://api.wappie.thehappie.co"+tc.route, nil)
+			req.Header.Set("Authorization", header)
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			if rec.Code != http.StatusServiceUnavailable || (tc.method != http.MethodHead && rec.Body.String() != maintenanceRefusal) {
+				t.Errorf("%s %s with a key (%q): %d %q", tc.method, tc.route, header, rec.Code, rec.Body.String())
+			}
+		}
+	}
+	for header, want := range map[string]bool{
+		"Bearer abcdefgh.secret": true, "Bearer " + strings.Repeat("A", 43): false,
+		"Basic abcdefgh.secret": false, "": false,
+	} {
+		req := httptest.NewRequest(http.MethodGet, "https://api.wappie.thehappie.co/v1/devices", nil)
+		if header != "" {
+			req.Header.Set("Authorization", header)
+		}
+		if got := keyBearer(req); got != want {
+			t.Errorf("keyBearer(%q) = %v", header, got)
 		}
 	}
 
@@ -465,11 +507,11 @@ func TestMaintenanceStart(t *testing.T) {
 
 	// API keys are off: the socket, REST and attachments.
 	wantError(t, helloWithKey(t, base, apiKey), wsapi.ErrCodeMaintenance)
-	if status, body := postJSON(t, http.MethodGet, base+"/v1/devices", apiKey, nil); status != http.StatusUnauthorized {
+	if status, body := postJSON(t, http.MethodGet, base+"/v1/devices", apiKey, nil); status != http.StatusServiceUnavailable || string(body) != maintenanceRefusal {
 		t.Fatalf("the REST read with a key: %d %s", status, body)
 	}
-	if status, _ := postJSON(t, http.MethodGet, base+"/v1/media/"+uuid.NewString(), apiKey, nil); status != http.StatusUnauthorized {
-		t.Fatalf("an attachment with a key: %d", status)
+	if status, body := postJSON(t, http.MethodGet, base+"/v1/media/"+uuid.NewString(), apiKey, nil); status != http.StatusServiceUnavailable || string(body) != maintenanceRefusal {
+		t.Fatalf("an attachment with a key: %d %s", status, body)
 	}
 
 	// Health: the probe and discovery say so.
