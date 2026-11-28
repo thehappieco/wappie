@@ -191,3 +191,60 @@ func TestContractEntitlementsCommand(t *testing.T) {
 		t.Fatalf("the status after off:\n%s", out)
 	}
 }
+
+// TestContractEntitlementsUsageStatus: the usage lines of each recorded
+// workspace, and their findings: a report refused invalid_request, one
+// sent late within the day, and none for over 6 h 15 min while usage is on.
+func TestContractEntitlementsUsageStatus(t *testing.T) {
+	pool := pgtest.Fresh(t, migrate.Run)
+	ctx := context.Background()
+	c := store.NewContract(pool)
+	if _, err := c.SetMode(ctx, store.ContractObserve); err != nil {
+		t.Fatal(err)
+	}
+	for _, v := range []string{store.EntObserve, "usage on"} {
+		if err := contractEntitlementsMode(ctx, c, v, true, &bytes.Buffer{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	refused, late, quiet := uuid.New(), uuid.New(), uuid.New()
+	for _, ws := range []uuid.UUID{refused, late, quiet} {
+		execSQL(t, pool, `INSERT INTO contract_workspaces (workspace_id, kind) VALUES ($1, 'team')`, ws)
+	}
+	execSQL(t, pool, `UPDATE contract_ent_state SET usage_at = clock_timestamp() - interval '1 day', mode_at = clock_timestamp() - interval '1 day',
+		last_page_at = clock_timestamp(), first_read_at = clock_timestamp(), acked_through = 0, acked_at = clock_timestamp()`)
+	execSQL(t, pool, `INSERT INTO contract_usage (workspace_id, due_at, due_trigger, last_seq, last_measured_at, last_sent_at, last_kept,
+		error, error_at, late_at, late_trigger) VALUES
+		($1, clock_timestamp() + interval '1 hour', 'floor', 5, clock_timestamp(), clock_timestamp(), true, 'invalid_request', clock_timestamp(), NULL, NULL),
+		($2, clock_timestamp() + interval '1 hour', 'floor', 6, clock_timestamp(), clock_timestamp(), false, NULL, NULL, clock_timestamp(), 'usage_after'),
+		($3, clock_timestamp() - interval '1 hour', 'floor', 7, clock_timestamp() - interval '7 hours', clock_timestamp() - interval '7 hours', true,
+		 NULL, NULL, NULL, NULL)`, refused, late, quiet)
+	out, findings, code := entitlementsRun(t, c)
+	for _, line := range []string{
+		"entitlements usage reports: 3 workspaces",
+		"  " + late.String() + " usage: seq 6 at ",
+		", kept false, next due ",
+		"  " + refused.String() + " usage: seq 5 at ",
+		", failing since ",
+	} {
+		if !strings.Contains(out, line) {
+			t.Errorf("the status does not say %q:\n%s", line, out)
+		}
+	}
+	for _, want := range []string{
+		refused.String() + ": usage refused (invalid_request) since ",
+		late.String() + ": usage report late (usage_after) in the last 24 h",
+		quiet.String() + ": no usage report for over 6 h 15 min",
+	} {
+		found := false
+		for _, f := range findings {
+			found = found || strings.HasPrefix(f, want)
+		}
+		if !found {
+			t.Errorf("no finding %q in %q", want, findings)
+		}
+	}
+	if code != 1 || len(findings) != 3 {
+		t.Fatalf("the findings: %d %q", code, findings)
+	}
+}

@@ -215,6 +215,12 @@ func TestContractDocsMatchTheCode(t *testing.T) {
 				"contract: a second reset from the entitlements feed within a minute waits",
 				"contract: entitlements acknowledgements fail",
 				"contract entitlements: this release observes only (E0); nothing changed",
+				"contract: usage started",
+				"contract: usage stopped",
+				"contract: usage sent",
+				"contract: usage refused",
+				"contract: usage not measured",
+				"contract: usage report late",
 				"settings: off with it",
 				"invite: this team's people join through The Happie Co; person invitations are paused here " +
 					"until Wappie applies the platform's members (a service invitation still works: -role service)",
@@ -526,6 +532,9 @@ func TestContractDocsMatchTheCode(t *testing.T) {
 			": no document after a GET was due for over %d minutes",
 			": freshness over 24 hours",
 			"the entitlements part's state could not be read: ",
+			": usage refused (invalid_request) since ",
+			": usage report late (",
+			": no usage report for over 6 h 15 min",
 		} {
 			codeSays(f)
 			if strings.Contains(f, "%d") {
@@ -560,7 +569,8 @@ func TestContractDocsMatchTheCode(t *testing.T) {
 			store.ContractErrorSnapshotInvalid, store.ContractErrorEventParked, store.ContractErrorEventsRefused, store.ContractErrorEventActor,
 			store.ContractErrorCommandInvalid, store.ContractErrorCommandStuck, store.ContractErrorSectionInvalid,
 			store.ContractErrorSectionParked, store.ContractErrorResultParked, store.ContractErrorEntFeedSilent,
-			store.ContractErrorEntResetLoop, store.ContractErrorEntAckFailing, store.ContractErrorEntEnforceInE0} {
+			store.ContractErrorEntResetLoop, store.ContractErrorEntAckFailing, store.ContractErrorEntEnforceInE0,
+			store.ContractErrorUsageMismatch, store.ContractErrorUsageInvalid} {
 			says("contract.md", "`"+class+"`")
 		}
 		says("contract-events.md", "`"+store.ContractErrorEventActor+"`")
@@ -853,6 +863,8 @@ func TestContractDocsMatchTheCode(t *testing.T) {
 			"check acknowledgement":   spoken(checkEntAck),
 			"check GET":               spoken(checkEntGet),
 			"check freshness":         spoken(checkEntFresh),
+			"check usage":             spoken(checkUsage),
+			"usage kept":              spoken(store.UsageKeep),
 		}
 		// The rows the membership package checks (TestContractTimingsMatchTheDocs,
 		// which lists these as checked here), and wsapi's and mcpauth's.
@@ -863,7 +875,8 @@ func TestContractDocsMatchTheCode(t *testing.T) {
 			"section backoff", "pairing look", "results backoff", "settings idle", "ledger trim", "behind retry",
 			"relink window", "relink session", "QR ahead", "pairing hold",
 			"entitlements long-poll", "entitlements backoff", "entitlements silent", "ack every", "ack at least", "ack failing",
-			"GET backoff", "GET pace", "timeline look", "cap look", "entitlements idle"}
+			"GET backoff", "GET pace", "timeline look", "cap look", "entitlements idle",
+			"usage look", "usage floor", "usage coalesce", "usage backoff", "usage invalid", "usage crossing", "usage after"}
 		for name, want := range ours {
 			if got := rows[name]; len(got) == 0 || got[0] != want {
 				t.Errorf("docs/contract.md's timing %q is %q, the code's is %q", name, got, want)

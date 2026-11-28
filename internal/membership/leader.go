@@ -142,7 +142,7 @@ func (l *Leader) Run(ctx context.Context) {
 		pause, woken := retry, (<-chan string)(wake)
 		if l.ready(ctx) {
 			held, ok, err := locker.Hold(ctx, key, l.Heartbeat, store.ContractDirtyChannel, store.ContractModeChannel,
-				store.ContractDueChannel, store.ContractEventsChannel, store.ContractSettingsChannel)
+				store.ContractDueChannel, store.ContractEventsChannel, store.ContractSettingsChannel, store.ContractUsageChannel)
 			switch {
 			case err != nil:
 				l.log().Warn("contract: could not try the leader's lock", "error", err)
@@ -346,6 +346,8 @@ func (l *Leader) watchMode(ctx context.Context, stop context.CancelFunc, f *foll
 				snaps.due()
 			case n.Channel == store.ContractEventsChannel:
 				events.notice(n.Payload)
+			case n.Channel == store.ContractUsageChannel:
+				ent.usage.notice(n.Payload)
 			}
 		}
 	}

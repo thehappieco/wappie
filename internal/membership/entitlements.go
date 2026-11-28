@@ -82,6 +82,8 @@ type EntitlementsConfig struct {
 	GetPace                      time.Duration
 	TimelineEvery, CapEvery      time.Duration
 	Idle                         time.Duration
+	// Usage is the usage sender's (usage.go).
+	Usage UsageConfig
 }
 
 func (c EntitlementsConfig) wait() int {
@@ -101,6 +103,9 @@ type entitlementsWork struct {
 	accounts  *follower
 	settings  *settingsWork
 	ack, gets chan struct{}
+	// usage is the usage sender, which runs beside the loops while its
+	// own switch is on.
+	usage *usageWork
 
 	mu sync.Mutex
 	// cut ends the long-poll in flight, or the pause after it; cuts counts
@@ -116,14 +121,25 @@ type entitlementsWork struct {
 }
 
 func newEntitlementsWork(l *Leader, accounts *follower, settings *settingsWork) *entitlementsWork {
-	return &entitlementsWork{l: l, cfg: l.Entitlements, accounts: accounts, settings: settings,
+	w := &entitlementsWork{l: l, cfg: l.Entitlements, accounts: accounts, settings: settings,
 		ack: make(chan struct{}, 1), gets: make(chan struct{}, 1)}
+	w.usage = newUsageWork(w)
+	return w
 }
 
 // set starts the loops under ctx when st's mode is observe and they do not
-// run, or stops them and waits for them when it is off. Only the leader's
-// watcher calls it, and the leader's end (halt).
+// run, or stops them and waits for them when it is off; the usage sender
+// follows its own switch beside them, on only while they observe. Only the
+// leader's watcher calls it, and the leader's end (halt).
 func (w *entitlementsWork) set(ctx context.Context, st store.EntState) {
+	if st.UsageEffective() != store.UsageOn {
+		w.usage.set(ctx, store.UsageOff)
+	}
+	defer func() {
+		if st.UsageEffective() == store.UsageOn {
+			w.usage.set(ctx, store.UsageOn)
+		}
+	}()
 	w.mu.Lock()
 	running := w.stop != nil
 	switch {

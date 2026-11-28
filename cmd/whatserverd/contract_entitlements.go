@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	kc "github.com/thehappieco/kit/contract"
 
 	"whatserver2/internal/store"
 )
@@ -35,6 +36,9 @@ const (
 	// checkEntFresh: a workspace's document's freshness (the spec's 15.6:
 	// past it, steps freeze).
 	checkEntFresh = store.EntFreshFor
+	// checkUsage: a workspace's last usage report, while usage is on: the
+	// floor's 6 hours and a quarter of an hour.
+	checkUsage = 6*time.Hour + 15*time.Minute
 )
 
 // contractEntitlementsCommand is contract entitlements off|observe
@@ -260,6 +264,28 @@ func entitlementsLines(w *lines, st store.ContractEntStatus) {
 		}
 		w.f("  %s: %s %s %s fresh %s%s", r.Workspace, version, mode, state, fresh, extra)
 	}
+	w.f("entitlements usage reports: %d workspaces", len(st.Usage))
+	for _, u := range st.Usage {
+		seq, kept := "none", "none"
+		if u.LastSeq != nil {
+			seq = fmt.Sprintf("%d at %s", *u.LastSeq, stamp(*u.LastMeasuredAt))
+		}
+		if u.LastKept != nil {
+			kept = fmt.Sprint(*u.LastKept)
+		}
+		due := "none"
+		if u.DueAt != nil {
+			due = stamp(*u.DueAt) + " (" + u.DueTrigger + ")"
+		}
+		extra := ""
+		if u.StoppedSince != nil {
+			extra += ", stopped (not_found)"
+		}
+		if u.Error != "" {
+			extra += fmt.Sprintf(", failing since %s (%s)", stamp(*u.ErrorAt), u.Error)
+		}
+		w.f("  %s usage: seq %s, kept %s, next due %s%s", u.Workspace, seq, kept, due, extra)
+	}
 }
 
 // entitlementsFindings are --check's lines of the entitlements part, each
@@ -310,6 +336,23 @@ func entitlementsFindings(st store.ContractEntStatus) []string {
 			}
 		case r.AppliedAt != nil && r.NotFoundSince == nil && older(since(r.Fresh), checkEntFresh):
 			out = append(out, fmt.Sprintf("%s: freshness over 24 hours, the last %s", r.Workspace, ago(now, r.Fresh)))
+		}
+	}
+	for _, u := range st.Usage {
+		if u.Error == kc.CodeInvalid && u.ErrorAt != nil {
+			out = append(out, fmt.Sprintf("%s: usage refused (invalid_request) since %s", u.Workspace, stamp(*u.ErrorAt)))
+		}
+		if u.LateAt != nil && now.Sub(*u.LateAt) <= checkErrors {
+			out = append(out, fmt.Sprintf("%s: usage report late (%s) in the last 24 h, at %s", u.Workspace, u.LateTrigger, stamp(*u.LateAt)))
+		}
+		usageSince := func(at *time.Time) *time.Time {
+			if at == nil || at.Before(s.UsageAt) {
+				return &s.UsageAt
+			}
+			return at
+		}
+		if s.UsageEffective() == store.UsageOn && u.StoppedSince == nil && older(usageSince(u.LastSentAt), checkUsage) {
+			out = append(out, fmt.Sprintf("%s: no usage report for over 6 h 15 min, the last %s", u.Workspace, ago(now, u.LastSentAt)))
 		}
 	}
 	return out

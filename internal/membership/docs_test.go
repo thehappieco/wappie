@@ -30,7 +30,7 @@ var timingsElsewhere = []string{
 	"check round", "check parked", "check events", "hot path", "hot path bound",
 	"section not found", "run backoff", "ledger", "check commands", "check results", "check taken", "check section",
 	"person not found", "resume repair", "check person", "start bound", "failed start wait",
-	"check entitlements feed", "check acknowledgement", "check GET", "check freshness",
+	"check entitlements feed", "check acknowledgement", "check GET", "check freshness", "check usage", "usage kept",
 }
 
 // docs/contract.md's timings and limits that this package sets (the rest
@@ -89,6 +89,14 @@ func TestContractTimingsMatchTheDocs(t *testing.T) {
 		"timeline look":          spoken(entTimelineEvery),
 		"cap look":               spoken(entCapEvery),
 		"entitlements idle":      spoken(entIdle),
+		// The usage sender's (usage.go).
+		"usage look":     spoken(usageEvery),
+		"usage floor":    spoken(usageFloor),
+		"usage coalesce": spoken(usageCoalesce),
+		"usage backoff":  span(usageBackoffMin, usageBackoffMax),
+		"usage invalid":  spoken(usageInvalidRetry),
+		"usage crossing": spoken(usageCrossingDeadline),
+		"usage after":    spoken(usageAfterDeadline),
 		// The commands release's (commands_run.go).
 		"behind retry": spoken(behindRetry),
 		// The console's relink (kit v0.11.0; numberacts and wa).

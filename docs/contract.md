@@ -1221,9 +1221,46 @@ hours old at its `at`, frozen otherwise. Every minute each workspace's
 total is compared with its document's `cap_bytes`, and a crossing either
 way is logged, never a figure.
 
+**The usage report** (spec 15.8 and 15.9; `wappie-storage/1`) goes while
+entitlements observe and `usage` is `on`: every recorded platform workspace,
+one at a time at the leader's pace, an empty one with `items: []`. Each is
+measured from one REPEATABLE READ snapshot that locks only its own
+`usage_seq` row (`contract_usage_seq`, no foreign key), never `tenants` or
+`contract_workspaces`, so it never holds capture back; `usage_seq` is the
+clock in milliseconds, or one more than the last, so it rises across a
+restart and a clock step. A message's, a receipt's and a group change's own
+`ts` date them; media and AI rows take their message's; an object takes the
+newest date among the messages on its one number that reference it, and
+goes to `shared_bytes` when several numbers or none do; chats, contacts and
+group members are fixed. The items and `shared_bytes` must sum to the
+workspace's totals in the same snapshot, else nothing is sent ("contract:
+usage not measured", class `mismatch`, recorded `usage_mismatch`). A
+measurement is bounded at 300 seconds (class `timeout`, the report stays
+due). When a workspace is due, the earliest deadline first: a crossing of
+its document's `allowance_bytes` or `cap_bytes` either way (within a
+minute), a `requests.usage_after` later than its last report (within 10
+minutes), a deletion, recovery, purge or move out of one of its numbers
+(0053's notice on `wappie_contract_usage`, and a look at `item_events` every
+minute for a notice lost), a move of 1 % of its quota (at least 100 MB,
+coalesced to one report every 15 minutes), and at least every 6 hours. A
+report sent past its trigger's deadline logs WARN "contract: usage report
+late" (`workspace`, `trigger`): the scan's cost on the pilot is unmeasured,
+and slice 20's counters are what guarantee the deadlines. A workspace whose
+GET answered `not_found` is not reported until a document of it reaches the
+feed again; each report of a workspace whose document says `closed` sends
+its GET. A signed `invalid_request` parks the report for an hour ("contract:
+usage refused", recorded `usage_invalid`); both `kept` answers count as
+delivered. Each report sent is kept at least 8 hours after its
+`measured_at`. Its lines: "contract: usage started", "contract: usage
+stopped", "contract: usage sent" (`workspace`, `usage_seq`,
+`rule_version`, `kept`), WARN "contract: usage refused" (`workspace`,
+`usage_seq`, `code`), WARN "contract: usage not measured" (`workspace`,
+`class`), never a figure.
+
 **Lock order.** `contract_state`, `contract_workspaces` (id order),
 `contract_ent_state`, `contract_ent_docs` (id order): Restart's, the account
-page's hook, a page's and a GET's (`TestCommitEntPageLockOrder`).
+page's hook, a page's and a GET's; a usage measurement locks its own seq row
+alone (`TestCommitEntPageLockOrder`).
 
 **Its lines** (INFO unless said; ids, enums and times only, never a figure,
 a label or a document): "contract: entitlements started", "contract:
@@ -1250,8 +1287,11 @@ failing since … (<class>)`); `entitlements ack: through N at …, refusals
 owed N`; `entitlements documents: N applied, N kept for workspaces not
 named, N placeholders`; and one line per workspace, `<ws>: vN <mode>
 <state> fresh …`, with ` held at observe`, ` not_found since …` and
-` frozen` where they hold. Its `--check` findings, in `contract status
---check` too:
+` frozen` where they hold; then `entitlements usage reports: N
+workspaces`, and one line per workspace, `<ws> usage: seq N at …, kept
+<bool>, next due … (<trigger>)`, with `, stopped (not_found)` and `,
+failing since … (<class>)` where they hold. Its `--check` findings, in
+`contract status --check` too:
 
 - `<ws>: an enforce document held at observe (E0), not yet reported to the
   platform`, in every mode, until the hold is told;
@@ -1262,6 +1302,9 @@ named, N placeholders`; and one line per workspace, `<ws>: vN <mode>
   acknowledgement over 10 minutes old` (the platform alerts after 10
   minutes); `<ws>: no document after a GET was due for over 10 minutes`;
   `<ws>: freshness over 24 hours`;
+- while observing: `<ws>: usage refused (invalid_request) since …`;
+  `<ws>: usage report late (<trigger>) in the last 24 h`; and, while usage
+  is on, `<ws>: no usage report for over 6 h 15 min`;
 - `the entitlements part's state could not be read: …`.
 
 ## contract status
@@ -1303,7 +1346,7 @@ clean until its bounds pass:
   `command_stuck`, `command_reset_loop`, `section_invalid`, `section_parked`,
   `result_parked`, `person_invalid`, and the entitlements part's
   `ent_feed_silent`, `ent_reset_loop`, `ent_ack_failing`,
-  `ent_enforce_in_e0`;
+  `ent_enforce_in_e0`, `usage_mismatch`, `usage_invalid`;
 - while the contract is on:
   - `the feed was last read … (the platform alerts after 10 minutes)`, past
     5 minutes;
@@ -1533,3 +1576,12 @@ Each value below is the code's, and `TestContractDocsMatchTheCode` and
 | check acknowledgement | 10 minutes | `--check`: the last acknowledgement accepted, while observing |
 | check GET | 10 minutes | `--check`: a workspace with no document since its GET was due |
 | check freshness | 24 hours | `--check`: a workspace's document's freshness |
+| usage look | 1 minute | how often each workspace's usage triggers are looked at |
+| usage floor | 6 hours | the longest between two usage reports of a workspace |
+| usage coalesce | 15 minutes | the 1 % trigger's least time between two reports |
+| usage backoff | 5 seconds to 1 hour | after a usage report that got no answer |
+| usage invalid | 1 hour | a usage report refused `invalid_request`, before it goes again |
+| usage crossing | 1 minute | a crossing's deadline, past which a report is late |
+| usage after | 10 minutes | a `usage_after`'s deadline, past which a report is late |
+| usage kept | 8 hours | a usage report sent, kept after its `measured_at` |
+| check usage | 375 minutes | `--check`: a workspace's last usage report, while usage is on |

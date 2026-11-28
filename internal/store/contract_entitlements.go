@@ -1060,7 +1060,10 @@ type ContractEntStatus struct {
 	// refusal seen, acknowledged or not.
 	Owed        int
 	LastRefused *time.Time
-	Now         time.Time
+	// Usage is each recorded workspace's usage cadence (contract_usage),
+	// in id order.
+	Usage []UsageRow
+	Now   time.Time
 }
 
 // EntStatus reads the entitlements part in one read-only snapshot.
@@ -1080,7 +1083,15 @@ func (c *Contract) EntStatus(ctx context.Context) (ContractEntStatus, error) {
 		if err != nil {
 			return err
 		}
-		out.Rows, err = pgx.CollectRows(rows, scanEntRow)
+		if out.Rows, err = pgx.CollectRows(rows, scanEntRow); err != nil {
+			return err
+		}
+		rows, err = tx.Query(ctx, `SELECT `+usageRowColumns+` FROM contract_usage u
+			LEFT JOIN contract_ent_docs d ON d.workspace_id = u.workspace_id ORDER BY u.workspace_id`)
+		if err != nil {
+			return err
+		}
+		out.Usage, err = pgx.CollectRows(rows, scanUsageRow)
 		return err
 	})
 	for i := range out.Rows {

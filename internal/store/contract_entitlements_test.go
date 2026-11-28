@@ -398,8 +398,9 @@ func TestEntRestartKeepsDocumentsForgetsVersions(t *testing.T) {
 }
 
 // The lock order: two pages, an account page that names workspaces, a
-// reset and the GET's store, each in its own transaction, run at once many
-// times; none deadlocks (the server's 40P01 would be retried, and logged).
+// reset, the GET's store, a brake and a usage measurement, each in its own
+// transaction, run at once many times; none deadlocks (the server's 40P01
+// would be retried, and logged).
 func TestCommitEntPageLockOrder(t *testing.T) {
 	ctx := context.Background()
 	var logs bytes.Buffer
@@ -445,6 +446,8 @@ func TestCommitEntPageLockOrder(t *testing.T) {
 			return err
 		})
 		run(func() error { _, err := w.c.EntBrake(lctx, ids[1], round%2 == 0, false); return ignoreNoBrake(err) })
+		// A usage measurement of a named workspace: its seq row only.
+		run(func() error { _, err := w.c.MeasureUsage(lctx, ids[2]); return err })
 		if round%3 == 2 {
 			next := uuid.New()
 			run(func() error { _, err := w.c.RestartFromEntitlements(lctx, gen, &next); return err })
