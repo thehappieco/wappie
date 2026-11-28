@@ -397,3 +397,54 @@ func TestMoveWouldBeRefusedLogged(t *testing.T) {
 		}
 	}
 }
+
+// TestPairingSucceedsWhenRecordLinkedFails: a RecordLinked that keeps
+// failing never holds the pairing (Linked returns at once), is retried
+// three times, then logs the ERROR and records event_record; once the
+// pairing's own identity is stored, the catch-up gives the number its
+// codes.
+func TestPairingSucceedsWhenRecordLinkedFails(t *testing.T) {
+	w := linkWorld(t)
+	ctx := context.Background()
+	if _, err := w.pool.Exec(ctx, `CREATE FUNCTION test_refuse_linked() RETURNS trigger LANGUAGE plpgsql AS $$
+		BEGIN IF NEW.type = 'linked' THEN RAISE EXCEPTION 'refused by the test'; END IF; RETURN NEW; END $$;
+		CREATE TRIGGER test_refuse_linked BEFORE INSERT ON item_events FOR EACH ROW EXECUTE FUNCTION test_refuse_linked()`); err != nil {
+		t.Fatal(err)
+	}
+	d, err := store.NewDevices(w.pool).Create(ctx, w.team.String(), "Loja", "passive")
+	if err != nil {
+		t.Fatal(err)
+	}
+	device := uuid.MustParse(d.ID)
+	start := time.Now()
+	w.members.Linked(ctx, w.team, device, &w.owner, testIdentity(30))
+	if took := time.Since(start); took > 100*time.Millisecond {
+		t.Fatalf("Linked held the pairing %v", took)
+	}
+	eventually(t, soon, "the ERROR", func() bool {
+		return len(w.logs.Lines("contract: an item.linked could not be written; the catch-up covers the number",
+			"device="+device.String(), "tries=4")) == 1
+	})
+	if st, err := w.contract.State(ctx); err != nil || st.ErrorClass != store.ContractErrorEventRecord {
+		t.Fatalf("the ERROR recorded: %q %v", st.ErrorClass, err)
+	}
+	if _, err := w.pool.Exec(ctx, `DROP TRIGGER test_refuse_linked ON item_events`); err != nil {
+		t.Fatal(err)
+	}
+	// PairSuccess stores the identity; the daily catch-up (here a resume,
+	// which is a key becoming usable) covers the number.
+	if err := store.NewDevices(w.pool).SetIdentity(ctx, w.team.String(), device.String(), testIdentity(30)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.contract.SetTrialCodes(ctx, store.TrialCodesSuspended); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, soon, "the suspension seen", func() bool { return len(w.logs.Lines("contract: trial codes suspended")) == 1 })
+	if _, err := w.contract.SetTrialCodes(ctx, store.TrialCodesOn); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, soon, "the catch-up's codes delivered", func() bool {
+		c := w.sentCodes(kc.EventIdentityUpdated, device)
+		return len(c) == 1 && len(c[0]) == 2
+	})
+}
