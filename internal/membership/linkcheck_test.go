@@ -251,8 +251,13 @@ func TestLinkCheckAfterPairingLogsOnly(t *testing.T) {
 	eventually(t, soon, "the link check logged", func() bool {
 		return len(w.logs.Lines("contract: link check", "workspace="+w.team.String(), "device="+device.String(), "trial=not_needed")) == 1
 	})
-	if first := <-checkFirst; !first {
-		t.Fatal("the GET completed before the check was sent")
+	select {
+	case first := <-checkFirst:
+		if !first {
+			t.Fatal("the GET completed before the check was sent")
+		}
+	case <-time.After(soon):
+		t.Fatal("no GET went for the absent document")
 	}
 	if r := w.rowsOf(t, w.team, device, "linked"); len(r) != 1 {
 		t.Fatalf("item.linked: %v", r)

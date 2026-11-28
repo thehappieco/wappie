@@ -108,7 +108,7 @@ func TestMigration0054Backfill(t *testing.T) {
 // migration is applied, entitlements are on, codes are on with a key, or
 // an event of the two types is still owed, and changes nothing then; else
 // it says what it drops and leaves 53's schema but the trial key's table,
-// which it keeps: 0054 again reuses the same key.
+// which it keeps: 0054 again reuses the same key, its codes suspended.
 func TestMigration0054DownStep(t *testing.T) {
 	ctx := context.Background()
 	lg := quietLogger(t)
@@ -247,14 +247,12 @@ func TestMigration0054DownStep(t *testing.T) {
 	var keys int
 	var codes string
 	if err := pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM contract_trial_key), codes FROM contract_trial_key_state`).
-		Scan(&keys, &codes); err != nil || keys != 1 || codes != "on" {
+		Scan(&keys, &codes); err != nil || keys != 1 || codes != "suspended" {
+		// The kept key comes back suspended, as the down-step required:
+		// an exposed key not yet retired is never used again by itself.
 		t.Fatalf("after 0054 again: %d keys, codes %q, %v", keys, codes, err)
 	}
-	// And the chain: 0054 down (no key opened, codes on: suspended first),
-	// then 0053 down.
-	if _, err := pool.Exec(ctx, `UPDATE contract_trial_key_state SET codes = 'suspended'`); err != nil {
-		t.Fatal(err)
-	}
+	// And the chain: 0054 down (codes still suspended), then 0053 down.
 	if _, err := pool.Exec(ctx, downStepSQL(t, 54)); err != nil {
 		t.Fatalf("0054's down-step again: %v", err)
 	}

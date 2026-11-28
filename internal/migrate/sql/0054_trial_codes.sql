@@ -50,7 +50,9 @@
 -- workspace is still owed; a refusal changes nothing. It deletes the rows
 -- of those two types, restores 0051's type check, drops the state, the
 -- link checks and placed_at, and keeps contract_trial_key: a later re-up
--- reuses the same K_app, and trials do not restart.
+-- reuses the same K_app, and trials do not restart. That re-up starts with
+-- codes suspended (the switch the down-step required): resume them with
+-- `whatserverd contract trial-key resume` once any exposure is handled.
 --
 --      BEGIN;
 --      SELECT pg_advisory_xact_lock(6289348710053007958);
@@ -172,7 +174,12 @@ CREATE TABLE contract_trial_key_state (
     CHECK ((open_error IS NULL) = (open_error_at IS NULL)),
     CHECK ((opened_at IS NULL) = (envelope_sha256 IS NULL))
 );
-INSERT INTO contract_trial_key_state DEFAULT VALUES;
+-- A re-up after a down-step finds the key it kept: codes start suspended,
+-- as the down-step required them, so an exposed key not yet on the retired
+-- list never comes back into use by itself (contract trial-key resume turns
+-- them on again).
+INSERT INTO contract_trial_key_state (codes)
+    SELECT CASE WHEN EXISTS (SELECT 1 FROM contract_trial_key) THEN 'suspended' ELSE 'on' END;
 CREATE TRIGGER contract_trial_key_state_mark AFTER UPDATE OF codes ON contract_trial_key_state FOR EACH ROW
     WHEN (NEW.codes IS DISTINCT FROM OLD.codes) EXECUTE FUNCTION contract_trial_key_mark();
 

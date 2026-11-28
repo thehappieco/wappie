@@ -59,6 +59,10 @@ const (
 	trialRetired     = "retired"
 	trialNoIdentity  = "no_identity"
 	trialOpenFailing = "does_not_open"
+	// trialNotLoaded: this process has not loaded the key since it last
+	// led (wappie-api's start, a leader just taken). Not a verdict: the
+	// event sender holds a row rather than settle it not_sent.
+	trialNotLoaded = "not_loaded"
 )
 
 // TrialKeyConfig is how wappie-api opens K_app: Wappie's KMS key (the
@@ -80,25 +84,40 @@ type TrialTimings struct {
 
 // trialKeys is the process's K_app, as wappie-api last opened it.
 type trialKeys struct {
-	mu sync.Mutex
-	// key is the open key; sum its envelope's sha256, made its row's time.
-	key     *kc.TrialKey
-	sum     [32]byte
-	made    time.Time
-	wrapper kms.Wrapper
-	// why is why codes are not made now, "" while usable.
-	why string
-	// usable is the last load's verdict; told spaces the ERRORs and the
-	// suspension's INFO.
-	usable    bool
+	// load serializes the loads (the leader's loop and its catch-up's
+	// re-reads) and guards the loader's own fields: the KMS client, and
+	// told, which spaces the ERRORs and the suspension's INFO.
+	load      sync.Mutex
+	wrapper   kms.Wrapper
 	toldError time.Time
 	toldWhy   string
+	// mu guards what senders read, held only to read or publish it, never
+	// across a store or KMS call: a move's check and the event sender
+	// never wait on a load.
+	mu sync.Mutex
+	// loaded: a load has published a verdict since this process last led
+	// (none yet, or the leader stopped: trialNotLoaded).
+	loaded bool
+	// key is the open key; sum its envelope's sha256, made its row's time.
+	key  *kc.TrialKey
+	sum  [32]byte
+	made time.Time
+	// why is why codes are not made now, "" while usable.
+	why    string
+	usable bool
+}
+
+// trialOpen is an open key, as a load publishes it.
+type trialOpen struct {
+	key  *kc.TrialKey
+	sum  [32]byte
+	made time.Time
 }
 
 // trialLoad is what a load found.
 type trialLoad struct {
 	// Usable: a key opened, codes on, not retired; Became: it was not at
-	// the load before.
+	// the load before, or another key was.
 	Usable, Became bool
 	Why            string
 	Made           time.Time
@@ -107,87 +126,109 @@ type trialLoad struct {
 // LoadTrialKey reads K_app's row and the codes switch, opens the envelope
 // when it is not the one held (never one on the retired list), and records
 // the open or its failure's class for contract status. It reports whether
-// codes are made now, and whether they were not before.
+// codes are made now, and whether they were not before. The store and KMS
+// calls run outside the lock trialCodesNow reads under; the verdict is
+// published at the end.
 func (m *Members) LoadTrialKey(ctx context.Context) (trialLoad, error) {
 	t := &m.trial
+	t.load.Lock()
+	defer t.load.Unlock()
 	st, err := m.Contract.TrialKeyState(ctx)
 	if err != nil {
 		return trialLoad{}, err
 	}
 	t.mu.Lock()
-	defer t.mu.Unlock()
-	was := t.usable
-	out := trialLoad{}
+	held := trialOpen{key: t.key, sum: t.sum, made: t.made}
+	was, wasMade := t.usable, t.made
+	t.mu.Unlock()
+	next, why := held, ""
 	switch {
 	case !st.Installed:
-		t.key, t.why = nil, trialNoKey
+		next, why = trialOpen{}, trialNoKey
 	case m.retired(st.StoredSHA256):
-		t.key, t.why = nil, trialRetired
+		next, why = trialOpen{}, trialRetired
 		m.trialFailed(ctx, t, trialRetired)
 	default:
-		if t.key == nil || !bytesEqual(t.sum[:], st.StoredSHA256) {
-			if class := m.openTrialKey(ctx, t); class != "" {
-				t.key, t.why = nil, trialOpenFailing
+		if held.key == nil || !bytesEqual(held.sum[:], st.StoredSHA256) {
+			opened, class := m.openTrialKey(ctx, t)
+			if class != "" {
+				next, why = trialOpen{}, trialOpenFailing
 				m.trialFailed(ctx, t, class)
 				break
 			}
+			next = opened
 		}
-		t.why = ""
 		if st.Codes != store.TrialCodesOn {
-			t.why = trialSuspended
+			why = trialSuspended
 		}
 	}
-	if t.why == trialSuspended && t.toldWhy != trialSuspended {
+	if why == trialSuspended && t.toldWhy != trialSuspended {
 		m.log().Info("contract: trial codes suspended; links go with no code", "since", st.CodesAt.UTC().Format(time.RFC3339))
 	}
-	if t.why != trialOpenFailing && t.why != trialRetired {
+	if why != trialOpenFailing && why != trialRetired {
 		t.toldError = time.Time{}
 	}
-	t.toldWhy = t.why
-	t.usable = t.key != nil && t.why == ""
-	out.Usable, out.Became, out.Why, out.Made = t.usable, t.usable && !was, t.why, t.made
-	return out, nil
+	t.toldWhy = why
+	usable := next.key != nil && why == ""
+	t.mu.Lock()
+	t.key, t.sum, t.made, t.why, t.usable, t.loaded = next.key, next.sum, next.made, why, usable, true
+	t.mu.Unlock()
+	return trialLoad{Usable: usable, Became: usable && (!was || !next.made.Equal(wasMade)), Why: why, Made: next.made}, nil
 }
 
-// openTrialKey opens the installed envelope into t, and records the open;
-// it returns the failure's class, "" on success.
-func (m *Members) openTrialKey(ctx context.Context, t *trialKeys) string {
+// forgetTrialKey drops the process's K_app when its leader stops: a
+// process that does not lead loads no key, so it never makes codes from a
+// state it no longer reads (a suspension it would not see). Until the next
+// leader's first load, a number has no code (trialNotLoaded), and the
+// event sender holds such events rather than settle them.
+func (m *Members) forgetTrialKey() {
+	t := &m.trial
+	t.load.Lock()
+	defer t.load.Unlock()
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.key, t.sum, t.made, t.why, t.usable, t.loaded = nil, [32]byte{}, time.Time{}, "", false, false
+}
+
+// openTrialKey opens the installed envelope, and records the open; it
+// returns the key, or the failure's class. Called under t.load.
+func (m *Members) openTrialKey(ctx context.Context, t *trialKeys) (trialOpen, string) {
 	envelope, made, ok, err := m.Contract.TrialKeyEnvelope(ctx)
 	if err != nil {
-		return "store"
+		return trialOpen{}, "store"
 	}
 	if !ok {
-		return "store"
+		return trialOpen{}, "store"
 	}
 	if t.wrapper == nil {
 		if m.Trial.Open == nil || m.Trial.KeyARN == "" {
-			return "no_kms"
+			return trialOpen{}, "no_kms"
 		}
 		w, err := m.Trial.Open(ctx, m.Trial.Region, m.Trial.KeyARN)
 		if err != nil {
-			return ErrorClass(err)
+			return trialOpen{}, ErrorClass(err)
 		}
 		t.wrapper = w
 	}
 	plain, err := thcseal.Open(ctx, t.wrapper, TrialKeyContext, envelope)
 	if err != nil {
-		return ErrorClass(err)
+		return trialOpen{}, ErrorClass(err)
 	}
 	key, err := kc.NewTrialKey(plain)
 	clear(plain)
 	if err != nil {
-		return "key_shape"
+		return trialOpen{}, "key_shape"
 	}
-	t.key, t.sum, t.made = &key, sha256.Sum256(envelope), made
 	if err := m.Contract.TrialKeyOpened(ctx, envelope); err != nil && ctx.Err() == nil {
 		m.log().Warn("contract: could not record the trial key's open", "error", err)
 	}
 	m.log().Info("contract: trial key opened")
-	return ""
+	return trialOpen{key: &key, sum: sha256.Sum256(envelope), made: made}, ""
 }
 
 // trialFailed records a key that cannot be used: its class in the state
 // row, an ERROR at most once an hour, and the class for contract status.
+// Called under t.load.
 func (m *Members) trialFailed(ctx context.Context, t *trialKeys, class string) {
 	if err := m.Contract.TrialKeyOpenFailed(ctx, class); err != nil && ctx.Err() == nil {
 		m.log().Warn("contract: could not record the trial key's failure", "error", err)
@@ -212,16 +253,17 @@ func (m *Members) retired(sum []byte) bool {
 func bytesEqual(a, b []byte) bool { return string(a) == string(b) }
 
 // trialCodesNow is the codes of a number now, from its phone number and
-// LID as devices stores them, and why it has none ("" when it has).
+// LID as devices stores them, and why it has none ("" when it has):
+// trialNotLoaded until this process's leader has loaded the key, a state
+// that settles nothing.
 func (m *Members) trialCodesNow(pn, lid string) (kc.TrialCodes, string) {
 	t := &m.trial
 	t.mu.Lock()
-	key, why := t.key, t.why
-	usable := t.usable
+	key, why, usable, loaded := t.key, t.why, t.usable, t.loaded
 	t.mu.Unlock()
 	switch {
-	case key == nil && why == "":
-		return nil, trialNoKey
+	case !loaded:
+		return nil, trialNotLoaded
 	case !usable:
 		return nil, why
 	}
@@ -261,35 +303,55 @@ func trialCodes(key kc.TrialKey, app, pn, lid string) kc.TrialCodes {
 // trialWork is one leader's trial key: loaded at its start, again at each
 // notice ("trial_key": a key installed, the codes switched) and every
 // Poll, tried again every Retry while absent or failing, and the catch-up
-// when the key becomes usable and every Daily while it is.
+// when the key becomes usable, another key is, and every Daily while it
+// is. ready closes after the first load (whatever it found): the event
+// sender starts then, so a row owed at a restart goes with its codes.
 type trialWork struct {
-	l    *Leader
-	wake chan struct{}
+	l     *Leader
+	wake  chan struct{}
+	ready chan struct{}
 }
 
-func newTrialWork(l *Leader) *trialWork { return &trialWork{l: l, wake: make(chan struct{}, 1)} }
+func newTrialWork(l *Leader) *trialWork {
+	return &trialWork{l: l, wake: make(chan struct{}, 1), ready: make(chan struct{})}
+}
 
 // run loads and catches up until ctx ends.
 func (w *trialWork) run(ctx context.Context) {
 	m, cfg := w.l.Members, w.l.Trial
-	var daily time.Time
+	var daily, under time.Time
+	first := true
 	for ctx.Err() == nil {
 		wait := or(cfg.Poll, trialPoll)
 		got, err := m.LoadTrialKey(ctx)
+		if first {
+			first = false
+			close(w.ready)
+		}
 		switch {
 		case err != nil:
 			if ctx.Err() == nil {
 				w.l.log().Warn("contract: could not read the trial key's state", "error", err)
 			}
-		case got.Usable && (got.Became || !time.Now().Before(daily)):
-			w.catchUp(ctx, got.Made)
-			daily = time.Now().Add(or(cfg.Daily, trialDaily))
+		case got.Usable && (!got.Made.Equal(under) || !time.Now().Before(daily)):
+			// Usable since the last catch-up ended, another key, or a day.
+			if w.catchUp(ctx, got.Made) {
+				under, daily = got.Made, time.Now().Add(or(cfg.Daily, trialDaily))
+			} else {
+				under = time.Time{}
+				wait = 0
+			}
 		case got.Why == trialOpenFailing || got.Why == trialNoKey || got.Why == trialRetired:
 			// Absent or failing: tried again every Retry, or at once on a
 			// notice (a key installed).
 			wait = or(cfg.Retry, trialRetry)
 		}
-		if got.Usable {
+		if err == nil && !got.Usable {
+			// Suspended, retired, absent or failing: the catch-up runs
+			// again once a key is usable.
+			under = time.Time{}
+		}
+		if got.Usable && !under.IsZero() {
 			wait = min(wait, max(time.Until(daily), 0))
 		}
 		select {
@@ -304,20 +366,46 @@ func (w *trialWork) run(ctx context.Context) {
 // catchUp sends one item.identity_updated for each number owed one under
 // the key made at made (spec 15.12 "An item with no code"; P2): a number
 // linked before slice 19, while the key was missing or suspended, or whose
-// own event could not be written. One at a time, Pace apart, each in its
-// own transaction; a number whose identity makes no code is left out.
-func (w *trialWork) catchUp(ctx context.Context, made time.Time) {
+// own event could not be written or was never owed. One at a time, Pace
+// apart, each in its own transaction; a number whose identity makes no
+// code is left out. Before each number it reads the key again on a notice
+// or every Poll, and stops when the key is no longer usable or another one
+// is (a suspension is the spec's 15.10 exposure step 1: no code anywhere),
+// reporting false; true when it went through the list (or could not read
+// it: tried again the next day).
+func (w *trialWork) catchUp(ctx context.Context, made time.Time) bool {
 	m := w.l.Members
 	items, err := m.Contract.CodesCatchUp(ctx, made)
 	if err != nil {
 		if ctx.Err() == nil {
 			w.l.log().Warn("contract: could not list the numbers owed their codes", "error", err)
 		}
-		return
+		return true
 	}
-	pace := or(w.l.Trial.Pace, trialPace)
+	pace, poll := or(w.l.Trial.Pace, trialPace), or(w.l.Trial.Poll, trialPoll)
 	recorded := map[uuid.UUID]int{}
+	defer func() {
+		for ws, n := range recorded {
+			w.l.log().Info("contract: codes caught up", "workspace", ws, "count", n)
+		}
+	}()
+	read := time.Now()
 	for _, it := range items {
+		var reload bool
+		select {
+		case <-w.wake:
+			reload = true
+		default:
+			reload = time.Since(read) >= poll
+		}
+		if reload {
+			read = time.Now()
+			got, err := m.LoadTrialKey(ctx)
+			if err == nil && (!got.Usable || !got.Made.Equal(made)) {
+				w.l.log().Info("contract: the codes' catch-up stopped: the trial key changed", "reason", got.Why)
+				return false
+			}
+		}
 		if codes, _ := m.trialCodesNow(it.PN, it.LID); len(codes) == 0 {
 			continue
 		}
@@ -335,13 +423,11 @@ func (w *trialWork) catchUp(ctx context.Context, made time.Time) {
 		select {
 		case <-ctx.Done():
 			t.Stop()
-			return
+			return false
 		case <-t.C:
 		}
 	}
-	for ws, n := range recorded {
-		w.l.log().Info("contract: codes caught up", "workspace", ws, "count", n)
-	}
+	return true
 }
 
 // errNoTrialKey is a trial key command's refusal with no KMS configured.

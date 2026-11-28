@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	kc "github.com/thehappieco/kit/contract"
 	"github.com/thehappieco/kit/contract/contracttest"
+	"github.com/thehappieco/kit/kms"
 	"go.mau.fi/whatsmeow/types"
 
 	"whatserver2/internal/membership/membershiptest"
@@ -369,6 +370,134 @@ func TestCodesCatchUpOnKeyLoad(t *testing.T) {
 	}
 	if len(logs.Lines("contract: codes caught up", "workspace="+w.team.String(), "count=2")) != 1 {
 		t.Fatalf("the catch-up's line:\n%s", logs.String())
+	}
+}
+
+// named waits until the leader has named ws (its rows are owed from then).
+func (w *snapshotWorld) named(t *testing.T, ws uuid.UUID) {
+	t.Helper()
+	eventually(t, soon, "the workspace named", func() bool {
+		var ok bool
+		err := w.pool.QueryRow(context.Background(), `SELECT EXISTS (SELECT 1 FROM contract_workspaces WHERE workspace_id = $1)`, ws).Scan(&ok)
+		return err == nil && ok
+	})
+}
+
+// TestEventsHeldUntilKeyLoaded: at a leader's start the event sender waits
+// for the first load of the trial key, so an item.linked owed at a restart
+// is neither sent nor settled not_sent while KMS is slow, and goes with
+// its codes once the key opens. A leader that stops forgets the key: until
+// the next load a number has no code, and a send then holds its row.
+func TestEventsHeldUntilKeyLoaded(t *testing.T) {
+	w := newSnapshotWorld(t)
+	ctx := context.Background()
+	k := w.trialKMS(t)
+	gate := make(chan struct{})
+	w.members.Trial.Open = func(ctx context.Context, region, arn string) (kms.Wrapper, error) {
+		select {
+		case <-gate:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		return k.Open(ctx, region, arn)
+	}
+	logs := w.logs
+	l := w.leader(w.members, logs, lockKeyOf(w.world))
+	l.Trial = trialTimes()
+	stop := run(t, l)
+	w.named(t, w.team)
+	stop()
+	if _, why := w.members.trialCodesNow("15550100001@s.whatsapp.net", ""); why != trialNotLoaded {
+		t.Fatalf("after the leader stopped: %q", why)
+	}
+	device := w.linkNumber(t, w.team, &w.owner, 41)
+	// Not leading, not loaded: a send holds the row.
+	s := newEventSender(l)
+	if _, ok := s.send(ctx, w.team); ok {
+		t.Fatal("a batch held for the key reported done")
+	}
+	if r := w.rowsOf(t, w.team, device, "linked"); len(r) != 1 || r[0] != "" {
+		t.Fatalf("the held row: %v", r)
+	}
+	// A restart with the key installed and KMS slow: nothing settles.
+	w.installKey(t, k)
+	l2 := w.leader(w.members, logs, lockKeyOf(w.world))
+	l2.Trial = trialTimes()
+	run(t, l2)
+	time.Sleep(500 * time.Millisecond)
+	if r := w.rowsOf(t, w.team, device, "linked"); len(r) != 1 || r[0] != "" {
+		t.Fatalf("settled before the key loaded: %v", r)
+	}
+	close(gate)
+	eventually(t, soon, "item.linked delivered with its codes", func() bool {
+		c := w.sentCodes(kc.EventLinked, device)
+		return len(c) == 1 && len(c[0]) == 2
+	})
+	if n := len(logs.Lines("contract: an event goes with no code; not sent")); n != 0 {
+		t.Fatalf("%d events settled with no code:\n%s", n, logs.String())
+	}
+}
+
+// TestCatchUpStopsOnSuspension: a suspension during a catch-up stops it at
+// the next number (spec 15.10 exposure step 1: no code anywhere), and the
+// catch-up reports it did not finish.
+func TestCatchUpStopsOnSuspension(t *testing.T) {
+	w := newSnapshotWorld(t)
+	ctx := context.Background()
+	w.installKey(t, w.trialKMS(t))
+	l := w.leader(w.members, w.logs, lockKeyOf(w.world))
+	l.Trial = TrialTimings{Poll: 20 * time.Millisecond, Pace: 300 * time.Millisecond, Retry: time.Hour, Daily: time.Hour}
+	stop := run(t, l)
+	w.named(t, w.team)
+	stop()
+	// Numbers linked before slice 19: an identity, no row; each owed.
+	devices := store.NewDevices(w.pool)
+	for n := 50; n < 55; n++ {
+		d, err := devices.Create(ctx, w.team.String(), "Loja", wa.ModePassive)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := devices.SetIdentity(ctx, w.team.String(), d.ID, testIdentity(n)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := w.members.LoadTrialKey(ctx)
+	if err != nil || !got.Usable {
+		t.Fatalf("the load: %+v %v", got, err)
+	}
+	owed, err := w.contract.CodesCatchUp(ctx, got.Made)
+	if err != nil || len(owed) < 5 {
+		t.Fatalf("owed: %d %v", len(owed), err)
+	}
+	tw := newTrialWork(l)
+	done := make(chan bool, 1)
+	go func() { done <- tw.catchUp(ctx, got.Made) }()
+	recorded := func() int {
+		n := 0
+		for _, it := range owed {
+			if it.Workspace == w.team {
+				n += len(w.rowsOf(t, w.team, it.Device, "identity_updated"))
+			}
+		}
+		return n
+	}
+	eventually(t, soon, "the first number caught up", func() bool { return recorded() >= 1 })
+	if _, err := w.contract.SetTrialCodes(ctx, store.TrialCodesSuspended); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case finished := <-done:
+		if finished {
+			t.Fatal("the catch-up went through the list after a suspension")
+		}
+	case <-time.After(soon):
+		t.Fatal("the catch-up did not stop")
+	}
+	if n := recorded(); n >= len(owed) || n > 2 {
+		t.Fatalf("%d of %d numbers caught up after the suspension", n, len(owed))
+	}
+	if _, why := w.members.trialCodesNow("15550100001@s.whatsapp.net", ""); why != trialSuspended {
+		t.Fatalf("after the catch-up stopped: %q", why)
 	}
 }
 

@@ -252,6 +252,7 @@ func (l *Leader) lead(held *pg.Held, wake <-chan string) (lost bool) {
 	snaps := &snapshotSender{l: l, notices: newNotices(), logged: map[uuid.UUID]time.Time{}}
 	events := newEventSender(l)
 	trial := newTrialWork(l)
+	events.ready = trial.ready
 	var wg sync.WaitGroup
 	wg.Go(func() { f.run(ctx) })
 	wg.Go(func() { l.rounds(ctx, f.round) })
@@ -262,6 +263,8 @@ func (l *Leader) lead(held *pg.Held, wake <-chan string) (lost bool) {
 	wg.Wait()
 	ent.halt()
 	settings.halt()
+	// A process that no longer leads reads no key state: it makes no code.
+	l.Members.forgetTrialKey()
 	lost = errors.Is(context.Cause(held.Context()), pg.ErrLockLost)
 	if lost {
 		l.log().Warn("contract: the leader's lock is lost; stopping", "error", context.Cause(held.Context()))

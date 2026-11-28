@@ -4,7 +4,10 @@ Wappie keeps a local log of what happens to a number: `item_events`
 (migration 0050; 0051 added the stranding and the delivery columns). It
 records the acts of decisions 0038 and 0040 (a deletion, a pause of its
 sync, a recovery, a purge, a move to Personal and a stranding), one plain
-row per act, in the same transaction as the act.
+row per act, in the same transaction as the act; and, since 0054, a new
+link of a number and its identity learned or asked for, which carry its
+trial codes at send time ([trial
+codes](contract.md#trial-codes-itemlinked-itemidentity_updated-and-the-link-check)).
 
 In the cloud, the platform contract's event sender renders the platform's
 `item.*` events from these rows at send time and delivers them, from which
@@ -22,7 +25,7 @@ which a restore replays.
 | `seq` | The workspace's order. Every writer holds the workspace's row lock from before its insert until its commit, so within a workspace `seq` order is commit order. |
 | `event_id` | A UUIDv7, made once in Go: the contract's idempotency key later. A replayed row keeps its ledger line's id. |
 | `tenant_id` | The workspace. For a workspace adopted from the platform it is the platform's id. |
-| `type` | `deleted`, `sync_paused`, `recovered`, `purged`, `moved_out` or `stranded`. |
+| `type` | `deleted`, `sync_paused`, `recovered`, `purged`, `moved_out`, `stranded`, `linked` or `identity_updated` (0054; never ledgered: written as if they were, as a pause is). |
 | `item_id` | The number's `devices.id`. No foreign key: the rows outlive the purge. |
 | `dedupe_key` | Local only. `type:device:instant`, the instant in microseconds; a second write of the same event is a no-op. |
 | `occurred_at` | When it happened, on the database's clock. |
@@ -38,7 +41,7 @@ which a restore replays.
 | `created_at` | When the row was written. |
 | `ledgered_at` | When the row's line was synced to the deletion ledger. |
 | `replayed_at` | Set on a row a restore's replay wrote from the ledger. Such a row is sent only if it is a deletion, a recovery or a purge that occurred at or after both the contract's first observe and the platform's first naming of its workspace; the platform answers `duplicate` for one it holds. |
-| `settled_at`, `outcome` | The contract's sender is done with it: `accepted` or `duplicate` (delivered, on a signed answer), `coalesced` (folded into a pause of the same number and actor that was delivered), or `not_sent` (a pause nobody but its actor reads). |
+| `settled_at`, `outcome` | The contract's sender is done with it: `accepted` or `duplicate` (delivered, on a signed answer), `coalesced` (folded into a pause of the same number and actor that was delivered), or `not_sent` (a pause nobody but its actor reads, or a `linked` or `identity_updated` whose number had no code when it went). |
 | `coalesced_into` | The pause this one was folded into (one `item.sync_paused` per number, actor and hour). |
 | `parked_at`, `reject_code` | A row that is not sent: `invalid_request`, `not_found` (a day of it; sent again when the platform knows the workspace), `conflict`, `local_invalid` (Wappie would not send it) or `expired` (29 days unsent). Never both settled and parked. |
 | `mailed_at` | For a self-hosted mailer: when the row's recipients were queued. Nothing sets it in this release. |
@@ -89,7 +92,11 @@ restore replays deletions, not strandings.
   ([contract events](contract-events.md#outcomes-parks-and-releases)).
 - **Thirty days.** The hourly janitor deletes a row 30 days after
   `created_at`, once it is marked ledgered, unless the contract still owes
-  it to the platform (which the 29 days bound). A row the ledger has not
+  it to the platform (which the 29 days bound), or it is a live number's
+  newest `linked` or `identity_updated` row in its own workspace, which the
+  codes' catch-up reads to send each number's codes once. A deleted or
+  moved-out number's goes by the 30 days as any other (its `label` and
+  `hint` with it). A row the ledger has not
   taken stays, however old, and each pass logs ERROR "event rows 30 days old
   are still not in the deletion ledger" with the count and the oldest row.
 - **The purge** sets `label` and `hint` to null in every row of the number,

@@ -353,10 +353,31 @@ func lockEntRowsTx(ctx context.Context, tx pgx.Tx, ids []uuid.UUID, all bool) er
 	return err
 }
 
+// lockCodesWorkspacesTx takes, in id order, the workspace rows (tenants,
+// FOR UPDATE) of every document of items that may ask for codes (its
+// trial_ends_at or its codes_after set), before any is applied: slice 19's
+// triggers (entCodesTx) then write under rows already held, never taking
+// two workspaces in the page's order against a move's id order.
+func lockCodesWorkspacesTx(ctx context.Context, tx pgx.Tx, items []EntPageItem) error {
+	var ids []uuid.UUID
+	for _, it := range items {
+		if it.Doc != nil && (it.Doc.Doc.State.TrialEndsAt != nil || it.Doc.Doc.Requests.CodesAfter != nil) {
+			ids = append(ids, it.Doc.Workspace)
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	slices.SortFunc(ids, compareIDs)
+	_, err := tx.Exec(ctx, `SELECT 1 FROM tenants WHERE id = ANY ($1) ORDER BY id FOR UPDATE`, slices.Compact(ids))
+	return err
+}
+
 // CommitEntPage stores a page of the entitlements feed in one transaction,
 // in the lock order: contract_state FOR SHARE, contract_ent_state, then
 // the document rows the page touches (every kept one when a refusal's
-// workspace cannot be read). It commits only while the generation and the
+// workspace cannot be read), then the workspace rows of the documents that
+// may ask for codes (lockCodesWorkspacesTx). It commits only while the generation and the
 // cursor are the ones the page was asked with. A valid document is stored
 // when no row holds one, the held one's version was forgotten, or its
 // version is higher; it then counts as applied when an account document
@@ -405,6 +426,9 @@ func (c *Contract) CommitEntPage(ctx context.Context, p EntPage) (EntPageResult,
 			}
 			slices.SortFunc(ids, compareIDs)
 			if err := lockEntRowsTx(ctx, tx, slices.Compact(ids), unreadable); err != nil {
+				return err
+			}
+			if err := lockCodesWorkspacesTx(ctx, tx, p.Items); err != nil {
 				return err
 			}
 			for _, it := range p.Items {

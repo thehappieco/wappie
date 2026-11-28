@@ -856,8 +856,11 @@ What it loses: every `placed_at`, the rows of the two events, the codes
 switch and what `wappie-api` recorded of its key, and the link checks of
 the last 24 hours. It keeps `contract_trial_key`, the sealed `K_app`: a
 release with 0054 deployed again reuses the same key, so trials do not
-restart (spec 15.10), and its catch-up sends each number's
-`item.identity_updated` once its key opens. Going below 0054 for good, the
+restart (spec 15.10). That release starts with codes suspended, the switch
+the down-step required, so a key suspended for an exposure never comes
+back into use by itself: once any exposure is handled, `whatserverd
+contract trial-key resume`, and the catch-up sends each number's
+`item.identity_updated`. Going below 0054 for good, the
 table owner drops `contract_trial_key` and its two functions
 (`contract_trial_key_never_rotated`, `contract_trial_key_mark`) after the
 down-step.

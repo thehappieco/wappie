@@ -105,7 +105,9 @@ func identityArgs(id wa.Identity) (pn, lid *string) {
 // event's render never waits on that write), placed_at the commit's time,
 // and item.linked. actor is the person who linked it, or nil for a full
 // key's pairing (actor null). It returns placed_at. A pairing never fails
-// for it: the caller retries and the daily catch-up covers the number.
+// for it: the caller retries and the daily catch-up covers the number; a
+// retry of a link already recorded (its commit's answer lost) writes
+// nothing and returns the recorded placed_at.
 func (c *Contract) RecordLinked(ctx context.Context, tenant, device uuid.UUID, actor *uuid.UUID, id wa.Identity) (time.Time, error) {
 	var placed time.Time
 	pn, lid := identityArgs(id)
@@ -116,8 +118,20 @@ func (c *Contract) RecordLinked(ctx context.Context, tenant, device uuid.UUID, a
 			}
 			return err
 		}
+		// A retry after a commit whose answer was lost finds its own row:
+		// the number's placed_at is that item.linked's, and nothing is
+		// written twice.
+		err := tx.QueryRow(ctx, `SELECT d.placed_at FROM devices d WHERE d.id = $2 AND d.placed_at IS NOT NULL
+			AND EXISTS (SELECT 1 FROM item_events e WHERE e.tenant_id = $1 AND e.item_id = d.id AND e.type = 'linked'
+			            AND e.occurred_at = d.placed_at)`, tenant, device).Scan(&placed)
+		if err == nil {
+			return nil
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
 		var name, phone string
-		err := tx.QueryRow(ctx, `UPDATE devices SET pn = coalesce(pn, $2), lid = coalesce(lid, $3), placed_at = clock_timestamp()
+		err = tx.QueryRow(ctx, `UPDATE devices SET pn = coalesce(pn, $2), lid = coalesce(lid, $3), placed_at = clock_timestamp()
 			WHERE id = $1 RETURNING placed_at, label, coalesce(pn, '')`, device, pn, lid).Scan(&placed, &name, &phone)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return fmt.Errorf("%w: %s", ErrNotFound, device)
@@ -354,15 +368,30 @@ func recoveryCodesTx(ctx context.Context, tx pgx.Tx, tenant uuid.UUID, at time.T
 }
 
 // codesCatchUpSQL is the catch-up's predicate for a number d of workspace
-// $1 (spec 15.12 "An item with no code"; P2): live, with an identity, and
-// either no row of the two types, or its newest settled not_sent (it went
-// with no code), or its newest delivered before the key now in use was
-// made ($2: a new key gives every number new codes). A number whose newest
-// row is still owed or parked is left to that row.
-const codesCatchUpSQL = `d.tenant_id = $1 AND d.deleted_at IS NULL AND (d.pn IS NOT NULL OR d.lid IS NOT NULL)
-	AND coalesce((SELECT e.settled_at IS NOT NULL
-	                  AND (e.outcome = 'not_sent' OR (e.outcome IN ('accepted', 'duplicate') AND e.created_at < $2))
-	                FROM item_events e WHERE e.tenant_id = $1 AND e.item_id = d.id AND e.type IN ('linked', 'identity_updated')
+// $1 (spec 15.12 "An item with no code"; P2): live, with an identity, in a
+// workspace whose events go now (a row written now is owed: events
+// observed, not paused, the workspace named), and either no row of the two
+// types, or its newest row went with no codes: settled not_sent, delivered
+// before the key now in use was made ($2, against settled_at: codes are
+// made at send time, so a row delivered under the new key carried its
+// codes), never owed (written in an off period, before the first observe
+// or before the workspace's naming: it is never sent), or parked expired
+// (or parked not_found past its 29 days). A number whose newest row is
+// still owed, or parked not_found and still released by a release, is left
+// to that row; one parked for any other refusal is left alone (a new row
+// would be refused alike, each day).
+var codesCatchUpSQL = `d.tenant_id = $1 AND d.deleted_at IS NULL AND (d.pn IS NOT NULL OR d.lid IS NOT NULL)
+	AND EXISTS (SELECT 1 FROM contract_state s JOIN contract_workspaces w ON w.workspace_id = $1
+	             WHERE s.events_from IS NOT NULL AND s.events_paused_at IS NULL
+	               AND clock_timestamp() >= greatest(s.events_from, w.named_at))
+	AND coalesce((SELECT CASE
+	                  WHEN e.settled_at IS NOT NULL
+	                    THEN e.outcome = 'not_sent' OR (e.outcome IN ('accepted', 'duplicate') AND e.settled_at < $2)
+	                  WHEN e.parked_at IS NOT NULL
+	                    THEN e.reject_code IN ('` + EventParkedExpired + `', '` + EventParkedNotFound + `') AND NOT (` + releasableEventSQL + `)
+	                  ELSE NOT (` + owedEventSQL + `) END
+	                FROM ` + owedFromSQL + `
+	               WHERE e.tenant_id = $1 AND e.item_id = d.id AND e.type IN ('linked', 'identity_updated')
 	               ORDER BY e.seq DESC LIMIT 1), true)`
 
 // CodesCatchUpItem is a number the catch-up owes an item.identity_updated:

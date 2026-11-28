@@ -339,6 +339,190 @@ func TestCodesCatchUp(t *testing.T) {
 	}
 }
 
+// dbNow is the database's clock: the catch-up compares the key's time
+// with settled_at, which the database's clock writes.
+func (w codesWorld) dbNow(t *testing.T) time.Time {
+	t.Helper()
+	var at time.Time
+	if err := w.pool.QueryRow(context.Background(), `SELECT clock_timestamp()`).Scan(&at); err != nil {
+		t.Fatal(err)
+	}
+	return at
+}
+
+// park parks device's open rows with code.
+func (w codesWorld) park(t *testing.T, device uuid.UUID, code string) {
+	t.Helper()
+	inTenantTx(context.Background(), t, w.pool, w.tenant, func(tx pgx.Tx) error {
+		_, err := tx.Exec(context.Background(), `UPDATE item_events SET parked_at = clock_timestamp(), reject_code = $2
+			WHERE item_id = $1 AND settled_at IS NULL`, device, code)
+		return err
+	})
+}
+
+// TestCodesCatchUpRowsNeverOwed: a number whose newest row is never sent
+// is owed the catch-up: one written before the workspace's naming, one in
+// an off period (contract mode off), one parked expired. One delivered
+// after the key was made (written before it) is not, nor one still owed,
+// one parked not_found and still released by a release, or one parked for
+// another refusal. While events are paused, nothing is owed: a row written
+// then would never go.
+func TestCodesCatchUpRowsNeverOwed(t *testing.T) {
+	w := newCodesWorld(t)
+	ctx := context.Background()
+	beforeNaming := w.linked(t, 30)
+	if _, err := w.pool.Exec(ctx, `UPDATE contract_workspaces SET named_at = clock_timestamp() WHERE workspace_id = $1`, w.tenant); err != nil {
+		t.Fatal(err)
+	}
+	deliveredLate := w.linked(t, 31)
+	keyMade := w.dbNow(t)
+	w.settle(t, deliveredLate, "accepted")
+	if _, err := w.c.SetMode(ctx, store.ContractOff); err != nil {
+		t.Fatal(err)
+	}
+	offPeriod := w.linked(t, 32)
+	if _, err := w.c.SetMode(ctx, store.ContractObserve); err != nil {
+		t.Fatal(err)
+	}
+	owed := w.linked(t, 33)
+	expired := w.linked(t, 34)
+	w.park(t, expired, store.EventParkedExpired)
+	notFound := w.linked(t, 35)
+	w.park(t, notFound, store.EventParkedNotFound)
+	invalid := w.linked(t, 36)
+	w.park(t, invalid, store.EventParkedLocalInvalid)
+
+	items, err := w.c.CodesCatchUp(ctx, keyMade)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []uuid.UUID
+	for _, it := range items {
+		got = append(got, it.Device)
+	}
+	want := []uuid.UUID{beforeNaming, offPeriod, expired}
+	slices.SortFunc(want, compareUUIDs)
+	if !slices.Equal(got, want) {
+		t.Fatalf("owed %v, want %v (delivered late %s, owed %s, not_found %s, invalid %s)",
+			got, want, deliveredLate, owed, notFound, invalid)
+	}
+	// Each once: the catch-up's own row is owed, so a second pass has none.
+	for _, d := range want {
+		if ok, err := w.c.RecordCatchUp(ctx, w.tenant, d, keyMade); err != nil || !ok {
+			t.Fatalf("the catch-up of %s: %v %v", d, ok, err)
+		}
+	}
+	if items, err := w.c.CodesCatchUp(ctx, keyMade); err != nil || len(items) != 0 {
+		t.Fatalf("a second pass: %+v %v", items, err)
+	}
+	// Paused: nothing owed, and nothing recorded.
+	if _, err := w.c.SetMode(ctx, store.ContractOff); err != nil {
+		t.Fatal(err)
+	}
+	w.settle(t, owed, "not_sent")
+	if items, err := w.c.CodesCatchUp(ctx, keyMade); err != nil || len(items) != 0 {
+		t.Fatalf("while paused: %+v %v", items, err)
+	}
+	if ok, err := w.c.RecordCatchUp(ctx, w.tenant, owed, keyMade); err != nil || ok {
+		t.Fatalf("a catch-up while paused: %v %v", ok, err)
+	}
+}
+
+// TestRecordLinkedRetryWritesOnce: a retry of a link already recorded (its
+// commit's answer lost) writes no second item.linked and keeps placed_at.
+func TestRecordLinkedRetryWritesOnce(t *testing.T) {
+	w := newCodesWorld(t)
+	ctx := context.Background()
+	device := w.pending(t)
+	first, err := w.c.RecordLinked(ctx, w.tenant, device, &w.owner, identity(37))
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, err := w.c.RecordLinked(ctx, w.tenant, device, &w.owner, identity(37))
+	if err != nil || !again.Equal(first) {
+		t.Fatalf("the retry: %v (first %v) %v", again, first, err)
+	}
+	if n := count(eventsOf(t, w.pool, w.tenant, device, "linked")); n != 1 {
+		t.Fatalf("%d item.linked after a retry", n)
+	}
+	if at := w.placedAt(t, device); at == nil || !at.Equal(first) {
+		t.Fatalf("placed_at %v after a retry, was %v", at, first)
+	}
+}
+
+// TestRelinkAttachEventFailureRecorded: a relink that learns a half of the
+// identity whose item.identity_updated cannot be written still attaches,
+// and the failure is recorded for contract status, as SetIdentity's.
+func TestRelinkAttachEventFailureRecorded(t *testing.T) {
+	ctx := context.Background()
+	w := newCodesWorld(t)
+	sessionStore(t, w.pool)
+	device, id := w.loggedOutNumber(t, "Loja", "155501000538", "100000000000538")
+	if _, err := w.c.RecordLinked(ctx, w.tenant, device, &w.owner, id); err != nil {
+		t.Fatal(err)
+	}
+	w.scoped(t, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `UPDATE devices SET lid = NULL WHERE id = $1`, device)
+		return err
+	})
+	if _, err := w.pool.Exec(ctx, `CREATE FUNCTION test_refuse_relink_identity() RETURNS trigger LANGUAGE plpgsql AS $$
+		BEGIN IF NEW.type = 'identity_updated' THEN RAISE EXCEPTION 'refused by the test'; END IF; RETURN NEW; END $$;
+		CREATE TRIGGER test_refuse_relink_identity BEFORE INSERT ON item_events FOR EACH ROW
+		EXECUTE FUNCTION test_refuse_relink_identity()`); err != nil {
+		t.Fatal(err)
+	}
+	linked := newLink(id)
+	w.putSession(t, linked.PN.String())
+	if _, err := w.devices.AttachRelink(ctx, w.tenant, device, w.seen(t, device), linked); err != nil {
+		t.Fatalf("the attach failed with its event: %v", err)
+	}
+	st, err := w.c.State(ctx)
+	if err != nil || st.ErrorClass != store.ContractErrorEventRecord {
+		t.Fatalf("the ERROR recorded: %q %v", st.ErrorClass, err)
+	}
+}
+
+// TestHousekeepingKeepsLiveNumbersNewestCodeRow: past 30 days, a live
+// number's newest item.linked or item.identity_updated stays (the
+// catch-up reads it) and its older one goes; a deleted number's goes too.
+func TestHousekeepingKeepsLiveNumbersNewestCodeRow(t *testing.T) {
+	w := newCodesWorld(t)
+	ctx := context.Background()
+	live, gone := w.linked(t, 39), w.linked(t, 40)
+	if ok, err := w.c.RecordCatchUp(ctx, w.tenant, live, w.dbNow(t).Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	} else if ok {
+		t.Fatal("a number with an owed row caught up")
+	}
+	w.settle(t, live, "accepted")
+	if ok, err := w.c.RecordCatchUp(ctx, w.tenant, live, w.dbNow(t).Add(time.Hour)); err != nil || !ok {
+		t.Fatalf("the catch-up under a newer key: %v %v", ok, err)
+	}
+	w.settle(t, live, "accepted")
+	w.settle(t, gone, "accepted")
+	w.scoped(t, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `UPDATE item_events SET created_at = created_at - interval '31 days'
+			WHERE item_id = ANY ($1)`, []uuid.UUID{live, gone}); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, `UPDATE devices SET deleted_at = clock_timestamp(), purge_after = clock_timestamp() + interval '30 days',
+			paused = true WHERE id = $1`, gone)
+		return err
+	})
+	if _, err := store.DeletionHousekeeping(ctx, w.pool, w.tenant); err != nil {
+		t.Fatal(err)
+	}
+	if n := count(eventsOf(t, w.pool, w.tenant, live, "linked")); n != 0 {
+		t.Fatalf("a live number's older item.linked kept: %d", n)
+	}
+	if n := count(eventsOf(t, w.pool, w.tenant, live, "identity_updated")); n != 1 {
+		t.Fatalf("a live number's newest row: %d", n)
+	}
+	if n := count(eventsOf(t, w.pool, w.tenant, gone, "linked")); n != 0 {
+		t.Fatalf("a deleted number's row kept: %d", n)
+	}
+}
+
 func compareUUIDs(a, b uuid.UUID) int {
 	for i := range a {
 		if a[i] != b[i] {

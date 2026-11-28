@@ -1385,7 +1385,8 @@ one transaction under the workspace's row, the person who paired it its
 actor (a full key's pairing: actor null). It never fails the pairing: it is
 retried three times (1, 5 and 30 seconds), then logs the ERROR "contract:
 an item.linked could not be written; the catch-up covers the number" and
-records `event_record`. A move to Personal records it in the destination,
+records `event_record`. A retry whose earlier try committed (its answer
+lost) finds that row and writes nothing. A move to Personal records it in the destination,
 the mover its actor, at the move's completion. A relink and a recovery are
 no link (spec 15.11) and record none.
 
@@ -1397,12 +1398,15 @@ latest recovery and latest move in.
 **`item.identity_updated`** goes, `app` its actor:
 
 - for a half of the identity learned after the link (a LID seen after
-  pairing, a phone number learned later), written with the identity inside
-  a savepoint: a failed insert logs the ERROR "contract: an
-  item.identity_updated could not be written; the catch-up covers the
-  number", records `event_record`, and the identity still commits;
+  pairing, a phone number learned later, or by a relink's attach), written
+  with the identity inside a savepoint: a failed insert logs the ERROR
+  "contract: an item.identity_updated could not be written; the catch-up
+  covers the number", records `event_record`, and the identity (or the
+  relink) still commits;
 - in a document's apply (or the late apply of a naming), in its
-  transaction, for each linked number its `items` do not list, when the
+  transaction (a page takes the workspace rows of its documents that may
+  ask, in id order, before it applies any), for each linked number its
+  `items` do not list, when the
   document has `state.trial_ends_at` and the last one applied had none,
   none was applied, or it is the first after a reset; or when its
   `requests.codes_after` is later than the last answered (then answered);
@@ -1411,19 +1415,34 @@ latest recovery and latest move in.
   not list, the recovered one included (P1's literal reading), the
   recoverer its actor;
 - **the catch-up** (P2): when the key becomes usable (its first load, a
-  resume, an open that works again) and daily while it is, one for each
-  live number of a named workspace with an identity whose newest row of the
-  two types went with no code (`not_sent`), or which has none, or whose
-  newest was delivered under an older key; a few a second (one every 300
-  milliseconds), each once ("contract: codes caught up", `workspace`,
-  `count`). A number whose newest row is still owed or parked is left to it.
-  Housekeeping keeps each number's newest row of the two types for this.
+  resume, an open that works again, another key) and daily while it is,
+  one for each live number with an identity of a named workspace whose
+  events go now (observed, not paused), whose newest row of the two types
+  went with no code: none at all, settled `not_sent`, delivered (settled)
+  before the key in use was made, never owed (written while the contract
+  was off, before its first observe or before the workspace was named), or
+  parked `expired` (or `not_found` past its 29 days); a few a second (one
+  every 300 milliseconds), each once ("contract: codes caught up",
+  `workspace`, `count`). A number whose newest row is still owed, or parked
+  `not_found` and still released by a release, is left to it; one parked
+  for another refusal is left alone. Before each number it reads the key
+  again (on a notice, or every minute), and stops at once on a suspension,
+  a retired or failing key or another key ("contract: the codes' catch-up
+  stopped: the trial key changed", `reason`). Housekeeping keeps a live
+  number's newest row of the two types in its own workspace for this; a
+  deleted or moved-out number's goes by the 30 days as any other.
 
 A row whose number makes no code when it is sent (no usable key, codes
 suspended, a retired envelope, an identity that makes none, a number gone)
 settles `not_sent` and goes nowhere: "contract: an event goes with no code;
 not sent" (`workspace`, `event`, `type`, `reason`: `no_key`, `suspended`,
-`retired`, `does_not_open`, `no_identity`).
+`retired`, `does_not_open`, `no_identity`). Only a verdict settles a row: at
+a leader's start the event sender waits for the key's first load (however
+slow KMS is), and a row met before any load (a process that has not loaded
+the key since it last led) stays owed, with the rows after it, for a later
+pass. A process that stops leading forgets the key, so it never makes codes
+from a state it no longer reads; its link checks go without codes until it
+leads again.
 
 **The link check** (spec 15.11, observe; Q57: "do not hold sync"). After a
 pairing the check goes at once, with the number's codes (none without a
@@ -1466,7 +1485,10 @@ these):
 3. Wait for the platform's word that it deleted every trial code it holds
    for Wappie.
 4. Add the old envelope's sha256 to `WS_TRIAL_KEY_RETIRED` and restart
-   `wappie-api`.
+   `wappie-api`. No command prints it; read it as the table owner (a
+   digest only, never the envelope): `SELECT encode(sha256(envelope),
+   'hex') FROM contract_trial_key;`. It is also the sha256 `contract status`
+   compares with wappie-api's last open.
 5. As the table owner: disable `contract_trial_key_never_rotated`, delete
    the row, enable the trigger again; then `whatserverd contract trial-key
    init`. E0 keeps no other keyed hash, so nothing else is deleted.

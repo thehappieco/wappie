@@ -72,6 +72,10 @@ type Attached struct {
 	// OldSessionLeft is a session row still stored under the old link's
 	// JID, which the attach leaves alone (AttachRelink).
 	OldSessionLeft bool
+	// eventFailed is an item.identity_updated the attach could not write
+	// (rolled back to its savepoint): recorded for contract status after
+	// the commit, as SetIdentity's.
+	eventFailed bool
 }
 
 // RelinkRow reads a live number, and whether a move out of its workspace,
@@ -322,7 +326,10 @@ func relinkStateTx(ctx context.Context, tx pgx.Tx, tenant, device uuid.UUID, see
 // link (pn, lid, push name), marks the number offline until its client
 // connects, and lifts its pause with its open sync_paused notices marked
 // resumed. Every other column, the key, the grants and the archive stay. It
-// writes no item_events row: a relink is not a new link.
+// writes no item.linked and moves no placed_at: a relink is not a new link;
+// a half of the identity the number did not hold before is an
+// item.identity_updated (spec 15.12), whose failed write is recorded for
+// contract status after the commit and never fails the attach.
 //
 // It deletes no session. whatsmeow deleted the old link's own when the
 // phone logged it out, and a row under that JID now may be another
@@ -339,6 +346,9 @@ func (d *Devices) AttachRelink(ctx context.Context, tenant, device uuid.UUID, se
 	})
 	if err != nil {
 		return Attached{}, err
+	}
+	if out.eventFailed {
+		d.recordEventFailure(ctx)
 	}
 	return out, nil
 }
@@ -395,7 +405,7 @@ func attachRelinkTx(ctx context.Context, tx pgx.Tx, tenant, device uuid.UUID, se
 		if err := tx.QueryRow(ctx, `SELECT placed_at IS NOT NULL FROM devices WHERE id = $1`, device).Scan(&placed); err != nil {
 			return out, err
 		}
-		if err := identityLearnedTx(ctx, tx, tenant, device, placed, nil); err != nil {
+		if err := identityLearnedTx(ctx, tx, tenant, device, placed, func() { out.eventFailed = true }); err != nil {
 			return out, err
 		}
 	}
