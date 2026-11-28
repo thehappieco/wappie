@@ -807,6 +807,9 @@ func TestQuarantineScopeHasOneDoor(t *testing.T) {
 		// read, and on a deleted one the permission write, which 0036's
 		// ownership trigger checks against devices.
 		"flagsNumberTx": true, "writeFlagsTx": true,
+		// The usage report (E0, spec 15.8): a deleted number counts until
+		// its purge, read in the measurement's one REPEATABLE READ snapshot.
+		"measureTx": true,
 		// The data check (whatserverd datacheck), which reads every deleted
 		// number's devices row in its READ ONLY snapshot.
 		"ReadExcludedTx": true,
