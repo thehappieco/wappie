@@ -140,6 +140,10 @@ type Service struct {
 	// Receipts records the receipt policy's decisions.
 	Receipts func(kind, decision string)
 	Log      *slog.Logger
+	// Relinked is told of each relink attached, in the background: the
+	// contract's observe log of a relink new_links would refuse (E0 slice
+	// 19). Nil tells nobody.
+	Relinked func(ctx context.Context, tenant, device uuid.UUID)
 }
 
 // Target is a number that passed the checks before the pairing.
@@ -277,6 +281,11 @@ func (s *Service) Start(ctx context.Context, t Target, who Actor, attach AttachF
 			if err == nil {
 				s.log().Info("relink attached", "device", t.Device, "tenant", t.Tenant, "actor", who.ID,
 					"resumed_pause", a.ResumedPause, "old_session_left", a.OldSessionLeft)
+				if s.Relinked != nil {
+					// Observe only, in the background: never in the
+					// relink's way.
+					go s.Relinked(context.WithoutCancel(ctx), t.Tenant, t.Device)
+				}
 			}
 			return err
 		},

@@ -233,6 +233,20 @@ func (s *session) handlePair(ctx context.Context, f Frame) {
 		}
 		cancel()
 	}
+	if links := s.srv.cfg.Links; links != nil {
+		// The link, once WhatsApp completed it: item.linked, placed_at and
+		// the link check, in the background (E0 slice 19). A person's
+		// pairing is theirs; a full key's has nobody behind it.
+		var actor *uuid.UUID
+		if who := s.actor(); who.person {
+			id := who.userID
+			actor = &id
+		}
+		tenantID, deviceID := uuid.MustParse(tenant), uuid.MustParse(dev.ID)
+		opts.OnLinked = func(ctx context.Context, linked wa.Identity) {
+			links.Linked(ctx, tenantID, deviceID, actor, linked)
+		}
+	}
 	pair, err := s.srv.cfg.Registry.StartPairing(ctx, tenant, dev.ID,
 		wa.ReceiptPolicy{Mode: mode, Recorder: s.recordReceipt}, opts)
 	if err != nil {

@@ -148,6 +148,8 @@ type deletionOptions struct {
 	// fakePairing builds the registry's pairings on the fake client, so
 	// a test starts one with no WhatsApp (needs registry).
 	fakePairing bool
+	// links are the contract's link hooks (E0 slice 19).
+	links wsapi.LinkHooks
 }
 
 func newDeletionConsole(t *testing.T) *deletionConsole {
@@ -217,6 +219,7 @@ func newDeletionConsoleWith(t *testing.T, opt deletionOptions) *deletionConsole 
 		cfg.Membership = opt.fresh
 	}
 	cfg.Relinks = opt.relinks
+	cfg.Links = opt.links
 	if opt.transfer != nil {
 		wsapi.SetTransferHook(&cfg, opt.transfer)
 	}
