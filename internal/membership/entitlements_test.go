@@ -375,8 +375,9 @@ func TestEntitlementsBadDocumentGETOnce(t *testing.T) {
 	run(t, w.entLeader(t, logs, entTimes()))
 	w.applied(t, w.team, 1)
 	w.applied(t, w.home, 1)
-	w.settledDoc(t, w.team)
-	w.settledDoc(t, w.home)
+	// No GET of the setup's still on its way, to be counted below.
+	w.quietDoc(t, w.team)
+	w.quietDoc(t, w.home)
 	eventually(t, soon, "no GET due", func() bool {
 		due, err := w.contract.EntGetsDue(context.Background(), 10)
 		return err == nil && len(due) == 0
@@ -425,8 +426,9 @@ func TestEntitlementsUnreadableWorkspaceGETsPaced(t *testing.T) {
 	run(t, w.entLeader(t, logs, cfg))
 	w.applied(t, w.team, 1)
 	w.applied(t, w.home, 1)
-	w.settledDoc(t, w.team)
-	w.settledDoc(t, w.home)
+	// No GET of the setup's still on its way, to be counted below.
+	w.quietDoc(t, w.team)
+	w.quietDoc(t, w.home)
 	// Only the GETs the bad document made due: none was due before it.
 	eventually(t, soon, "no GET due", func() bool {
 		due, err := w.contract.EntGetsDue(context.Background(), 10)
@@ -465,7 +467,7 @@ func TestEntitlementsNotFoundFreezes(t *testing.T) {
 	logs := &membershiptest.Logs{}
 	run(t, w.entLeader(t, logs, entTimes()))
 	w.applied(t, w.team, 1)
-	w.settledDoc(t, w.team)
+	w.quietDoc(t, w.team)
 	r, _ := w.entRow(t, w.team)
 	w.fake.RefuseAlways(contracttest.CallEntitlementsDoc, kc.CodeNotFound)
 	if _, err := w.fake.PublishRawEntitlements(App, w.team.String(), json.RawMessage(`{"v":1,"workspace_id":"`+w.team.String()+`"}`)); err != nil {
@@ -620,6 +622,35 @@ func (w *snapshotWorld) settledDoc(t *testing.T, ws uuid.UUID) {
 		d, ok := w.fake.Entitlements(App, ws.String())
 		r, held := w.entRow(t, ws)
 		return ok && held && r.Version != nil && *r.Version == d.Version
+	})
+}
+
+// quietDoc waits until nothing of ws's document is on its way: its latest
+// published version applied (settledDoc), a GET made due now answered,
+// and the feed read through that version. The entitlements part sends one
+// GET at a time and reads the due list again after each, so once the one
+// made due here is answered no earlier GET is still to be sent: a GET of
+// the setup's, read from the due list before a feed page cleared its due
+// time, would otherwise reach the fake (or store its answer) after the
+// test moved on. A GET publishes a new version only when the document
+// changed, which the settled snapshot rules out. A row written after it
+// stays as written until the next GET or publish.
+func (w *snapshotWorld) quietDoc(t *testing.T, ws uuid.UUID) {
+	t.Helper()
+	ctx := context.Background()
+	w.settledDoc(t, ws)
+	if err := w.contract.EntGetDueNow(ctx, ws); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, soon, "the document's GET answered and its feed read", func() bool {
+		d, published := w.fake.Entitlements(App, ws.String())
+		r, held, err := w.contract.EntRow(ctx, ws)
+		if err != nil {
+			t.Fatal(err)
+		}
+		st, err := w.contract.EntState(ctx)
+		return err == nil && published && held && r.GetDueAt == nil && r.Version != nil && *r.Version == d.Version &&
+			st.FeedCursor >= d.Version
 	})
 }
 

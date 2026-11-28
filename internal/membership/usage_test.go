@@ -367,7 +367,9 @@ func TestUsageClosedSendsGET(t *testing.T) {
 	run(t, w.usageLeader(t, logs, usageTimes()))
 	w.applied(t, w.team, 1)
 	eventually(t, soon, "the first report", func() bool { return w.usageSeq(w.team) > 0 })
-	w.settledDoc(t, w.team)
+	// No GET of the setup's still on its way: its answer would write the
+	// document over the closed state, or count as the report's GET.
+	w.quietDoc(t, w.team)
 	if _, err := w.pool.Exec(ctx, `UPDATE contract_ent_docs SET state = 'closed' WHERE workspace_id = $1`, w.team); err != nil {
 		t.Fatal(err)
 	}
