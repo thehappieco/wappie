@@ -202,7 +202,10 @@ func identityStrings(id wa.Identity) (pn, lid string) {
 
 // linkGet is the judge's document: the one held, or, when none is held or
 // its freshness is over an hour, the GET computed now (slice 17's, made due
-// at once), waited for up to wait.
+// at once), waited for up to wait. A document the feed applies meanwhile,
+// of the generation the GET went under and no older than the one held,
+// answers as the GET would: its apply clears the GET's due time, so the
+// GET may never go, and the document is held and fresh.
 func (m *Members) linkGet(ctx context.Context, ws uuid.UUID, row store.EntRow, held bool, wait time.Duration) linkJudge {
 	var j linkJudge
 	hasDoc := held && row.Doc != nil
@@ -211,6 +214,10 @@ func (m *Members) linkGet(ctx context.Context, ws uuid.UUID, row store.EntRow, h
 		return j
 	}
 	before := row
+	var gen *uuid.UUID
+	if st, err := m.Contract.EntState(ctx); err == nil {
+		gen = st.Generation
+	}
 	if err := m.Contract.EntGetNow(ctx, ws); err != nil {
 		m.log().Warn("contract: could not ask a link's GET", "workspace", ws, "error", err)
 	}
@@ -224,6 +231,10 @@ func (m *Members) linkGet(ctx context.Context, ws uuid.UUID, row store.EntRow, h
 		}
 		row = r
 		if r.GetFreshAt != nil && (before.GetFreshAt == nil || r.GetFreshAt.After(*before.GetFreshAt)) {
+			answered = true
+			break
+		}
+		if fedSince(before, r, gen) {
 			answered = true
 			break
 		}
@@ -248,6 +259,22 @@ func (m *Members) linkGet(ctx context.Context, ws uuid.UUID, row store.EntRow, h
 		j.NoDocument = true
 	}
 	return j
+}
+
+// fedSince reports whether r holds a document applied after before was
+// read, of generation gen, at a version no older than before's: the feed's
+// answer to a link that was waiting for its GET. Without a generation
+// read, none answers.
+func fedSince(before, r store.EntRow, gen *uuid.UUID) bool {
+	switch {
+	case gen == nil || r.Generation == nil || *r.Generation != *gen:
+		return false
+	case r.Doc == nil || r.AppliedAt == nil || r.Version == nil:
+		return false
+	case before.AppliedAt != nil && !r.AppliedAt.After(*before.AppliedAt):
+		return false
+	}
+	return before.Version == nil || *r.Version >= *before.Version
 }
 
 // decodeDoc is a stored document, nil for none or one that does not read.

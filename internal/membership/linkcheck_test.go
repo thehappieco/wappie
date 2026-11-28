@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -292,6 +293,58 @@ func TestLinkCheckAfterPairingLogsOnly(t *testing.T) {
 		t.Fatalf("the checks kept: %+v %v", n, err)
 	}
 	assertNoKeyMaterial(t, w.logs.String())
+}
+
+// TestLinkJudgesFeedDocumentWhileGETDue: a document the feed applies while
+// a link's GET is due answers the link as the GET would (its apply clears
+// the GET's due time): the link judges against it at once, rather than
+// wait out the GET's wait and judge as if none were held.
+func TestLinkJudgesFeedDocumentWhileGETDue(t *testing.T) {
+	w := linkWorld(t)
+	w.members.LinkTimings.GetWait = soon
+	ctx := context.Background()
+	device := w.linkNumber(t, w.team, &w.owner, 23)
+	w.quietDoc(t, w.team)
+	if _, err := w.pool.Exec(ctx, `DELETE FROM contract_ent_docs WHERE workspace_id = $1`, w.team); err != nil {
+		t.Fatal(err)
+	}
+	// The link's GET publishes a newer document to the feed as it comes,
+	// then is held until the test ends: only the feed can answer.
+	release := make(chan struct{})
+	published := make(chan error, 1)
+	var once sync.Once
+	w.fake.Before(contracttest.CallEntitlementsDoc, func(ws string) {
+		if ws != w.team.String() {
+			return
+		}
+		once.Do(func() {
+			_, err := w.fake.SetEntitlements(App, w.team.String(), teamDoc(kc.ModeObserve, kc.SwitchNewLinks))
+			published <- err
+		})
+		<-release
+	})
+	t.Cleanup(func() {
+		close(release)
+		w.fake.Before(contracttest.CallEntitlementsDoc, nil)
+	})
+	start := time.Now()
+	w.members.AfterPairing(ctx, w.team, device, testIdentity(23))
+	took := time.Since(start)
+	select {
+	case err := <-published:
+		if err != nil {
+			t.Fatal(err)
+		}
+	default:
+		t.Fatal("no GET went for the absent document")
+	}
+	if took >= w.members.LinkTimings.GetWait {
+		t.Fatalf("the link waited out its GET (%v)", took)
+	}
+	if lines := w.logs.Lines("contract: link would be refused (observe)", "device="+device.String(), "act=link",
+		"reason=new_links_off"); len(lines) != 1 {
+		t.Fatalf("the line:\n%s", w.logs.String())
+	}
 }
 
 // TestLinkWouldBeRefusedLogged: a link into a workspace whose document

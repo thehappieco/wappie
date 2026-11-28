@@ -1013,6 +1013,9 @@ type EntRow struct {
 	BrakeKind   string
 	BrakeTold   bool
 	BrakeHeldAt *time.Time
+	// Generation is the held document's, nil while none is held and after
+	// a reset.
+	Generation *uuid.UUID
 }
 
 // entFreshness is a workspace's freshness (the spec's 15.6 and 15.7): the
@@ -1045,13 +1048,13 @@ const entRowColumns = `d.workspace_id, d.version, coalesce(d.mode, ''), coalesce
 	EXISTS (SELECT 1 FROM contract_workspaces w WHERE w.workspace_id = d.workspace_id), d.applied_at, d.received_at,
 	d.feed_held_back, d.feed_fresh_at, d.get_fresh_at, d.get_due_at, d.get_tries, coalesce(d.get_error, ''), d.get_error_at,
 	d.not_found_since, d.ever_enforce_at, d.timeline_logged_through, coalesce(d.cap_side, ''),
-	coalesce(b.by_kind, ''), coalesce(b.platform_told, false), b.held_at`
+	coalesce(b.by_kind, ''), coalesce(b.platform_told, false), b.held_at, d.generation`
 
 func scanEntRow(row pgx.CollectableRow) (EntRow, error) {
 	var r EntRow
 	err := row.Scan(&r.Workspace, &r.Version, &r.Mode, &r.State, &r.Doc, &r.Named, &r.AppliedAt, &r.ReceivedAt,
 		&r.FeedHeldBack, &r.FeedFreshAt, &r.GetFreshAt, &r.GetDueAt, &r.GetTries, &r.GetError, &r.GetErrorAt, &r.NotFoundSince,
-		&r.EverEnforceAt, &r.TimelineLoggedThrough, &r.CapSide, &r.BrakeKind, &r.BrakeTold, &r.BrakeHeldAt)
+		&r.EverEnforceAt, &r.TimelineLoggedThrough, &r.CapSide, &r.BrakeKind, &r.BrakeTold, &r.BrakeHeldAt, &r.Generation)
 	return r, err
 }
 
