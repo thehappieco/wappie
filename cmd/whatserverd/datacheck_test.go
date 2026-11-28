@@ -59,6 +59,10 @@ func TestDatacheckCompareExits(t *testing.T) {
 		t.Fatalf("a difference: %v\n%s", err, out.String())
 	}
 	out.Reset()
+	if err := datacheckCompare([]string{"-expect", "seq-offset", "-offset", "1", "-device", "d1", "-device", "d2", a, a}, &out); err != nil {
+		t.Fatalf("named numbers: %v\n%s", err, out.String())
+	}
+	out.Reset()
 	if err := datacheckCompare([]string{"-allow", "workspaces/*/fields/last_seq", a, b}, &out); err != nil ||
 		!strings.Contains(out.String(), "declared   workspaces/w/fields/last_seq") {
 		t.Fatalf("declared: %v\n%s", err, out.String())

@@ -50,11 +50,16 @@ type Migration struct {
 
 // DigestSpec is what one table's digests cover.
 type DigestSpec struct {
-	Key        []string `json:"key"`
-	Rows       []string `json:"rows"`
+	Key  []string `json:"key"`
+	Rows []string `json:"rows"`
+	// Columns each have their own digest (Table.Columns).
+	Columns    []string `json:"columns,omitempty"`
 	Ciphertext []string `json:"ciphertext,omitempty"`
 	Seq        []string `json:"seq,omitempty"`
 	LeftOut    []string `json:"left_out,omitempty"`
+	// Absent are the Columns this database's schema lacks (a binary newer
+	// than the schema): no digest covers them.
+	Absent []string `json:"absent,omitempty"`
 }
 
 // ReaderState is one attested reader's sealed collection.
@@ -118,8 +123,11 @@ type Device struct {
 	// a change may declare (never the label, the phone number or the LID).
 	Fields   map[string]*string `json:"fields,omitempty"`
 	Messages MessageStats       `json:"messages"`
-	// ChatOrder is, per chat (its uid, store.ChatUID), the SHA-256 over its
-	// message uids in seq order.
+	// ChatOrder is, per chat, the SHA-256 over its message uids in seq
+	// order. A chat is named by the uid of its first message in that order
+	// (a random uuidv7 that a move or an import keeps), never by anything
+	// derived from its chat key: store.ChatUID is predictable, and with the
+	// number's id it would give a direct chat's phone number away.
 	ChatOrder map[string]string `json:"chat_order"`
 	// Tables are the per-table digests (see Digests).
 	Tables map[string]*Table `json:"tables"`
@@ -146,16 +154,21 @@ type Table struct {
 	Count int64 `json:"count"`
 	// Rows is the digest over the row key and every clear column.
 	Rows string `json:"rows"`
+	// Columns is, per split column, the digest over the row key and that
+	// column.
+	Columns map[string]string `json:"columns,omitempty"`
 	// Ciphertext is the digest over the row key and the SHA-256 of each
 	// sealed column.
 	Ciphertext string `json:"ciphertext,omitempty"`
 	// Seq is the digest over the row key and each seq column less the
-	// number's seq base, so it is the same after a renumbering by an
-	// offset (plan 2.5) and changes for anything else.
+	// number's seq base (a 0, "none yet", as itself), so it is the same
+	// after a renumbering by an offset (plan 2.5, device_transfer's rule)
+	// and changes for anything else.
 	Seq string `json:"seq,omitempty"`
 	// MaxSeq is the highest seq, as stored.
 	MaxSeq *int64 `json:"max_seq,omitempty"`
-	// Nulls counts NULLs in the columns the start's LID backfill fills.
+	// Nulls counts NULLs in the columns the start's LID and chat uid
+	// backfills fill.
 	Nulls map[string]int64 `json:"nulls,omitempty"`
 }
 

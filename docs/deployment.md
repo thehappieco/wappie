@@ -515,8 +515,8 @@ for 0063 to 0066, section 2). The check is a manifest taken before and
 after, compared field by field:
 
 ```
-whatserverd datacheck [-workspace ID] [-out FILE] [-objects [-sums FILE] [-sizes FILE] [-strict]] [-ledger FILE] [-token-stops FILE]
-whatserverd datacheck compare [-expect equal|migration|seq-offset|key-change|lid-backfill] [-offset N] [-allow PATTERN]... [-workspace-map OLD=NEW]... BEFORE AFTER
+whatserverd datacheck [-workspace ID] [-out FILE] [-objects [-sums FILE] [-sizes FILE] [-strict]] [-ledger FILE] [-token-stops FILE] [-require-files]
+whatserverd datacheck compare [-expect equal|migration|seq-offset|key-change|lid-backfill] [-offset N] [-device ID]... [-allow PATTERN]... [-workspace-map OLD=NEW]... BEFORE AFTER
 ```
 
 `datacheck` only reads. It opens one connection whose transactions are
@@ -528,9 +528,19 @@ through the S3 API; it never writes to the bucket and never creates it. Run
 it with the server's configuration (`WS_POSTGRES_DSN`, `WS_S3_*`,
 `WS_DELETION_LEDGER`), as in "Operator commands" above, either as the
 server's database role or as one that bypasses row-level security (the
-backup identity): every query names its workspace, so both read the same
-rows. Quiesce first (stop `wappie-api` and `wappie-billing`) so the counts
-are exact.
+backup identity): every query names its workspace, and the `devices` rows
+are read with the deleted numbers awaiting their purge made visible
+(`store.ReadExcludedTx`, which only a `READ ONLY` transaction may use), so
+both read the same rows, deleted numbers included.
+
+Stop `wappie-api` and `wappie-billing` before the run and keep them
+stopped until it ends: the counts are exact only then, and the check's one
+transaction holds a share lock on every table it read until it ends (with
+`-objects`, for the whole bucket read: hours at the pilot's size). A start
+that migrates waits behind that lock, every query on the table queues
+behind the waiting migration, and autovacuum cleans nothing up meanwhile.
+Let the run finish (or stop it with Ctrl-C, which rolls the transaction
+back) before anything starts.
 
 The manifest is JSON, sorted, with ids, enums, counts, times, byte totals
 and SHA-256 digests only: never a label, a phone number, a LID, an e-mail
@@ -544,15 +554,21 @@ summary to stderr. Per workspace and per number (`devices.id`) it holds:
 - per table (messages, chats, contacts, group members, receipts, group
   changes, events, media, `ai_derived`, `device_permissions`,
   `reader_preferences`): the row count; a row digest over the row key and
-  every clear column; a ciphertext digest over the row key and the SHA-256
-  of each sealed column; a seq digest over the row key and each seq column
-  less the number's lowest seq, so a renumbering by one offset leaves it
-  equal; `max_seq` as stored; and the NULL counts of `messages.sender_pn`,
-  `chats.chat_pn` and `contacts.contact_lid`. The manifest's `digests`
-  section lists each digest's columns and those it leaves out (the
-  database's bookkeeping times and the download worker's retry state);
+  every clear column; a digest of its own (`columns`) over the row key and
+  each split column: `messages.sender_pn`, `chats.chat_pn`, `chats.uid`
+  and `contacts.contact_lid`, which the start's backfills fill, and every
+  column a later migration adds; a ciphertext digest over the row key and
+  the SHA-256 of each sealed column; a seq digest over the row key and each
+  seq column less the number's lowest seq (a 0, "none yet", as itself, as
+  a move keeps it), so a renumbering by one offset leaves it equal;
+  `max_seq` as stored; and the NULL counts of the backfilled columns. The
+  manifest's `digests` section lists each digest's columns, those it leaves
+  out (the database's bookkeeping times and the download worker's retry
+  state) and the split columns this schema lacks (`absent`);
 - a per-chat order digest (the message uids in `seq` order), keyed by the
-  chat's uid (`store.ChatUID`);
+  uid of the chat's first message. Never by `store.ChatUID`: that is
+  derived from the number's id and the chat key, and would give a direct
+  chat's phone number away to anyone who enumerates numbers;
 - media count and `sum(file_length)` by `download_status`;
 - content keys per epoch; every archive key (epoch, suite, fingerprint,
   `retired_at`); every grant of every epoch, retired keys and deleted
@@ -568,8 +584,20 @@ summary to stderr. Per workspace and per number (`devices.id`) it holds:
 Besides: `schema_migrations`; `mcp_reader_state` (generation and blob
 hash); the deletion ledger and the token stop record (default
 `/var/lib/wappie/token-stops.jsonl`) by line count and SHA-256, or
-`present: false`; and the tables left out on purpose (`mcp_outbound`,
+`present: false`, which the summary flags as a warning (an empty ledger
+path is an error, not an absent file; `-require-files` makes an absent one
+fail the run, exit 3, with no output kept, as a kit should when the files
+were to be copied); and the tables left out on purpose (`mcp_outbound`,
 `device_notices`, `mcp_send_chats`, `ai_usage_daily`), with the reason.
+
+**Which binary.** Take both manifests of a change with the same binary.
+A binary newer than the schema still runs: a split column it knows that
+the schema lacks is listed as `absent` and covered by no digest (any other
+column the schema lacks stops the check). A binary older than the schema
+does not cover the columns it does not know. So for an additive migration
+take the manifest before it and the one after it with the new binary:
+`compare -expect migration` then requires every row digest equal and
+declares only the new versions and the new columns' own digests.
 
 **Objects.** `-objects` lists every object under the scope's prefix (the
 whole bucket, or `WORKSPACE_ID/` with `-workspace`), reads each one and
@@ -586,7 +614,10 @@ the format of `backup.sh`'s `SHA256SUMS`, and `-sizes FILE` `<size>  <key>`
 lines, both in key order. `-strict` exits 3 when the object check finds a
 problem. The objects are read one at a time: at the pilot's last size
 (about 33 GB) expect the run to take as long as reading that much from
-MinIO.
+MinIO. A listing or a read that fails is tried again after 1 s, 5 s, 30 s
+and 2 min (the listing resumes after the last key it gave, a read starts
+the object over), so a transient error or a MinIO restart does not end
+the run; a missing object is not retried.
 
 **Comparing.** `datacheck compare BEFORE AFTER` prints every field that
 differs, `unexpected` or `declared`, and exits 3 if any is unexpected
@@ -594,22 +625,36 @@ differs, `unexpected` or `declared`, and exits 3 if any is unexpected
 (section 2.5 of the plan):
 
 - `equal` (the default): everything equal. A restore drill, a class a kit.
-- `migration`: new schema versions only; everything else equal unless
-  allowed.
-- `seq-offset`: an export round trip, a move or an import. Each number's
-  `max_seq` (messages, receipts, events) is exactly `-offset` higher, each
-  workspace's `last_seq` at least its numbers' highest, and everything else
-  equal: the seq and per-chat order digests do not depend on the offset.
+- `migration`: new schema versions, and new columns (a shorter `absent`
+  list, the column's own digest and NULL count appearing); every row
+  digest and everything else equal unless allowed.
+- `seq-offset`: an export round trip, a move or an import. Each renumbered
+  number's `max_seq` (messages, receipts, events) is exactly `-offset`
+  higher, each workspace's `last_seq` at least its numbers' highest, and
+  everything else equal: the seq and per-chat order digests do not depend
+  on the offset. The renumbered numbers are those named with `-device`
+  (every number when none is), so a move into a workspace that has
+  numbers of its own names the moved ones; the others' `max_seq` must stay
+  equal. A named number is compared under its id in whichever workspace
+  AFTER holds it, so a move between workspaces compares the number with
+  itself; what the move changes around it (the workspaces' storage
+  totals, the permissions and grants it rewrites) is declared with
+  `-allow`.
 - `key-change`: new archive keys and grants, `retired_at` set on old keys,
   `current_epoch` raised and `updated_at`; every holder of a number's old
   epoch holds the new one at the new key's fingerprint; nothing removed.
-- `lid-backfill`: the first boot's LID backfill. Only the NULL counts of
-  `messages.sender_pn`, `chats.chat_pn` and `contacts.contact_lid` fall, and
-  those three tables' row digests and accounted storage change. The boot's
-  chat uid backfill also changes the chats row digest, which this allows.
+- `lid-backfill`: the first boot's LID and chat uid backfills. Only the
+  NULL counts of `messages.sender_pn`, `chats.chat_pn`, `chats.uid` and
+  `contacts.contact_lid` fall; each of those columns' own digest may change
+  only where its NULL count fell; the accounted storage of the three tables
+  changes. Their row digests, which cover every other column, must stay
+  equal.
 
 `-allow PATTERN` declares anything else by path (`*` is one segment, `**`
-any number), for example `-allow 'workspaces/*/devices/*/fields/updated_at'`.
+any number), for example `-allow 'workspaces/*/devices/*/fields/updated_at'`,
+including a rule an expectation checks (a `max_seq` off by other than the
+offset, a holder without a grant at the new epoch). Trims and merges have
+no expectation of their own: declare what they change with `-allow`.
 `-workspace-map OLD=NEW` compares a workspace of BEFORE with another id in
 AFTER; the object listing digest names keys, which carry the workspace id,
 so a remapped object check must be allowed too.

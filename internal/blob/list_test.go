@@ -31,7 +31,7 @@ func listingBucket(t *testing.T, keys []string) (*Store, func() []string) {
 		}
 		var page []string
 		for _, k := range keys {
-			if strings.HasPrefix(k, q.Get("prefix")) && k > q.Get("continuation-token") {
+			if strings.HasPrefix(k, q.Get("prefix")) && k > q.Get("continuation-token") && k > q.Get("start-after") {
 				page = append(page, k)
 			}
 		}
@@ -68,7 +68,7 @@ func TestListStreamsEveryPageAndOnlyReads(t *testing.T) {
 	keys := []string{"a/1", "a/2", "a/3", "a/4", "a/5", "b/1"}
 	s, methods := listingBucket(t, keys)
 	var got []ObjectInfo
-	if err := s.List(context.Background(), "a/", func(o ObjectInfo) error {
+	if err := s.List(context.Background(), "a/", "", func(o ObjectInfo) error {
 		got = append(got, o)
 		return nil
 	}); err != nil {
@@ -78,6 +78,17 @@ func TestListStreamsEveryPageAndOnlyReads(t *testing.T) {
 	if !slices.Equal(got, want) {
 		t.Fatalf("listed %v, want %v", got, want)
 	}
+	// A listing resumed after a key starts at the next one.
+	got = nil
+	if err := s.List(context.Background(), "a/", "a/3", func(o ObjectInfo) error {
+		got = append(got, o)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if want := want[3:]; !slices.Equal(got, want) {
+		t.Fatalf("resumed after a/3: %v, want %v", got, want)
+	}
 	for _, m := range methods() {
 		if m != http.MethodGet {
 			t.Fatalf("the listing sent a %s", m)
@@ -86,7 +97,7 @@ func TestListStreamsEveryPageAndOnlyReads(t *testing.T) {
 
 	stop := errors.New("stop")
 	n := 0
-	if err := s.List(context.Background(), "", func(ObjectInfo) error {
+	if err := s.List(context.Background(), "", "", func(ObjectInfo) error {
 		n++
 		return stop
 	}); !errors.Is(err, stop) || n != 1 {
@@ -94,7 +105,7 @@ func TestListStreamsEveryPageAndOnlyReads(t *testing.T) {
 	}
 
 	var nilStore *Store
-	if err := nilStore.List(context.Background(), "", func(ObjectInfo) error { return nil }); !errors.Is(err, ErrNotConfigured) {
+	if err := nilStore.List(context.Background(), "", "", func(ObjectInfo) error { return nil }); !errors.Is(err, ErrNotConfigured) {
 		t.Fatalf("an unconfigured store listed: %v", err)
 	}
 }

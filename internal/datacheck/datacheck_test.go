@@ -65,6 +65,7 @@ type world struct {
 	bucket                   *memBucket
 	keys                     *store.Keys
 	directChat, groupChat    string
+	firstDirect              uuid.UUID
 	mediaKey, missingKey     string
 	messages                 *store.Messages
 	pub1                     seal.PublicKey
@@ -160,7 +161,10 @@ func seed(t *testing.T) *world {
 		return res.UID
 	}
 	for i := range 3 {
-		insert(w.directChat, false, domain.KindMessage, i, nil)
+		uid := insert(w.directChat, false, domain.KindMessage, i, nil)
+		if i == 0 {
+			w.firstDirect = uid
+		}
 	}
 	insert(w.directChat, false, domain.KindEdit, 3, nil)
 	w.directMessages = 4
@@ -336,8 +340,13 @@ func TestManifestCountsTheSeededData(t *testing.T) {
 	if d.Tables["chats"].Nulls["chat_pn"] != 1 { // the group chat
 		t.Fatalf("chats nulls: %v", d.Tables["chats"].Nulls)
 	}
-	if len(d.ChatOrder) != 2 || d.ChatOrder[store.ChatUID(w.device, w.directChat).String()] == "" {
+	// Each chat is named by its first message's uid, never by its derived
+	// (and predictable) chat uid.
+	if len(d.ChatOrder) != 2 || d.ChatOrder[w.firstDirect.String()] == "" {
 		t.Fatalf("chat order: %v", d.ChatOrder)
+	}
+	if d.Tables["chats"].Columns["uid"] == "" || d.Tables["messages"].Columns["sender_pn"] == "" || d.Tables["contacts"].Columns["contact_lid"] == "" {
+		t.Fatalf("the backfilled columns' digests: %+v %+v", d.Tables["chats"], d.Tables["contacts"])
 	}
 	if got := d.Media["pending"].Count + d.Media["done"].Count; got != 2 {
 		t.Fatalf("media: %v", d.Media)
@@ -397,12 +406,22 @@ func TestManifestIsStableAndShowsEveryChange(t *testing.T) {
 		t.Fatalf("two runs differ:\n%s", report)
 	}
 
+	// A split column changes its own digest only, not the row digest.
 	w.exec(t, w.tenant, `UPDATE messages SET sender_pn = '5531000000000' WHERE wa_id = 'WA001'`)
+	_, pnChanged, _ := w.run(t, "", false)
+	prefix := "workspaces/" + w.tenant.String() + "/devices/" + w.device.String() + "/tables/messages/"
+	if diffs, report := compare(t, first, pnChanged, datacheck.Expectations{}); datacheck.Unexpected(diffs) == 0 ||
+		!strings.Contains(report, "unexpected "+prefix+"columns/sender_pn") || strings.Contains(report, prefix+"rows") {
+		t.Fatalf("a changed sender_pn:\n%s", report)
+	}
+	w.exec(t, w.tenant, `UPDATE messages SET sender_pn = $1 WHERE wa_id = 'WA001'`, senderPN)
+
+	w.exec(t, w.tenant, `UPDATE messages SET is_forwarded = NOT is_forwarded WHERE wa_id = 'WA001'`)
 	_, changed, _ := w.run(t, "", false)
 	diffs, report := compare(t, first, changed, datacheck.Expectations{})
-	rows := "workspaces/" + w.tenant.String() + "/devices/" + w.device.String() + "/tables/messages/rows"
-	if datacheck.Unexpected(diffs) == 0 || !strings.Contains(report, "unexpected "+rows) {
-		t.Fatalf("a changed sender went unseen:\n%s", report)
+	rows := prefix + "rows"
+	if datacheck.Unexpected(diffs) == 0 || !strings.Contains(report, "unexpected "+rows) || strings.Contains(report, "columns/sender_pn") {
+		t.Fatalf("a changed clear column went unseen:\n%s", report)
 	}
 	for _, d := range diffs {
 		if strings.HasSuffix(d.Path, "/ciphertext") {
@@ -431,12 +450,21 @@ func TestManifestIsStableAndShowsEveryChange(t *testing.T) {
 func TestSeqOffsetIsDeclaredExactly(t *testing.T) {
 	w := seed(t)
 	_, before, _ := w.run(t, "", false)
+	// The seeded chats were never read through: the 0 a renumbering keeps.
+	var unread int
+	if err := pg.InTenantTx(context.Background(), w.pool, w.tenant.String(), func(tx pgx.Tx) error {
+		return tx.QueryRow(context.Background(), `SELECT count(*) FROM chats WHERE read_through_seq = 0`).Scan(&unread)
+	}); err != nil || unread == 0 {
+		t.Fatalf("no chat with read_through_seq 0 (%d): %v", unread, err)
+	}
 	const offset = 1000000
 	for _, q := range []string{
 		`UPDATE messages SET seq = seq + 1000000 WHERE tenant_id = $1`,
 		`UPDATE receipts SET seq = seq + 1000000 WHERE tenant_id = $1`,
 		`UPDATE events SET seq = seq + 1000000 WHERE tenant_id = $1`,
-		`UPDATE chats SET last_seq = last_seq + 1000000, read_through_seq = read_through_seq + 1000000 WHERE tenant_id = $1`,
+		// device_transfer's own rule: a 0 ("none yet") stays 0.
+		`UPDATE chats SET last_seq = CASE WHEN last_seq > 0 THEN last_seq + 1000000 ELSE 0 END,
+			read_through_seq = CASE WHEN read_through_seq > 0 THEN read_through_seq + 1000000 ELSE 0 END WHERE tenant_id = $1`,
 	} {
 		w.exec(t, w.tenant, q, w.tenant)
 	}
@@ -579,6 +607,13 @@ func TestNothingRecognisableInTheOutput(t *testing.T) {
 			}
 		}
 	}
+	// The chat uid store.ChatUID derives is predictable from the number's
+	// id and the chat key, so it must not name a chat.
+	for _, chat := range []string{w.directChat, w.groupChat} {
+		if uid := store.ChatUID(w.device, chat).String(); strings.Contains(string(before), uid) || strings.Contains(report, uid) {
+			t.Errorf("the output names a chat by its derived uid %s", uid)
+		}
+	}
 	if !strings.Contains(summary.String(), w.device.String()) {
 		t.Fatalf("the summary does not name the number by id:\n%s", summary.String())
 	}
@@ -637,10 +672,10 @@ func newMemBucket() *memBucket { return &memBucket{objects: map[string][]byte{}}
 
 func (b *memBucket) put(key string, data []byte) { b.objects[key] = data }
 
-func (b *memBucket) List(ctx context.Context, prefix string, fn func(blob.ObjectInfo) error) error {
+func (b *memBucket) List(ctx context.Context, prefix, after string, fn func(blob.ObjectInfo) error) error {
 	keys := make([]string, 0, len(b.objects))
 	for k := range b.objects {
-		if strings.HasPrefix(k, prefix) {
+		if strings.HasPrefix(k, prefix) && k > after {
 			keys = append(keys, k)
 		}
 	}
@@ -659,4 +694,91 @@ func (b *memBucket) Get(_ context.Context, key string) (io.ReadCloser, int64, er
 		return nil, 0, blob.ErrNotFound
 	}
 	return io.NopCloser(bytes.NewReader(data)), int64(len(data)), nil
+}
+
+// TestDeletedNumbersAreShown: a number in its quarantine (deleted, awaiting
+// its purge) is in the manifest with its devices fields, read as the
+// server's role, which the device_quarantine policy (0050) would otherwise
+// hide it from.
+func TestDeletedNumbersAreShown(t *testing.T) {
+	w := seed(t)
+	ctx := context.Background()
+	if err := pg.InTenantTx(ctx, w.pool, w.tenant.String(), func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `SELECT set_config('app.device_quarantine', 'on', true)`); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, `UPDATE devices SET deleted_at = now(), purge_after = now() + interval '30 days', paused = true WHERE id = $1`, w.keyless)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// The test's role is subject to RLS: a plain read does not see it.
+	var seen int
+	if err := pg.InTenantTx(ctx, w.pool, w.tenant.String(), func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `SELECT count(*) FROM devices WHERE id = $1`, w.keyless).Scan(&seen)
+	}); err != nil || seen != 0 {
+		t.Fatalf("the deleted number is visible without the scope (%d): %v", seen, err)
+	}
+	m, _, _ := w.run(t, "", false)
+	d := m.Workspaces[w.tenant.String()].Devices[w.keyless.String()]
+	if d == nil || !d.Present || d.Fields["deleted_at"] == nil || d.Fields["purge_after"] == nil || *d.Fields["paused"] != "true" {
+		t.Fatalf("the deleted number: %+v", d)
+	}
+	// The read check counts live numbers only.
+	if rc := m.Workspaces[w.tenant.String()].ReadCheck; len(rc.Keyless) != 0 {
+		t.Fatalf("read check: %+v", rc)
+	}
+}
+
+// TestASchemaWithoutANewColumn: a split column the schema lacks (a binary
+// newer than the schema) is listed as absent and covered by no digest,
+// and the manifest after the column appears compares as a migration; a
+// missing column of any other kind stops the check.
+func TestASchemaWithoutANewColumn(t *testing.T) {
+	w := seed(t)
+	ctx := context.Background()
+	_, with, _ := w.run(t, "", false)
+	if _, err := w.pool.Exec(ctx, `ALTER TABLE contacts DROP COLUMN contact_lid`); err != nil {
+		t.Fatal(err)
+	}
+	m, without, _ := w.run(t, "", false)
+	if a := m.Digests["contacts"].Absent; !slices.Equal(a, []string{"contact_lid"}) {
+		t.Fatalf("absent: %v", a)
+	}
+	ct := m.Workspaces[w.tenant.String()].Devices[w.device.String()].Tables["contacts"]
+	if _, ok := ct.Columns["contact_lid"]; ok || ct.Count != 1 {
+		t.Fatalf("contacts without the column: %+v", ct)
+	}
+	if diffs, report := compare(t, without, with, datacheck.Expectations{Kind: datacheck.ExpectMigration}); datacheck.Unexpected(diffs) != 0 {
+		t.Fatalf("the column added:\n%s", report)
+	}
+	if diffs, report := compare(t, with, without, datacheck.Expectations{Kind: datacheck.ExpectMigration}); datacheck.Unexpected(diffs) == 0 {
+		t.Fatalf("the column dropped passed:\n%s", report)
+	}
+
+	if _, err := w.pool.Exec(ctx, `ALTER TABLE contacts DROP COLUMN avatar_checked_at`); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := datacheck.Begin(ctx, w.pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // read only
+	if _, err := datacheck.Collect(ctx, tx, datacheck.Options{}); !errors.Is(err, datacheck.ErrSchema) {
+		t.Fatalf("a clear column missing: %v", err)
+	}
+}
+
+// TestAFileWithNoPathIsAnError: an unset ledger path is not "absent".
+func TestAFileWithNoPathIsAnError(t *testing.T) {
+	w := seed(t)
+	ctx := context.Background()
+	tx, err := datacheck.Begin(ctx, w.pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // read only
+	if _, err := datacheck.Collect(ctx, tx, datacheck.Options{Files: map[string]string{"deletion_ledger": ""}}); !errors.Is(err, datacheck.ErrNoFilePath) {
+		t.Fatalf("an empty path: %v", err)
+	}
 }

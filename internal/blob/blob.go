@@ -229,20 +229,23 @@ type ObjectInfo struct {
 	Size int64
 }
 
-// List calls fn with every object whose key starts with prefix, in the
-// bucket's key order (S3 lists keys in ascending UTF-8 byte order), and
-// stops at fn's first error, which it returns. It streams: the bucket is
-// asked one page at a time while fn runs, so a listing of any size holds
-// one page in memory. It only reads: the data check uses it
-// (whatserverd datacheck), which must never change the bucket.
-func (s *Store) List(ctx context.Context, prefix string, fn func(ObjectInfo) error) error {
+// List calls fn with every object whose key starts with prefix and sorts
+// after after ("" lists from the first), in the bucket's key order (S3
+// lists keys in ascending UTF-8 byte order), and stops at fn's first
+// error, which it returns. It streams: the bucket is asked one page at a
+// time while fn runs, so a listing of any size holds one page in memory. A
+// listing a failure cut short resumes with after set to the last key fn
+// saw. It only reads: the data check uses it (whatserverd datacheck),
+// which must never change the bucket.
+func (s *Store) List(ctx context.Context, prefix, after string, fn func(ObjectInfo) error) error {
 	if !s.Configured() {
 		return ErrNotConfigured
 	}
 	// Cancelling stops minio-go's listing goroutine when fn stops early.
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	for obj := range s.client.ListObjects(ctx, s.bucket, minio.ListObjectsOptions{Prefix: prefix, Recursive: true}) {
+	opts := minio.ListObjectsOptions{Prefix: prefix, StartAfter: after, Recursive: true}
+	for obj := range s.client.ListObjects(ctx, s.bucket, opts) {
 		if obj.Err != nil {
 			return fmt.Errorf("blob: list %s: %w", s.bucket, classify(obj.Err))
 		}

@@ -4,11 +4,13 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -16,11 +18,64 @@ import (
 	"whatserver2/internal/pg"
 )
 
-// ObjectStore is what the object check needs of the bucket: a listing and
-// a read. *blob.Store is one. Nothing here can write.
+// ObjectStore is what the object check needs of the bucket: a listing
+// (resumable after a key, "" from the first) and a read. *blob.Store is
+// one. Nothing here can write.
 type ObjectStore interface {
-	List(ctx context.Context, prefix string, fn func(blob.ObjectInfo) error) error
+	List(ctx context.Context, prefix, after string, fn func(blob.ObjectInfo) error) error
 	Get(ctx context.Context, key string) (io.ReadCloser, int64, error)
+}
+
+// retryPauses are the pauses before each retry of a listing or an object
+// read that failed: one transient error from the bucket, its network or a
+// restart of MinIO must not end a run that reads the whole bucket for
+// hours. The read client itself never retries (blob.New). A listing
+// resumes after the last key it gave; a read starts the object over.
+var retryPauses = []time.Duration{time.Second, 5 * time.Second, 30 * time.Second, 2 * time.Minute}
+
+// retryable says whether a failed read is worth another try: not when the
+// run is ending or the object is not there.
+func retryable(ctx context.Context, err error) bool {
+	return ctx.Err() == nil && !errors.Is(err, blob.ErrNotFound)
+}
+
+func pause(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
+}
+
+// listResuming lists prefix through fn, resuming after the last key fn
+// took when the listing fails, up to len(retryPauses) failures in a row.
+// An error of fn's own ends it at once.
+func listResuming(ctx context.Context, src ObjectStore, prefix string, fn func(blob.ObjectInfo) error) error {
+	last, failures := "", 0
+	for {
+		var fnErr error
+		err := src.List(ctx, prefix, last, func(o blob.ObjectInfo) error {
+			if err := fn(o); err != nil {
+				fnErr = err
+				return err
+			}
+			last, failures = o.Key, 0
+			return nil
+		})
+		switch {
+		case fnErr != nil:
+			return fnErr
+		case err == nil || !retryable(ctx, err) || failures >= len(retryPauses):
+			return err
+		}
+		if err := pause(ctx, retryPauses[failures]); err != nil {
+			return err
+		}
+		failures++
+	}
 }
 
 // ObjectOutput are the object check's files, each optional. Sums gets one
@@ -81,7 +136,7 @@ func CheckObjects(ctx context.Context, tx pgx.Tx, src ObjectStore, m *Manifest, 
 		head, err = keys.next(ctx)
 		return err
 	}
-	err = src.List(ctx, prefix, func(obj blob.ObjectInfo) error {
+	err = listResuming(ctx, src, prefix, func(obj blob.ObjectInfo) error {
 		for head != nil && head.key < obj.Key {
 			set(head.key).Missing++
 			if err := advance(); err != nil {
@@ -143,8 +198,21 @@ func CheckObjects(ctx context.Context, tx pgx.Tx, src ObjectStore, m *Manifest, 
 }
 
 // hashObject reads one object through the store and returns the hex
-// SHA-256 of its bytes and how many there were.
+// SHA-256 of its bytes and how many there were, reading it again from the
+// start after a failure, up to len(retryPauses) times.
 func hashObject(ctx context.Context, src ObjectStore, key string) (string, int64, error) {
+	for i := 0; ; i++ {
+		sum, n, err := hashObjectOnce(ctx, src, key)
+		if err == nil || !retryable(ctx, err) || i >= len(retryPauses) {
+			return sum, n, err
+		}
+		if err := pause(ctx, retryPauses[i]); err != nil {
+			return "", 0, err
+		}
+	}
+}
+
+func hashObjectOnce(ctx context.Context, src ObjectStore, key string) (string, int64, error) {
 	r, _, err := src.Get(ctx, key)
 	if err != nil {
 		return "", 0, fmt.Errorf("read %s: %w", key, err)

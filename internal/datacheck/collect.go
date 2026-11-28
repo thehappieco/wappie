@@ -45,13 +45,21 @@ var ErrNotReadOnly = errors.New("datacheck: the transaction must be READ ONLY an
 // ErrNoWorkspace is a scope that names no workspace.
 var ErrNoWorkspace = errors.New("datacheck: no such workspace")
 
+// ErrSchema is a database whose schema lacks a column the check reads
+// that may not be absent (only a split column may): take both manifests
+// of a change with the binary that matches the older schema.
+var ErrSchema = errors.New("datacheck: the schema lacks a column this binary reads")
+
+// ErrNoFilePath is a file of Options.Files with no path.
+var ErrNoFilePath = errors.New("datacheck: a file to hash has no path")
+
 // Options are what Collect reads besides the database.
 type Options struct {
 	// Workspace limits the check to one workspace; empty is every one.
 	Workspace string
 	// Files are the files outside the database, by name: their line count
 	// and hash go into the manifest. A path that does not exist is recorded
-	// as absent.
+	// as absent; an empty path is an error.
 	Files map[string]string
 }
 
@@ -86,21 +94,31 @@ func Collect(ctx context.Context, tx pgx.Tx, opts Options) (*Manifest, error) {
 		}
 		m.Scope = id.String()
 	}
-	for _, s := range tables {
-		m.Digests[s.name] = s.digestSpec()
-	}
 	if err := tx.QueryRow(ctx, `SELECT now()::text`).Scan(&m.TakenAt); err != nil {
 		return nil, fmt.Errorf("datacheck: time: %w", err)
 	}
 	if err := collectSchema(ctx, tx, m); err != nil {
 		return nil, err
 	}
+	absent, err := absentColumns(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	for _, s := range tables {
+		d := s.digestSpec()
+		for _, c := range s.split {
+			if absent[s.name][c] {
+				d.Absent = append(d.Absent, c)
+			}
+		}
+		m.Digests[s.name] = d
+	}
 	ids, err := collectWorkspaces(ctx, tx, m)
 	if err != nil {
 		return nil, err
 	}
 	for _, id := range ids {
-		if err := collectWorkspace(ctx, tx, id, m.Workspaces[id]); err != nil {
+		if err := collectWorkspace(ctx, tx, id, m.Workspaces[id], absent); err != nil {
 			return nil, fmt.Errorf("datacheck: workspace %s: %w", id, err)
 		}
 	}
@@ -122,6 +140,46 @@ func Collect(ctx context.Context, tx pgx.Tx, opts Options) (*Manifest, error) {
 		m.Files[name] = f
 	}
 	return m, nil
+}
+
+// absentColumns are, per table, the spec's split columns this schema
+// lacks. Any other column of the spec that it lacks is ErrSchema.
+func absentColumns(ctx context.Context, tx pgx.Tx) (map[string]map[string]bool, error) {
+	out := map[string]map[string]bool{}
+	for _, s := range tables {
+		rows, err := tx.Query(ctx, `SELECT attname::text FROM pg_attribute
+			WHERE attrelid = to_regclass($1) AND attnum > 0 AND NOT attisdropped`, s.name)
+		if err != nil {
+			return nil, fmt.Errorf("datacheck: columns of %s: %w", s.name, err)
+		}
+		have := map[string]bool{}
+		for rows.Next() {
+			var c string
+			if err := rows.Scan(&c); err != nil {
+				rows.Close()
+				return nil, fmt.Errorf("datacheck: columns of %s: %w", s.name, err)
+			}
+			have[c] = true
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return nil, fmt.Errorf("datacheck: columns of %s: %w", s.name, err)
+		}
+		out[s.name] = map[string]bool{}
+		for _, list := range [][]string{s.key, s.clear, s.sealed, s.seq} {
+			for _, c := range list {
+				if !have[c] {
+					return nil, fmt.Errorf("%w: %s.%s", ErrSchema, s.name, c)
+				}
+			}
+		}
+		for _, c := range s.split {
+			if !have[c] {
+				out[s.name][c] = true
+			}
+		}
+	}
+	return out, nil
 }
 
 func collectSchema(ctx context.Context, tx pgx.Tx, m *Manifest) error {
@@ -179,15 +237,20 @@ func collectWorkspaces(ctx context.Context, tx pgx.Tx, m *Manifest) ([]string, e
 	return ids, nil
 }
 
-// collectWorkspace fills w. Every query names the workspace itself, and the
-// row-level security setting names it too, so the server's role (subject
-// to RLS) and the backup identity (which bypasses it) read the same rows.
-func collectWorkspace(ctx context.Context, tx pgx.Tx, id string, w *Workspace) error {
+// collectWorkspace fills w. Every query names the workspace itself, the
+// row-level security setting names it too, and the devices rows are read
+// with the deleted numbers awaiting their purge visible
+// (store.ReadExcludedTx), so the server's role (subject to RLS) and the
+// backup identity (which bypasses it) read the same rows.
+func collectWorkspace(ctx context.Context, tx pgx.Tx, id string, w *Workspace, absent map[string]map[string]bool) error {
 	if _, err := tx.Exec(ctx, `SELECT set_config($1, $2, true)`, pg.TenantGUC, id); err != nil {
 		return fmt.Errorf("scope: %w", err)
 	}
+	tablesStep := func(ctx context.Context, tx pgx.Tx, id string, w *Workspace) error {
+		return collectTables(ctx, tx, id, w, absent)
+	}
 	steps := []func(context.Context, pgx.Tx, string, *Workspace) error{
-		collectDevices, collectMessageStats, collectChatOrder, collectTables, collectMedia,
+		collectDevices, collectMessageStats, collectChatOrder, tablesStep, collectMedia,
 		collectContentKeys, collectArchiveKeys, collectGrants, collectUsers, collectStorage, collectReadCheck,
 	}
 	for _, step := range steps {
@@ -213,29 +276,35 @@ func (w *Workspace) device(id string) *Device {
 	return d
 }
 
+// collectDevices reads every devices row of the workspace, a deleted
+// number's in its quarantine included: the restrictive policy
+// device_quarantine (0050) hides those from a role subject to RLS unless
+// the read opts in, which the data check does in its READ ONLY snapshot.
 func collectDevices(ctx context.Context, tx pgx.Tx, id string, w *Workspace) error {
 	cols := make([]string, len(deviceFields))
 	for i, f := range deviceFields {
 		cols[i] = f + "::text"
 	}
-	rows, err := tx.Query(ctx, `SELECT id::text, `+strings.Join(cols, ", ")+` FROM devices WHERE tenant_id = $1`, id)
-	if err != nil {
-		return fmt.Errorf("devices: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		vals, err := scanText(rows, 1+len(deviceFields))
+	return store.ReadExcludedTx(ctx, tx, func() error {
+		rows, err := tx.Query(ctx, `SELECT id::text, `+strings.Join(cols, ", ")+` FROM devices WHERE tenant_id = $1`, id)
 		if err != nil {
 			return fmt.Errorf("devices: %w", err)
 		}
-		d := w.device(*vals[0])
-		d.Present = true
-		d.Fields = map[string]*string{}
-		for i, f := range deviceFields {
-			d.Fields[f] = vals[1+i]
+		defer rows.Close()
+		for rows.Next() {
+			vals, err := scanText(rows, 1+len(deviceFields))
+			if err != nil {
+				return fmt.Errorf("devices: %w", err)
+			}
+			d := w.device(*vals[0])
+			d.Present = true
+			d.Fields = map[string]*string{}
+			for i, f := range deviceFields {
+				d.Fields[f] = vals[1+i]
+			}
 		}
-	}
-	return rows.Err()
+		return rows.Err()
+	})
 }
 
 func collectMessageStats(ctx context.Context, tx pgx.Tx, id string, w *Workspace) error {
@@ -266,10 +335,12 @@ func collectMessageStats(ctx context.Context, tx pgx.Tx, id string, w *Workspace
 }
 
 // collectChatOrder digests each chat's message uids in seq order. The chat
-// key is held only while its rows stream; the output names the chat by its
-// uid as store.ChatUID derives it (what chats.uid holds, or what the boot's
-// backfill will write there), so a chat whose uid is not yet stored, or
-// that has no chats row, still has its own entry.
+// key is held only while its rows stream; the output names the chat by the
+// uid of its first message in seq order, a random uuidv7 that a move or an
+// import keeps (and that changes, as the digest would, when that message
+// goes). Never by store.ChatUID: it is SHA-1 over the number's id, which
+// the manifest shows, and the chat key, which for a direct chat is a phone
+// number, so enumerating numbers would recover every counterparty.
 func collectChatOrder(ctx context.Context, tx pgx.Tx, id string, w *Workspace) error {
 	rows, err := tx.Query(ctx, `SELECT device_id, chat_key, uid::text FROM messages
 		WHERE tenant_id = $1 ORDER BY device_id, chat_key COLLATE "C", seq`, id)
@@ -282,10 +353,11 @@ func collectChatOrder(ctx context.Context, tx pgx.Tx, id string, w *Workspace) e
 		key    string
 	}
 	var cur chat
+	var first string
 	var h *digest
 	flush := func() {
 		if h != nil {
-			w.device(cur.device.String()).ChatOrder[store.ChatUID(cur.device, cur.key).String()] = h.sum()
+			w.device(cur.device.String()).ChatOrder[first] = h.sum()
 		}
 	}
 	for rows.Next() {
@@ -296,7 +368,7 @@ func collectChatOrder(ctx context.Context, tx pgx.Tx, id string, w *Workspace) e
 		}
 		if h == nil || next != cur {
 			flush()
-			cur, h = next, newDigest()
+			cur, first, h = next, uid, newDigest()
 		}
 		h.add(&uid)
 	}
@@ -310,6 +382,8 @@ func collectChatOrder(ctx context.Context, tx pgx.Tx, id string, w *Workspace) e
 // seqBases are each number's lowest seq across messages, receipts and
 // events: the seq digests hash each seq less it, so a renumbering that
 // adds one offset to all of them (an import, plan 2.5) leaves them equal.
+// A seq column holding 0 ("none yet": a chat never read through) is hashed
+// as itself, as device_transfer's renumbering keeps it 0.
 func seqBases(ctx context.Context, tx pgx.Tx, id string) (map[string]int64, error) {
 	rows, err := tx.Query(ctx, `SELECT device_id::text, min(seq) FROM (
 		SELECT device_id, seq FROM messages WHERE tenant_id = $1
@@ -334,29 +408,36 @@ func seqBases(ctx context.Context, tx pgx.Tx, id string) (map[string]int64, erro
 type tableDigest struct {
 	t                *Table
 	rows, ct, seqDig *digest
+	cols             []*digest
 }
 
-func collectTables(ctx context.Context, tx pgx.Tx, id string, w *Workspace) error {
+func collectTables(ctx context.Context, tx pgx.Tx, id string, w *Workspace, absent map[string]map[string]bool) error {
 	bases, err := seqBases(ctx, tx, id)
 	if err != nil {
 		return err
 	}
 	for _, s := range tables {
-		if err := collectTable(ctx, tx, id, w, s, bases); err != nil {
+		if err := collectTable(ctx, tx, id, w, s, bases, absent[s.name]); err != nil {
 			return fmt.Errorf("%s: %w", s.name, err)
 		}
 	}
 	return nil
 }
 
-func collectTable(ctx context.Context, tx pgx.Tx, id string, w *Workspace, s tableSpec, bases map[string]int64) error {
-	nKey, nClear, nSealed, nSeq := len(s.key), len(s.clear), len(s.sealed), len(s.seq)
-	n := 1 + nKey + nClear + nSealed + nSeq
+func collectTable(ctx context.Context, tx pgx.Tx, id string, w *Workspace, s tableSpec, bases map[string]int64,
+	absent map[string]bool) error {
+	split := s.splitIn(absent)
+	nKey, nClear, nSplit, nSealed, nSeq := len(s.key), len(s.clear), len(split), len(s.sealed), len(s.seq)
+	n := 1 + nKey + nClear + nSplit + nSealed + nSeq
 	nullAt := map[string]int{}
 	for _, c := range s.nulls {
-		nullAt[c] = 1 + nKey + slices.Index(s.clear, c)
+		if i := slices.Index(s.clear, c); i >= 0 {
+			nullAt[c] = 1 + nKey + i
+		} else if i := slices.Index(split, c); i >= 0 {
+			nullAt[c] = 1 + nKey + nClear + i
+		}
 	}
-	rows, err := tx.Query(ctx, s.query(), id)
+	rows, err := tx.Query(ctx, s.query(absent), id)
 	if err != nil {
 		return err
 	}
@@ -371,15 +452,18 @@ func collectTable(ctx context.Context, tx pgx.Tx, id string, w *Workspace, s tab
 			return a
 		}
 		a := &tableDigest{t: &Table{}, rows: newDigest()}
+		for range split {
+			a.cols = append(a.cols, newDigest())
+		}
 		if nSealed > 0 {
 			a.ct = newDigest()
 		}
 		if nSeq > 0 {
 			a.seqDig = newDigest()
 		}
-		if len(s.nulls) > 0 {
+		if len(nullAt) > 0 {
 			a.t.Nulls = map[string]int64{}
-			for _, c := range s.nulls {
+			for c := range nullAt {
 				a.t.Nulls[c] = 0
 			}
 		}
@@ -396,6 +480,10 @@ func collectTable(ctx context.Context, tx pgx.Tx, id string, w *Workspace, s tab
 		keys := vals[1 : 1+nKey]
 		a.rows.addAll(keys)
 		a.rows.addAll(vals[1+nKey : 1+nKey+nClear])
+		for i, d := range a.cols {
+			d.addAll(keys)
+			d.add(vals[1+nKey+nClear+i])
+		}
 		for c, i := range nullAt {
 			if vals[i] == nil {
 				a.t.Nulls[c]++
@@ -403,7 +491,7 @@ func collectTable(ctx context.Context, tx pgx.Tx, id string, w *Workspace, s tab
 		}
 		if a.ct != nil {
 			a.ct.addAll(keys)
-			a.ct.addAll(vals[1+nKey+nClear : 1+nKey+nClear+nSealed])
+			a.ct.addAll(vals[1+nKey+nClear+nSplit : 1+nKey+nClear+nSplit+nSealed])
 		}
 		if a.seqDig != nil {
 			base := int64(0)
@@ -411,7 +499,7 @@ func collectTable(ctx context.Context, tx pgx.Tx, id string, w *Workspace, s tab
 				base = bases[*vals[0]]
 			}
 			a.seqDig.addAll(keys)
-			for i, v := range vals[1+nKey+nClear+nSealed:] {
+			for i, v := range vals[1+nKey+nClear+nSplit+nSealed:] {
 				if v == nil {
 					a.seqDig.add(nil)
 					continue
@@ -420,7 +508,12 @@ func collectTable(ctx context.Context, tx pgx.Tx, id string, w *Workspace, s tab
 				if err != nil {
 					return fmt.Errorf("%s: %w", s.seq[i], err)
 				}
-				rel := strconv.FormatInt(seq-base, 10)
+				// 0 is "none yet", which a renumbering keeps 0; any other seq
+				// is relative to the base, marked so the two cannot meet.
+				rel := "0"
+				if seq != 0 {
+					rel = "+" + strconv.FormatInt(seq-base, 10)
+				}
 				a.seqDig.add(&rel)
 				// The first seq column is the row's own seq: its maximum
 				// is reported as stored.
@@ -440,6 +533,12 @@ func collectTable(ctx context.Context, tx pgx.Tx, id string, w *Workspace, s tab
 	}
 	for dev, a := range acc {
 		a.t.Rows = a.rows.sum()
+		if len(a.cols) > 0 {
+			a.t.Columns = map[string]string{}
+			for i, d := range a.cols {
+				a.t.Columns[split[i]] = d.sum()
+			}
+		}
 		if a.ct != nil {
 			a.t.Ciphertext = a.ct.sum()
 		}
@@ -673,8 +772,11 @@ func collectReaderState(ctx context.Context, tx pgx.Tx, m *Manifest) error {
 }
 
 // hashFile counts a file's lines and hashes its bytes, streaming. A file
-// that does not exist is absent, not an error.
+// that does not exist is absent, not an error; no path at all is one.
 func hashFile(path string) (File, error) {
+	if path == "" {
+		return File{}, ErrNoFilePath
+	}
 	f, err := os.Open(path) //nolint:gosec // G304: the operator names the ledger and the stop record
 	if errors.Is(err, os.ErrNotExist) {
 		return File{}, nil

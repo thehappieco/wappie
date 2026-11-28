@@ -18,13 +18,17 @@ const (
 	// ExpectEqual: every field equal (a restore drill, a class a change).
 	ExpectEqual = "equal"
 	// ExpectMigration: an additive migration or backfill. New schema
-	// versions only; every count and digest equal unless allowed.
+	// versions, and the columns the schema before lacked (digests' absent
+	// lists shrink, their own digests and NULL counts appear); every row
+	// digest and every other field equal unless allowed. Both manifests
+	// come from one binary.
 	ExpectMigration = "migration"
 	// ExpectSeqOffset: an export round trip, a move or an import. Every
-	// number's max seq (messages, receipts, events) is exactly Offset
-	// higher, each workspace's last_seq at least its numbers' highest, and
-	// everything else equal: the seq digests and the per-chat order
-	// digests are offset-free.
+	// renumbered number's max seq (messages, receipts, events) is exactly
+	// Offset higher, each workspace's last_seq at least its numbers'
+	// highest, and everything else equal: the seq digests and the per-chat
+	// order digests are offset-free. The renumbered numbers are Devices,
+	// or every number when it names none.
 	ExpectSeqOffset = "seq-offset"
 	// ExpectKeyChange: a new epoch or new grants only. New archive keys and
 	// grants, retired_at set on old keys, current_epoch raised, updated_at;
@@ -33,8 +37,10 @@ const (
 	ExpectKeyChange = "key-change"
 	// ExpectLIDBackfill: the first boot's LID backfill (plan 2.3 step 12).
 	// Only previously NULL messages.sender_pn, chats.chat_pn and
-	// contacts.contact_lid became non-NULL: their NULL counts fall, those
-	// three tables' row digests and the storage they account change.
+	// contacts.contact_lid (and chats.uid, the chat uid backfill) became
+	// non-NULL: their NULL counts fall, each one's own digest changes only
+	// where its NULL count fell, and the storage they account changes. The
+	// row digests, which cover every other column, stay equal.
 	ExpectLIDBackfill = "lid-backfill"
 )
 
@@ -53,6 +59,11 @@ type Expectations struct {
 	// WorkspaceMap renames a workspace of the first manifest to its id in
 	// the second, for a round trip into another workspace.
 	WorkspaceMap map[string]string
+	// Devices are the numbers (devices.id) the change moves or renumbers.
+	// Each is compared under its id in whichever workspace the second
+	// manifest holds it, and with ExpectSeqOffset only they are
+	// renumbered: every other number's max seq must stay equal.
+	Devices []string
 }
 
 // Difference is one field that differs, or one rule a change broke.
@@ -93,6 +104,12 @@ func Compare(before, after []byte, exp Expectations) ([]Difference, error) {
 		return nil, err
 	}
 	b = remap(b, exp.WorkspaceMap)
+	c := &comparer{a: a, exp: exp, devices: map[string]bool{}}
+	for _, d := range exp.Devices {
+		c.devices[d] = true
+	}
+	b = relocate(b, a, c.devices)
+	c.b = b
 	var diffs []Difference
 	// The object check on one side only is one difference, not thousands.
 	if hasPrefix(b, "objects/") != hasPrefix(a, "objects/") {
@@ -120,10 +137,10 @@ func Compare(before, after []byte, exp Expectations) ([]Difference, error) {
 		if inA {
 			d.After = &av
 		}
-		d.Declared, d.Why = declared(d, exp)
+		d.Declared, d.Why = c.declared(d)
 		diffs = append(diffs, d)
 	}
-	diffs = append(diffs, rules(b, a, exp)...)
+	diffs = append(diffs, c.rules()...)
 	slices.SortFunc(diffs, func(x, y Difference) int { return strings.Compare(x.Path, y.Path) })
 	return diffs, nil
 }
@@ -291,12 +308,71 @@ func matchSeg(p, k []string) bool {
 	return len(k) == 0
 }
 
-// declared says whether exp accounts for one differing field, and why.
-func declared(d Difference, exp Expectations) (bool, string) {
-	for _, p := range exp.Allow {
-		if Match(p, d.Path) {
-			return true, "allowed: " + p
+// comparer holds both flattened manifests and what the change declares.
+type comparer struct {
+	b, a map[string]string
+	exp  Expectations
+	// devices are Expectations.Devices as a set.
+	devices map[string]bool
+}
+
+// allowed says whether an -allow pattern matches p.
+func (c *comparer) allowed(p string) (bool, string) {
+	for _, pat := range c.exp.Allow {
+		if Match(pat, p) {
+			return true, "allowed: " + pat
 		}
+	}
+	return false, ""
+}
+
+// renumbered says whether seq-offset renumbers the number dev: every
+// number when the change names none, else only those it names.
+func (c *comparer) renumbered(dev string) bool {
+	return len(c.devices) == 0 || c.devices[dev]
+}
+
+// seqWorkspace says whether the workspace ws (as AFTER names it) holds a
+// renumbered number, so its last_seq may change.
+func (c *comparer) seqWorkspace(ws string) bool {
+	if len(c.devices) == 0 {
+		return true
+	}
+	for k := range c.a {
+		seg := strings.Split(k, "/")
+		if len(seg) > 3 && seg[0] == "workspaces" && seg[1] == ws && seg[2] == "devices" && c.devices[seg[3]] {
+			return true
+		}
+	}
+	return false
+}
+
+// absentBefore are the split columns of table t that BEFORE's schema lacked.
+func (c *comparer) absentBefore(t string) []string {
+	return jsonList(c.b["digests/"+t+"/absent"])
+}
+
+func jsonList(v string) []string {
+	var out []string
+	if v == "" {
+		return nil
+	}
+	if err := json.Unmarshal([]byte(v), &out); err != nil {
+		return nil
+	}
+	return out
+}
+
+// backfilled are the columns the start's backfills fill (plan 2.3 step
+// 12): the LID backfill's three and the chat uid backfill's.
+var backfilled = []struct{ table, column string }{
+	{"messages", "sender_pn"}, {"chats", "chat_pn"}, {"chats", "uid"}, {"contacts", "contact_lid"},
+}
+
+// declared says whether the change accounts for one differing field, and why.
+func (c *comparer) declared(d Difference) (bool, string) {
+	if ok, why := c.allowed(d.Path); ok {
+		return true, why
 	}
 	num := func(v *string) (int64, bool) {
 		if v == nil {
@@ -305,15 +381,41 @@ func declared(d Difference, exp Expectations) (bool, string) {
 		n, err := strconv.ParseInt(*v, 10, 64)
 		return n, err == nil
 	}
+	seg := strings.Split(d.Path, "/")
 	added := d.Before == nil && d.After != nil
-	switch exp.Kind {
+	switch c.exp.Kind {
 	case ExpectMigration:
 		if added && Match("schema/**", d.Path) {
 			return true, "a new migration"
 		}
+		// A column a migration added: the schema before lacked it, so it
+		// was absent; now it has its own digest (and NULL count).
+		if Match("digests/*/absent", d.Path) {
+			after := []string{}
+			if d.After != nil {
+				after = jsonList(*d.After)
+			}
+			before := c.absentBefore(seg[1])
+			for _, col := range after {
+				if !slices.Contains(before, col) {
+					return false, "a column the schema had is gone"
+				}
+			}
+			return true, "a new column"
+		}
+		if added && (Match("workspaces/*/devices/*/tables/*/columns/*", d.Path) || Match("workspaces/*/devices/*/tables/*/nulls/*", d.Path) ||
+			Match("workspaces/*/unowned/*/columns/*", d.Path) || Match("workspaces/*/unowned/*/nulls/*", d.Path)) {
+			t, col := seg[len(seg)-3], seg[len(seg)-1]
+			if slices.Contains(c.absentBefore(t), col) {
+				return true, "a new column"
+			}
+		}
 	case ExpectSeqOffset:
 		// Checked by rules, which see the equal ones too.
-		if Match("workspaces/*/devices/*/tables/*/max_seq", d.Path) || Match("workspaces/*/fields/last_seq", d.Path) {
+		if Match("workspaces/*/devices/*/tables/*/max_seq", d.Path) && c.renumbered(seg[3]) {
+			return true, "seq"
+		}
+		if Match("workspaces/*/fields/last_seq", d.Path) && c.seqWorkspace(seg[1]) {
 			return true, "seq"
 		}
 	case ExpectKeyChange:
@@ -333,15 +435,29 @@ func declared(d Difference, exp Expectations) (bool, string) {
 		}
 	case ExpectLIDBackfill:
 		for _, t := range []string{"messages", "chats", "contacts"} {
-			if Match("workspaces/*/devices/*/tables/"+t+"/rows", d.Path) || Match("workspaces/*/inventory/"+t+"/bytes", d.Path) {
-				return true, "backfilled columns"
+			if Match("workspaces/*/inventory/"+t+"/bytes", d.Path) {
+				return true, "backfilled columns' storage"
 			}
 		}
 		if Match("workspaces/*/fields/storage_archive_bytes", d.Path) {
-			return true, "backfilled columns"
+			return true, "backfilled columns' storage"
 		}
-		for _, c := range []string{"messages/nulls/sender_pn", "chats/nulls/chat_pn", "contacts/nulls/contact_lid"} {
-			if Match("workspaces/*/devices/*/tables/"+c, d.Path) {
+		for _, f := range backfilled {
+			// Only the column's own digest may change, and only where its
+			// NULL count fell: the row digest, which covers every other
+			// column, must stay equal.
+			if Match("workspaces/*/devices/*/tables/"+f.table+"/columns/"+f.column, d.Path) {
+				nulls := strings.TrimSuffix(d.Path, "columns/"+f.column) + "nulls/" + f.column
+				bv, okB := c.b[nulls]
+				av, okA := c.a[nulls]
+				nb, errB := strconv.ParseInt(bv, 10, 64)
+				na, errA := strconv.ParseInt(av, 10, 64)
+				if okB && okA && errB == nil && errA == nil && na < nb {
+					return true, "NULLs filled"
+				}
+				return false, "a backfill changes a column only by filling its NULLs"
+			}
+			if Match("workspaces/*/devices/*/tables/"+f.table+"/nulls/"+f.column, d.Path) {
 				b, okB := num(d.Before)
 				a, okA := num(d.After)
 				if okB && okA && a < b {
@@ -355,14 +471,29 @@ func declared(d Difference, exp Expectations) (bool, string) {
 }
 
 // rules checks what an expectation demands of fields that may be equal.
-func rules(b, a map[string]string, exp Expectations) []Difference {
+// An -allow pattern declares a broken rule too, as it does a difference.
+func (c *comparer) rules() []Difference {
+	out := c.brokenRules()
+	for i := range out {
+		out[i].Declared, out[i].Why = func(d Difference) (bool, string) {
+			if ok, why := c.allowed(d.Path); ok {
+				return true, d.Why + "; " + why
+			}
+			return false, d.Why
+		}(out[i])
+	}
+	return out
+}
+
+func (c *comparer) brokenRules() []Difference {
+	b, a, exp := c.b, c.a, c.exp
 	var out []Difference
 	str := func(s string) *string { return &s }
 	switch exp.Kind {
 	case ExpectSeqOffset:
 		highest := map[string]int64{}
 		for k, v := range b {
-			if !Match("workspaces/*/devices/*/tables/*/max_seq", k) {
+			if !Match("workspaces/*/devices/*/tables/*/max_seq", k) || !c.renumbered(strings.Split(k, "/")[3]) {
 				continue
 			}
 			before, errB := strconv.ParseInt(v, 10, 64)
@@ -380,12 +511,12 @@ func rules(b, a map[string]string, exp Expectations) []Difference {
 			if !Match("workspaces/*/devices/*/tables/*/max_seq", k) {
 				continue
 			}
-			if _, ok := b[k]; !ok {
+			seg := strings.Split(k, "/")
+			if _, ok := b[k]; !ok && c.renumbered(seg[3]) {
 				out = append(out, Difference{Path: k, After: str(v), Why: "a max seq the first manifest lacks"})
 			}
-			ws := strings.Split(k, "/")[1]
-			if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > highest[ws] {
-				highest[ws] = n
+			if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > highest[seg[1]] {
+				highest[seg[1]] = n
 			}
 		}
 		for k, v := range a {
@@ -430,6 +561,42 @@ func rules(b, a map[string]string, exp Expectations) []Difference {
 					out = append(out, d)
 				}
 			}
+		}
+	}
+	return out
+}
+
+// relocate moves each named number's paths in b to the workspace that a
+// holds it in, so a number a change moved between workspaces compares
+// with itself.
+func relocate(b, a map[string]string, devices map[string]bool) map[string]string {
+	if len(devices) == 0 {
+		return b
+	}
+	where := map[string]string{}
+	for k := range a {
+		seg := strings.SplitN(k, "/", 5)
+		if len(seg) > 3 && seg[0] == "workspaces" && seg[2] == "devices" && devices[seg[3]] {
+			where[seg[3]] = seg[1]
+		}
+	}
+	out := make(map[string]string, len(b))
+	left := map[string]bool{}
+	for k, v := range b {
+		seg := strings.Split(k, "/")
+		if len(seg) > 3 && seg[0] == "workspaces" && seg[2] == "devices" {
+			if ws, ok := where[seg[3]]; ok && ws != seg[1] {
+				left[seg[1]] = true
+				seg[1] = ws
+			}
+		}
+		out[strings.Join(seg, "/")] = v
+	}
+	// A workspace the move left without numbers shows as Flatten shows an
+	// empty one.
+	for ws := range left {
+		if !hasPrefix(out, "workspaces/"+ws+"/devices/") {
+			out["workspaces/"+ws+"/devices"] = "{}"
 		}
 	}
 	return out

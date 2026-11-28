@@ -3,10 +3,17 @@ package datacheck
 import "strings"
 
 // tableSpec is one table's digests: which columns are the row key, which
-// are clear, sealed or seq, and which are left out. Every column of the
-// table is in exactly one list or is tenant_id/device_id
+// are clear, split, sealed or seq, and which are left out. Every column of
+// the table is in exactly one list or is tenant_id/device_id
 // (TestEveryColumnIsDecided holds it), so a migration that adds a column
 // fails a test until someone decides what the digest does with it.
+//
+// A column a migration adds goes into split, not clear: a split column has
+// its own digest, and the schema may lack it (the check then lists it as
+// absent), so one binary takes the manifest before the migration and the
+// one after, the row digest stays equal, and the new column shows as one
+// new digest (compare -expect migration declares exactly that). A clear,
+// key, sealed or seq column the schema lacks stops the check.
 type tableSpec struct {
 	name string
 	// from is the FROM clause; the table is aliased t.
@@ -19,11 +26,15 @@ type tableSpec struct {
 	order string
 	// clear go into the row digest as text, NULL distinct from empty.
 	clear []string
+	// split each go into their own digest, over the row key and the
+	// column as text: the columns a declared change may fill (the start's
+	// LID and chat uid backfills) and every column added since.
+	split []string
 	// sealed go into the ciphertext digest as the SHA-256 of their bytes.
 	sealed []string
 	// seq go into the seq digest less the number's seq base.
 	seq []string
-	// nulls are clear columns whose NULLs are counted.
+	// nulls are clear or split columns whose NULLs are counted.
 	nulls []string
 	// leftOut are columns no digest covers: bookkeeping times the database
 	// writes and the download worker's retry state, which a restore keeps
@@ -35,9 +46,10 @@ type tableSpec struct {
 var tables = []tableSpec{
 	{
 		name: "messages", key: []string{"uid"},
-		clear: []string{"wa_id", "chat_key", "sender_key", "sender_lid", "sender_pn", "ts", "is_from_me", "is_group",
+		clear: []string{"wa_id", "chat_key", "sender_key", "sender_lid", "ts", "is_from_me", "is_group",
 			"kind", "type", "target_wa_id", "target_uid", "target_rel", "reply_to", "is_forwarded", "forwarding_score",
 			"expiration", "expires_at", "view_once", "ephemeral", "source", "content_key_id", "unsupported_field", "counts_unread"},
+		split:   []string{"sender_pn"},
 		sealed:  []string{"body_sealed", "raw_sealed", "payload_sealed"},
 		seq:     []string{"seq"},
 		nulls:   []string{"sender_pn"},
@@ -45,17 +57,19 @@ var tables = []tableSpec{
 	},
 	{
 		name: "chats", key: []string{"chat_key"},
-		clear: []string{"chat_lid", "chat_pn", "is_group", "uid", "name_key_id", "ephemeral_expiration", "last_ts",
+		clear: []string{"chat_lid", "is_group", "name_key_id", "ephemeral_expiration", "last_ts",
 			"last_kind", "last_type", "unread", "archived", "pinned", "muted_until", "group_created_at", "participant_count"},
+		split:   []string{"chat_pn", "uid"},
 		sealed:  []string{"name_sealed"},
 		seq:     []string{"last_seq", "read_through_seq"},
-		nulls:   []string{"chat_pn"},
+		nulls:   []string{"chat_pn", "uid"},
 		leftOut: []string{"created_at", "updated_at"},
 	},
 	{
 		name: "contacts", key: []string{"contact_key"},
-		clear: []string{"contact_lid", "contact_pn", "is_group", "uid", "content_key_id", "avatar_id", "avatar_key_id",
+		clear: []string{"contact_pn", "is_group", "uid", "content_key_id", "avatar_id", "avatar_key_id",
 			"avatar_checked_at"},
+		split:   []string{"contact_lid"},
 		sealed:  []string{"push_name_sealed", "full_name_sealed", "business_name_sealed", "avatar_sealed"},
 		nulls:   []string{"contact_lid"},
 		leftOut: []string{"created_at", "updated_at"},
@@ -140,15 +154,30 @@ func (s tableSpec) deviceExpr() string {
 	return "t.device_id"
 }
 
+// splitIn are s's split columns the schema has.
+func (s tableSpec) splitIn(absent map[string]bool) []string {
+	out := []string{}
+	for _, c := range s.split {
+		if !absent[c] {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
 // query is the streaming query of s for one workspace ($1): the number,
-// then key, clear, sealed and seq columns, each as text, in a stable order.
-// Every name in it comes from the constants above.
-func (s tableSpec) query() string {
+// then key, clear, split (less those absent), sealed and seq columns, each
+// as text, in a stable order. Every name in it comes from the constants
+// above.
+func (s tableSpec) query(absent map[string]bool) string {
 	cols := []string{s.deviceExpr() + "::text"}
 	for _, c := range s.key {
 		cols = append(cols, "t."+c+"::text")
 	}
 	for _, c := range s.clear {
+		cols = append(cols, "t."+c+"::text")
+	}
+	for _, c := range s.splitIn(absent) {
 		cols = append(cols, "t."+c+"::text")
 	}
 	for _, c := range s.sealed {
@@ -173,7 +202,7 @@ func (s tableSpec) query() string {
 }
 
 func (s tableSpec) digestSpec() DigestSpec {
-	d := DigestSpec{Key: s.key, Rows: s.clear, Ciphertext: s.sealed, Seq: s.seq, LeftOut: s.leftOut}
+	d := DigestSpec{Key: s.key, Rows: s.clear, Columns: s.split, Ciphertext: s.sealed, Seq: s.seq, LeftOut: s.leftOut}
 	if d.Key == nil {
 		d.Key = []string{}
 	}

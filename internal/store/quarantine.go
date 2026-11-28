@@ -40,6 +40,26 @@ func withQuarantine(ctx context.Context, tx pgx.Tx, fn func() error) (err error)
 	return fn()
 }
 
+// ReadExcludedTx runs fn with excluded numbers visible in tx, which must be
+// READ ONLY, then hides them again. It is the data check's door
+// (internal/datacheck): its manifest shows every deleted number awaiting
+// its purge, and must read the same devices rows as the server's role
+// (subject to RLS) as it does as one that bypasses RLS. A writable
+// transaction is refused, so this door never lets a write reach a hidden
+// row.
+func ReadExcludedTx(ctx context.Context, tx pgx.Tx, fn func() error) error {
+	var readOnly string
+	if err := tx.QueryRow(ctx, `SELECT current_setting('transaction_read_only')`).Scan(&readOnly); err != nil {
+		return fmt.Errorf("store: read the transaction mode: %w", err)
+	}
+	if readOnly != "on" {
+		return errReadExcludedWritable
+	}
+	return withQuarantine(ctx, tx, fn)
+}
+
+var errReadExcludedWritable = errors.New("store: ReadExcludedTx needs a READ ONLY transaction")
+
 // anyExcludedTx reports whether the workspace of tx has an excluded number.
 func anyExcludedTx(ctx context.Context, tx pgx.Tx) (bool, error) {
 	var found bool

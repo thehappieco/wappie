@@ -23,8 +23,8 @@ import (
 )
 
 // datacheckUsage is the data check's command lines (docs/deployment.md).
-const datacheckUsage = `whatserverd datacheck [-workspace ID] [-out FILE] [-objects [-sums FILE] [-sizes FILE] [-strict]] [-ledger FILE] [-token-stops FILE]
-whatserverd datacheck compare [-expect equal|migration|seq-offset|key-change|lid-backfill] [-offset N] [-allow PATTERN]... [-workspace-map OLD=NEW]... BEFORE AFTER`
+const datacheckUsage = `whatserverd datacheck [-workspace ID] [-out FILE] [-objects [-sums FILE] [-sizes FILE] [-strict]] [-ledger FILE] [-token-stops FILE] [-require-files]
+whatserverd datacheck compare [-expect equal|migration|seq-offset|key-change|lid-backfill] [-offset N] [-device ID]... [-allow PATTERN]... [-workspace-map OLD=NEW]... BEFORE AFTER`
 
 // defaultTokenStops is where the cloud keeps the token stop record
 // (commercial deploy/backup.sh): a path, not a credential.
@@ -53,6 +53,7 @@ func datacheckCommand(args []string, stdout, stderr io.Writer) error {
 	strict := fs.Bool("strict", false, "with -objects: exit 3 when the object check finds a problem")
 	ledger := fs.String("ledger", "", "the deletion ledger to hash (default: WS_DELETION_LEDGER)")
 	stops := fs.String("token-stops", defaultTokenStops, "the token stop record to hash")
+	requireFiles := fs.Bool("require-files", false, "fail when the deletion ledger or the token stop record is absent")
 	timeout := fs.Duration("statement-timeout", 30*time.Minute, "the bound on each query")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -127,6 +128,15 @@ func datacheckCommand(args []string, stdout, stderr io.Writer) error {
 		Files: map[string]string{"deletion_ledger": *ledger, "token_stops": *stops}}, objectFiles)
 	if err != nil {
 		return err
+	}
+	// Before anything is kept: a run that must find both files and does
+	// not leaves no manifest behind (plan 2.6 stops on a file not copied).
+	if *requireFiles {
+		for _, name := range []string{"deletion_ledger", "token_stops"} {
+			if !m.Files[name].Present {
+				return exitError{code: exitDataDiffers, err: fmt.Errorf("datacheck: the %s is absent", strings.ReplaceAll(name, "_", " "))}
+			}
+		}
 	}
 	j, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
@@ -230,6 +240,9 @@ func datacheckCompare(args []string, stdout io.Writer) error {
 	fs.Var(&allow, "allow", "a path pattern that may differ (\"*\" one segment, \"**\" any); repeatable")
 	var wsMap pairs
 	fs.Var(&wsMap, "workspace-map", "OLD=NEW: the first manifest's workspace OLD is the second's NEW; repeatable")
+	var devices patterns
+	fs.Var(&devices, "device", "a number (devices.id) the change moves or renumbers: compared under its id wherever it is, "+
+		"and with seq-offset the only numbers renumbered (default: every number); repeatable")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -252,7 +265,7 @@ func datacheckCompare(args []string, stdout io.Writer) error {
 		return err
 	}
 	diffs, err := datacheck.Compare(before, after, datacheck.Expectations{Kind: *expect, Offset: *offset,
-		Allow: allow, WorkspaceMap: wsMap})
+		Allow: allow, WorkspaceMap: wsMap, Devices: devices})
 	if err != nil {
 		return err
 	}

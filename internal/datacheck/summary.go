@@ -19,6 +19,11 @@ func WriteSummary(w io.Writer, m *Manifest) error {
 	}
 	fmt.Fprintf(&b, "datacheck %s at %s, scope %s, schema %d migrations (newest %d)\n",
 		m.Format, m.TakenAt, m.Scope, len(m.Schema), newest)
+	for _, t := range sortedKeys(m.Digests) {
+		if a := m.Digests[t].Absent; len(a) > 0 {
+			fmt.Fprintf(&b, "schema: %s lacks %d columns this binary knows (no digest covers them)\n", t, len(a))
+		}
+	}
 	for _, id := range sortedKeys(m.Workspaces) {
 		ws := m.Workspaces[id]
 		fmt.Fprintf(&b, "workspace %s: %d numbers, %d accounts, %d storage objects (%d bytes), read check: %d keyless, %d orphan\n",
@@ -63,7 +68,7 @@ func WriteSummary(w io.Writer, m *Manifest) error {
 		if f.Present {
 			fmt.Fprintf(&b, "file %s: %d lines, sha256 %s\n", name, f.Lines, f.SHA256)
 		} else {
-			fmt.Fprintf(&b, "file %s: absent\n", name)
+			fmt.Fprintf(&b, "WARNING file %s: absent (a backup or restore must carry it; -require-files fails on this)\n", name)
 		}
 	}
 	if o := m.Objects; o != nil {

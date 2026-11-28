@@ -12,7 +12,9 @@ import (
 // TestEveryColumnIsDecided: every column of a digested table is in exactly
 // one of the spec's lists (or is tenant_id or device_id), so a migration
 // that adds a column fails here until someone decides whether a digest
-// covers it. The devices and tenants fields the manifest shows exist.
+// covers it: a new column goes into split (its own digest), so the
+// manifests before and after the migration keep the row digest equal. The
+// devices and tenants fields the manifest shows exist.
 func TestEveryColumnIsDecided(t *testing.T) {
 	pool := pgtest.Fresh(t, migrate.Run)
 	ctx := context.Background()
@@ -45,21 +47,21 @@ func TestEveryColumnIsDecided(t *testing.T) {
 		if s.device == "" {
 			seen["device_id"] = 1
 		}
-		for _, list := range [][]string{s.key, s.clear, s.sealed, s.seq, s.leftOut} {
+		for _, list := range [][]string{s.key, s.clear, s.split, s.sealed, s.seq, s.leftOut} {
 			for _, c := range list {
 				seen[c]++
 			}
 		}
 		for _, c := range s.nulls {
-			if !slices.Contains(s.clear, c) {
-				t.Errorf("%s: a NULL count of %s, which is not a clear column", s.name, c)
+			if !slices.Contains(s.clear, c) && !slices.Contains(s.split, c) {
+				t.Errorf("%s: a NULL count of %s, which is not a clear or split column", s.name, c)
 			}
 		}
 		have := columns(s.name)
 		for _, c := range have {
 			switch seen[c] {
 			case 0:
-				t.Errorf("%s.%s: no digest decides it (key, clear, sealed, seq or left out)", s.name, c)
+				t.Errorf("%s.%s: no digest decides it (key, clear, split, sealed, seq or left out; a new column goes into split)", s.name, c)
 			case 1:
 			default:
 				t.Errorf("%s.%s: in %d lists", s.name, c, seen[c])
