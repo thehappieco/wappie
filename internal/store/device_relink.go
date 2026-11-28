@@ -387,6 +387,18 @@ func attachRelinkTx(ctx context.Context, tx pgx.Tx, tenant, device uuid.UUID, se
 	if err != nil {
 		return out, err
 	}
+	// A half of the identity the number did not hold before (spec 15.12:
+	// learned later) is an item.identity_updated, as SetIdentity's; the
+	// relink itself is no link, and moves no placed_at.
+	if oldPN == "" || oldLID == "" {
+		var placed bool
+		if err := tx.QueryRow(ctx, `SELECT placed_at IS NOT NULL FROM devices WHERE id = $1`, device).Scan(&placed); err != nil {
+			return out, err
+		}
+		if err := identityLearnedTx(ctx, tx, tenant, device, placed, nil); err != nil {
+			return out, err
+		}
+	}
 	if paused {
 		// MarkResumed's statement, in the attach: the notice and the
 		// resume commit together.

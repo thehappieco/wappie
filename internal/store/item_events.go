@@ -29,6 +29,12 @@ const (
 	eventMovedOut   = "moved_out"
 	eventPurged     = "purged"
 	eventStranded   = "stranded"
+	// eventLinked and eventIdentityUpdated are slice 19's (spec 15.12):
+	// never ledger events, so written as if ledgered, as a pause is; a code
+	// is made only when they are sent, and one that makes none settles
+	// not_sent.
+	eventLinked          = "linked"
+	eventIdentityUpdated = "identity_updated"
 )
 
 // The causes a stranded row of Wappie's own act carries (README 9): the
@@ -85,8 +91,9 @@ type itemEvent struct {
 // nothing is written again; a replayed row whose event id is already there
 // is that same event. A sync_paused or stranded row is never ledgered, so it
 // is written as if it were: the ledger keeps what a restore must replay,
-// and a restore replays deletions, not pauses or strandings. A replayed row
-// came from the ledger, so it is in it already.
+// and a restore replays deletions, not pauses or strandings; nor links or
+// identities learned (linked, identity_updated). A replayed row came from
+// the ledger, so it is in it already.
 func recordEvent(ctx context.Context, tx pgx.Tx, tenant uuid.UUID, ev itemEvent) error {
 	id := ev.EventID
 	if id == uuid.Nil {
@@ -106,7 +113,7 @@ func recordEvent(ctx context.Context, tx pgx.Tx, tenant uuid.UUID, ev itemEvent)
 		actor_kind, actor_sub, actor_user_id, reader_subs, label, hint, deleted_at, purge_after, to_tenant_id, ledgered_at, replayed_at,
 		reader_user_ids, person_sub, cause)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,
-		  CASE WHEN $3 IN ('sync_paused', 'stranded') OR $16 THEN clock_timestamp() END, CASE WHEN $16 THEN clock_timestamp() END,
+		  CASE WHEN $3 IN ('sync_paused', 'stranded', 'linked', 'identity_updated') OR $16 THEN clock_timestamp() END, CASE WHEN $16 THEN clock_timestamp() END,
 		  $17, $18, $19)
 		ON CONFLICT DO NOTHING`,
 		id, tenant, ev.Type, ev.ItemID, ev.DedupeKey, ev.OccurredAt, ev.ActorKind, ev.ActorSub, ev.ActorUserID,

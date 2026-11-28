@@ -19,6 +19,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"whatserver2/internal/obs"
 	"whatserver2/internal/pg"
 	"whatserver2/internal/wa"
 )
@@ -103,31 +104,70 @@ func (d *Devices) SetStatus(ctx context.Context, tenantID, deviceID string, stat
 // carries just one identifier cannot blank out the other. That mirrors the
 // merge rule in wa.Identity and matters because LID may arrive without a phone
 // number and, for some accounts, a phone number never arrives at all.
+//
+// A half learned after the number was linked (a LID seen after pairing, or
+// a phone number learned later: spec 15.12) records item.identity_updated
+// in the same transaction, inside a savepoint: a failed insert is logged
+// with ids only and recorded for contract status, and the identity's write
+// still commits (the daily catch-up then covers the number). A write that
+// may learn a half takes the workspace's row first, as every writer of
+// item_events does.
 func (d *Devices) SetIdentity(ctx context.Context, tenantID, deviceID string, id wa.Identity) error {
-	var lid, pn *string
-	if !id.LID.IsEmpty() {
-		s := id.LID.String()
-		lid = &s
+	pn, lid := identityArgs(id)
+	tenant, err := uuid.Parse(tenantID)
+	if err != nil {
+		return fmt.Errorf("store: set device identity: %w", err)
 	}
-	if !id.PN.IsEmpty() {
-		s := id.PN.String()
-		pn = &s
-	}
-	return pg.InTenantTx(ctx, d.pool, tenantID, func(tx pgx.Tx) error {
-		tag, err := tx.Exec(ctx, `
+	failed := false
+	err = pg.InTenantTx(ctx, d.pool, tenantID, func(tx pgx.Tx) error {
+		failed = false
+		var may bool
+		err := tx.QueryRow(ctx, `SELECT ($2::text IS NOT NULL AND lid IS NULL) OR ($3::text IS NOT NULL AND pn IS NULL)
+			FROM devices WHERE id = $1`, deviceID, lid, pn).Scan(&may)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("%w: %s", ErrNotFound, deviceID)
+		}
+		if err != nil {
+			return fmt.Errorf("store: set device identity: %w", err)
+		}
+		if may {
+			if _, err := lockWorkspaceTx(ctx, tx, tenant); err != nil {
+				return err
+			}
+		}
+		var learned, placed bool
+		var device uuid.UUID
+		err = tx.QueryRow(ctx, `
 			UPDATE devices
 			   SET lid       = COALESCE($2, lid),
 			       pn        = COALESCE($3, pn),
 			       push_name = CASE WHEN $4 <> '' THEN $4 ELSE push_name END
-			 WHERE id = $1`, deviceID, lid, pn, id.PushName)
+			 WHERE id = $1
+			RETURNING (old.lid IS NULL AND new.lid IS NOT NULL) OR (old.pn IS NULL AND new.pn IS NOT NULL),
+			          new.placed_at IS NOT NULL, new.id`, deviceID, lid, pn, id.PushName).Scan(&learned, &placed, &device)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("%w: %s", ErrNotFound, deviceID)
+		}
 		if err != nil {
 			return fmt.Errorf("store: set device identity: %w", err)
 		}
-		if tag.RowsAffected() == 0 {
-			return fmt.Errorf("%w: %s", ErrNotFound, deviceID)
+		if !learned {
+			return nil
 		}
-		return nil
+		return identityLearnedTx(ctx, tx, tenant, device, placed, func() { failed = true })
 	})
+	if err == nil && failed {
+		d.recordEventFailure(ctx)
+	}
+	return err
+}
+
+// recordEventFailure records, for contract status, an event that could not
+// be written beside the act that made it.
+func (d *Devices) recordEventFailure(ctx context.Context) {
+	if err := NewContract(d.pool).RecordError(context.WithoutCancel(ctx), ContractErrorEventRecord); err != nil {
+		obs.LoggerFrom(ctx).Warn("contract: could not record an ERROR", "error", err)
+	}
 }
 
 // Create inserts a device that has not been paired yet.

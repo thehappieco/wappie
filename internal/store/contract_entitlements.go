@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"time"
 
@@ -320,6 +321,9 @@ type EntItemResult struct {
 	Braked, NewBrake bool
 	Doc              *EntDoc
 	Refused          *EntRefusal
+	// Codes counts the item.identity_updated its apply recorded (slice
+	// 19: a trial, a codes_after).
+	Codes int
 }
 
 // EntPageResult is what CommitEntPage did.
@@ -487,8 +491,11 @@ func applyEntDocTx(ctx context.Context, tx pgx.Tx, d EntDoc, seq int64, signedAt
 	r := EntItemResult{Workspace: d.Workspace, Doc: &d}
 	var version *int64
 	var prev []byte
+	var codes entCodesPrev
 	exists := true
-	err := tx.QueryRow(ctx, `SELECT version, doc FROM contract_ent_docs WHERE workspace_id = $1`, d.Workspace).Scan(&version, &prev)
+	err := tx.QueryRow(ctx, `SELECT version, doc, applied_at IS NOT NULL, trial_ends_at, codes_after_answered, first_after_reset
+		FROM contract_ent_docs WHERE workspace_id = $1`, d.Workspace).
+		Scan(&version, &prev, &codes.Applied, &codes.Trial, &codes.Answered, &codes.FirstAfterReset)
 	if errors.Is(err, pgx.ErrNoRows) {
 		exists, err = false, nil
 	}
@@ -571,6 +578,15 @@ func applyEntDocTx(ctx context.Context, tx pgx.Tx, d EntDoc, seq int64, signedAt
 		}
 		r.NewBrake = tag.RowsAffected() == 1
 		r.Braked = true
+	}
+	if r.Action == EntApply {
+		// Slice 19's triggers, in the apply's transaction: in E0 "applying"
+		// includes a document only observed (Q73).
+		n, err := entCodesTx(ctx, tx, d.Workspace, doc, codes)
+		if err != nil {
+			return r, err
+		}
+		r.Codes = n
 	}
 	return r, nil
 }
@@ -879,9 +895,26 @@ func entNamedTx(ctx context.Context, tx pgx.Tx, ids []uuid.UUID) error {
 		return err
 	}
 	for _, id := range ids {
-		if _, err := tx.Exec(ctx, `INSERT INTO contract_ent_docs AS d (workspace_id, get_due_at) VALUES ($1, clock_timestamp())
+		// The late apply returns the document it applied, whose triggers
+		// (slice 19) run now: none was applied for the workspace before.
+		var raw []byte
+		var answered *time.Time
+		var reset bool
+		err := tx.QueryRow(ctx, `INSERT INTO contract_ent_docs AS d (workspace_id, get_due_at) VALUES ($1, clock_timestamp())
 			ON CONFLICT (workspace_id) DO UPDATE SET applied_at = clock_timestamp()
-			WHERE d.applied_at IS NULL AND d.doc IS NOT NULL`, id); err != nil {
+			WHERE d.applied_at IS NULL AND d.doc IS NOT NULL
+			RETURNING d.doc, d.codes_after_answered, d.first_after_reset`, id).Scan(&raw, &answered, &reset)
+		if errors.Is(err, pgx.ErrNoRows) || (err == nil && raw == nil) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		var doc kc.EntitlementsDoc
+		if err := json.Unmarshal(raw, &doc); err != nil {
+			return fmt.Errorf("store: a kept document applied late: %w", err)
+		}
+		if _, err := entCodesTx(ctx, tx, id, doc, entCodesPrev{Answered: answered, FirstAfterReset: reset}); err != nil {
 			return err
 		}
 	}
