@@ -682,12 +682,14 @@ type EntGetDue struct {
 
 // EntGetsDue lists, oldest due first, at most limit workspaces whose GET is
 // due now, and whether the unreadable document's pacing holds (with when
-// the next may go). It clears the pacing once no GET is due.
+// the next may go). It clears the pacing once no GET is due now: a row a
+// newer document released from its hold still has its GET to send, paced
+// with the rest.
 func (c *Contract) EntGetsDue(ctx context.Context, limit int) ([]EntGetDue, error) {
 	var next *time.Time
 	if err := c.pool.QueryRow(ctx, `UPDATE contract_ent_state SET unreadable_get_next_at = NULL
 		WHERE unreadable_get_next_at IS NOT NULL
-		  AND NOT EXISTS (SELECT 1 FROM contract_ent_docs WHERE get_due_at <= clock_timestamp() AND feed_held_back)
+		  AND NOT EXISTS (SELECT 1 FROM contract_ent_docs WHERE get_due_at <= clock_timestamp())
 		RETURNING NULL::timestamptz`).Scan(&next); err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return nil, err
 	}
