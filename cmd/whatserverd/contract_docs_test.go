@@ -807,6 +807,32 @@ func TestContractDocsMatchTheCode(t *testing.T) {
 		says("deployment.md", "It comes before 0052's down-step, whose guard refuses while 53 is applied")
 	})
 
+	t.Run("the 0054 down-step", func(t *testing.T) {
+		sql := docText(t, "../../internal/migrate/sql/0054_trial_codes.sql")
+		for _, msg := range []string{
+			"entitlements are on: run whatserverd contract entitlements off first",
+			"trial codes are on: run whatserverd contract trial-key suspend first",
+			"item.linked or item.identity_updated events are still owed: let the leader send them first",
+			"a migration after 0054 is applied; run its down-step first",
+		} {
+			if !strings.Contains(sql, msg) {
+				t.Errorf("0054's down-step no longer says %q", msg)
+			}
+			says("deployment.md", msg)
+		}
+		notice := "dropping % linked and identity_updated rows, % placed numbers, % link checks; the trial key is kept"
+		if !strings.Contains(sql, notice) {
+			t.Errorf("0054's down-step no longer says %q", notice)
+		}
+		says("deployment.md", strings.ReplaceAll(notice, "%", "N"))
+		says("deployment.md", "`migration54_sha256`")
+		says("deployment.md", "`0054_trial_codes.sql`")
+		if !strings.Contains(sql, "It runs first: 0054 down, then 0053 down") {
+			t.Error("0054's header no longer says it comes down before 0053")
+		}
+		says("deployment.md", "It comes before 0053's down-step, whose guard refuses while 54 is applied")
+	})
+
 	t.Run("the event example", func(t *testing.T) {
 		golden, err := os.ReadFile("../../internal/membership/testdata/events/deleted.json")
 		if err != nil {

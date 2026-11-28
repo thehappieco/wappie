@@ -242,12 +242,14 @@ func TestContractTablesRLS(t *testing.T) {
 	if enabled, forced := rls("item_mails"); !enabled || !forced {
 		t.Errorf("item_mails: row-level security %v, forced %v", enabled, forced)
 	}
-	// 0051's three, 0052's settings tables and 0053's entitlements and
-	// usage tables: none carries row-level security (0053's header).
+	// 0051's three, 0052's settings tables, 0053's entitlements and usage
+	// tables and 0054's trial key and link checks: none carries row-level
+	// security (0053's and 0054's headers).
 	for _, table := range []string{"contract_state", "contract_accounts", "contract_workspaces",
 		"contract_settings_state", "contract_commands", "contract_command_wseq", "contract_sections", "contract_persons",
 		"contract_ent_state", "contract_ent_docs", "contract_ent_refusals", "contract_ent_brakes",
-		"contract_usage_seq", "contract_usage", "contract_usage_reports"} {
+		"contract_usage_seq", "contract_usage", "contract_usage_reports",
+		"contract_trial_key", "contract_trial_key_state", "contract_link_checks"} {
 		if enabled, forced := rls(table); enabled || forced {
 			t.Errorf("%s: row-level security %v, forced %v; it is read across workspaces", table, enabled, forced)
 		}

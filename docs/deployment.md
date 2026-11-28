@@ -243,7 +243,7 @@ policy and is not charged Wappie storage. See [storage](storage.md).
 Retain a matching previous private artifact and database/object backups before
 rollout. Database migrations are forward-only, except for the documented
 down-steps, such as the [remote MCP one](#remote-mcp-connector),
-[0050's](#rolling-back-below-0050), [0051's](#rolling-back-below-0051), [0052's](#rolling-back-below-0052) and [0053's](#rolling-back-below-0053); verify old binary compatibility
+[0050's](#rolling-back-below-0050), [0051's](#rolling-back-below-0051), [0052's](#rolling-back-below-0052), [0053's](#rolling-back-below-0053) and [0054's](#rolling-back-below-0054); verify old binary compatibility
 before reverting an executable. Do not restore an older archive over newer
 messages. Restore backups into separate storage when testing rollback. Never
 run two runtimes against the same WhatsApp session. No archive migration or
@@ -817,11 +817,52 @@ rotation happened after the platform's backup, Wappie holds a secret the
 platform no longer has: `contract check` exits `3`, and the owner
 reinstalls it (`contract-secret reset`, then the install).
 
+### Rolling back below 0054
+
+A binary older than 0054 (trial codes, the events `item.linked` and
+`item.identity_updated`, `placed_at` and the link check, E0 slice 19)
+refuses a database at version 54, so its down-step comes first. After a
+kit's step 12 it is never run on live data alone: it is a class b window of
+its own. In this order:
+
+1. Tell the platform. Then `whatserverd contract entitlements off
+   --platform-told` and, once a trial key exists, `whatserverd contract
+   trial-key suspend --platform-told`, as the server's user from its working
+   directory. Let the leader send the events still owed (`contract status`:
+   `events pending`).
+2. Stop the server.
+3. The down-step in the header of `0054_trial_codes.sql`, after checking
+   the file's sha256 against the release's (`migration54_sha256` in a
+   hosted `RELEASE.json`), as the owner of the tables, in its one
+   transaction. Its guards run first: it refuses while a migration after
+   0054 is applied (`a migration after 0054 is applied; run its down-step
+   first`), while entitlements are not off (`entitlements are on: run
+   whatserverd contract entitlements off first`), while codes are on and a
+   key exists (`trial codes are on: run whatserverd contract trial-key
+   suspend first`) and while an event of the two types is still owed in a
+   named workspace (`item.linked or item.identity_updated events are still
+   owed: let the leader send them first`), and a refusal changes nothing.
+   It says what it drops (`dropping N linked and identity_updated rows, N
+   placed numbers, N link checks; the trial key is kept`). It comes before
+   0053's down-step, whose guard refuses while 54 is applied.
+4. Switch back to the older binary and start it.
+
+What it loses: every `placed_at`, the rows of the two events, the codes
+switch and what `wappie-api` recorded of its key, and the link checks of
+the last 24 hours. It keeps `contract_trial_key`, the sealed `K_app`: a
+release with 0054 deployed again reuses the same key, so trials do not
+restart (spec 15.10), and its catch-up sends each number's
+`item.identity_updated` once its key opens. Going below 0054 for good, the
+table owner drops `contract_trial_key` and its two functions
+(`contract_trial_key_never_rotated`, `contract_trial_key_mark`) after the
+down-step.
+
 ### Rolling back below 0053
 
 A binary older than 0053 (the contract's entitlements and usage part, E0)
-refuses a database at version 53, so its down-step comes first. In this
-order:
+refuses a database at version 53, so its down-step comes first, after
+0054's ([Rolling back below 0054](#rolling-back-below-0054)) where 54 is
+applied. In this order:
 
 1. Tell the platform: from the first acknowledgement its doctor alerts on
    documents left unacknowledged. Then `whatserverd contract entitlements
