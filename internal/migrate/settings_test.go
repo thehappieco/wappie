@@ -81,8 +81,11 @@ func TestMigration0052DownStep(t *testing.T) {
 	ctx := context.Background()
 	lg := quietLogger(t)
 	base := at51(t)
+	// A binary at 52: 0053's down-step comes first on a later one
+	// (TestMigration0053DownStep).
+	through52 := migrationsThrough(t, 52)
 	pool := pgtest.Empty(t)
-	if err := Run(ctx, pool, lg); err != nil {
+	if err := run(ctx, pool, lg, through52); err != nil {
 		t.Fatal(err)
 	}
 	w := newContractWorld(t, pool)
@@ -216,7 +219,7 @@ func TestMigration0052DownStep(t *testing.T) {
 	if err := run(ctx, pool, lg, migrationsThrough(t, 51)); err != nil {
 		t.Fatalf("a binary that knows 51 after the down-step: %v", err)
 	}
-	if err := Run(ctx, pool, lg); err != nil {
+	if err := run(ctx, pool, lg, through52); err != nil {
 		t.Fatalf("0052 again: %v", err)
 	}
 	var mode string

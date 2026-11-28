@@ -243,7 +243,7 @@ policy and is not charged Wappie storage. See [storage](storage.md).
 Retain a matching previous private artifact and database/object backups before
 rollout. Database migrations are forward-only, except for the documented
 down-steps, such as the [remote MCP one](#remote-mcp-connector),
-[0050's](#rolling-back-below-0050), [0051's](#rolling-back-below-0051) and [0052's](#rolling-back-below-0052); verify old binary compatibility
+[0050's](#rolling-back-below-0050), [0051's](#rolling-back-below-0051), [0052's](#rolling-back-below-0052) and [0053's](#rolling-back-below-0053); verify old binary compatibility
 before reverting an executable. Do not restore an older archive over newer
 messages. Restore backups into separate storage when testing rollback. Never
 run two runtimes against the same WhatsApp session. No archive migration or
@@ -817,10 +817,44 @@ rotation happened after the platform's backup, Wappie holds a secret the
 platform no longer has: `contract check` exits `3`, and the owner
 reinstalls it (`contract-secret reset`, then the install).
 
+### Rolling back below 0053
+
+A binary older than 0053 (the contract's entitlements and usage part, E0)
+refuses a database at version 53, so its down-step comes first. In this
+order:
+
+1. Tell the platform: from the first acknowledgement its doctor alerts on
+   documents left unacknowledged. Then `whatserverd contract entitlements
+   usage off` and `whatserverd contract entitlements off --platform-told`,
+   as the server's user from its working directory.
+2. Stop the server.
+3. The down-step in the header of `0053_contract_entitlements.sql`, after
+   checking the file's sha256 against the release's (`migration53_sha256`
+   in a hosted `RELEASE.json`), as the owner of the tables, in its one
+   transaction. Its guards run first: it refuses while a migration after
+   0053 is applied (`a migration after 0053 is applied; run its down-step
+   first`), while entitlements are not off (`entitlements are on: run
+   whatserverd contract entitlements off first`) and while usage is not off
+   (`usage is on: run whatserverd contract entitlements usage off first`),
+   and a refusal changes nothing. It says what it drops (`dropping N
+   documents (N applied), N refusals owed, N brakes, N usage seqs, N usage
+   reports`). It comes before 0052's down-step, whose guard refuses while
+   53 is applied.
+4. Switch back to the older binary and start it.
+
+What it loses: the entitlements feed's cursor, each workspace's last
+document, the refusals owed, the local brakes (an enforce document's hold
+among them: report it to the platform's chat first), the usage sequence and
+the reports kept. A release with 0053 deployed again reads the feed from 0,
+and its `usage_seq` starts again from the clock in milliseconds, which still
+rises if the clock moved forward.
+
 ### Rolling back below 0052
 
 A binary older than 0052 (the contract's settings part) refuses a database
-at version 52, so its down-step comes first. In this order:
+at version 52, so its down-step comes first, after 0053's
+([Rolling back below 0053](#rolling-back-below-0053)) where 53 is applied.
+In this order:
 
 1. Tell the platform: from the first read of the command feed it watches
    Wappie's feed for good, and alerts once it goes silent. Then

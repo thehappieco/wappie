@@ -1142,6 +1142,128 @@ events above (spec 9.1):
   team's other owners, who are none unless one joined between the check
   and the event; they get a `number_moved_out` notice as well.
 
+## Entitlements and usage
+
+The platform's fourth part (its spec, section 15; migration 0053): one
+entitlements document per platform workspace, on a feed of its own with its
+own acknowledgement, and a GET that computes it now. This release (E0)
+**observes only**: it follows the feed, acknowledges it, sends the GETs and
+logs what each document would do, with ids, enums and times only. Nothing a
+document says is enforced: Wappie's own storage pause, its 72 hour and 105 %
+accounting, its trial clock and its capacity writers stay as they are, and
+no trim order ever runs.
+
+```
+whatserverd contract entitlements off|observe [--platform-told]
+whatserverd contract entitlements usage off|on [--platform-told]
+whatserverd contract entitlements hold|release -workspace <id> [--platform-told]
+whatserverd contract entitlements status [--check]
+```
+
+- **The mode** is `off` until an operator switches it (the migration's
+  default). `observe` needs the contract on (exit `3`, nothing changed,
+  while it is off); `enforce` is refused (`contract entitlements: this
+  release observes only (E0); nothing changed`). From the first page the
+  platform reads Wappie's acknowledgements, and its doctor alerts on a
+  document unacknowledged for 10 minutes (`contract_entitlements_unapplied`),
+  so `off` after a first read needs `--platform-told` (exit `4` without
+  it, nothing changed). The leader starts or stops the part within seconds
+  of a switch (0053's trigger notifies the mode channel with
+  `entitlements`). Each switch is reported to the platform's chat (Q54).
+- **The usage switch** (`usage on`) is the usage sender's own, so usage can
+  stay off while the follower runs; usage is sent only while the follower
+  observes too.
+- **The local brake** (spec 15.5; Q54): `hold` holds a workspace at
+  observe, `release` lets it go; each is logged with ids only and reported
+  to the platform's chat. In E0 a brake changes nothing else, since nothing
+  is enforced; it is stored so that a later release inherits it.
+- **A document that says `enforce`**, which the platform never sends before
+  Wappie's E2 (P7), holds its workspace at observe at once, in the
+  document's own transaction (`enforce_in_e0`), logs the ERROR "contract:
+  entitlements enforce document held (E0)" (`workspace`, `version`,
+  `trim_present`) and records `ent_enforce_in_e0`. The operator reports it
+  to the platform's chat at once as an incident, then marks the hold told:
+  `whatserverd contract entitlements hold -workspace <id> --platform-told`.
+  Such a hold is never released while the document says `enforce`. A trim
+  order it carries is stored with it and never run.
+
+**The follower** long-polls the feed (25 seconds), from the cursor of its
+own under the account side's one generation. A page of another
+generation, a signed `gone`, or a GET's document of another generation is
+a reset of the account, command and entitlements state in one transaction,
+at most once a minute from this side ("contract: a second reset from the
+entitlements feed within a minute waits", class `ent_reset_loop`). Each
+document is judged alone (the kit's `Document`): a valid one is applied
+only above the version held (or where a reset forgot it), kept for a
+workspace no account document names yet (applied once one does), and a bad
+one is refused alone: listed in the next acknowledgement, its workspace's
+GET sent once, its freshness held where it was (every kept workspace's,
+their GETs one every 10 seconds, when its `workspace_id` cannot be read).
+After 15 minutes without a page: "contract: no entitlements feed page for
+a long time" (`ent_feed_silent`).
+
+**The acknowledgement** goes at once after a page that changed a switch, a
+timeline or a trim, or refused a document; otherwise at most once a second,
+and at least once a minute while the feed runs. Failing for 10 minutes:
+"contract: entitlements acknowledgements fail" (`ent_ack_failing`).
+
+**The GET computed now** goes for a workspace named with no document, after
+a bad document, and after a reset; its answer of the version held gives
+freshness only (the feed's bytes stay), a higher one is applied, a lower
+one ignored. A signed `not_found` on a named workspace keeps its last
+document, frozen, and asks no more until a document of it reaches the feed.
+
+**Freshness** of a workspace is the later of its last valid GET answer of
+this generation and the feed's trusted `published_through` (from a page
+with `more` false), held where a bad document held it. Each timeline step
+whose time came is logged once: would fire while freshness was under 24
+hours old at its `at`, frozen otherwise. Every minute each workspace's
+total is compared with its document's `cap_bytes`, and a crossing either
+way is logged, never a figure.
+
+**Lock order.** `contract_state`, `contract_workspaces` (id order),
+`contract_ent_state`, `contract_ent_docs` (id order): Restart's, the account
+page's hook, a page's and a GET's (`TestCommitEntPageLockOrder`).
+
+**Its lines** (INFO unless said; ids, enums and times only, never a figure,
+a label or a document): "contract: entitlements started", "contract:
+entitlements stopped", "contract: entitlements applied" (`seq`,
+`workspace`, `version`, `mode`, `state`, `kept`), "contract: entitlements
+would stop" (`workspace`, `version`, `switch`, `at`), "contract:
+entitlements step would fire" and "contract: entitlements step frozen"
+(`workspace`, `version`, `switch`, `at`, `fresh_age`), "contract:
+entitlements cap would stop" and "contract: entitlements cap would lift"
+(`workspace`, `version`, `direction`), WARN "contract: entitlements
+document refused" (`seq`, `workspace` or `null`, `code`), "contract:
+entitlements acknowledged" (`through`, `refused`), WARN "contract:
+entitlements GET failed" (`workspace`, `class`), "contract: entitlements
+not_found" (`workspace`), WARN "contract: entitlements foreign document"
+(`workspace`), and the command's "contract: entitlements mode" (`mode`,
+`platform_told`) and "contract: entitlements brake" (`workspace`, `held`,
+`platform_told`). A held workspace's lines carry `held_at_observe=true`.
+
+**`contract entitlements status`**, and `contract status`, print:
+`entitlements: observe (since …)` or `entitlements: off`; `entitlements
+usage: on (since …)` or `entitlements usage: off`; `entitlements feed:
+cursor N, published_through …, last page …` (and `entitlements feed:
+failing since … (<class>)`); `entitlements ack: through N at …, refusals
+owed N`; `entitlements documents: N applied, N kept for workspaces not
+named, N placeholders`; and one line per workspace, `<ws>: vN <mode>
+<state> fresh …`, with ` held at observe`, ` not_found since …` and
+` frozen` where they hold. Its `--check` findings, in `contract status
+--check` too:
+
+- `<ws>: an enforce document held at observe (E0), not yet reported to the
+  platform`, in every mode, until the hold is told;
+- `a document refused in the last 24 hours` (the platform alerts for 24
+  hours);
+- while observing, each counted from the later of its time and the switch:
+  `entitlements feed silent for over 15 minutes`; `entitlements
+  acknowledgement over 10 minutes old` (the platform alerts after 10
+  minutes); `<ws>: no document after a GET was due for over 10 minutes`;
+  `<ws>: freshness over 24 hours`;
+- `the entitlements part's state could not be read: …`.
+
 ## contract status
 
 ```
@@ -1162,9 +1284,10 @@ sealed files; never calls the platform. It prints:
 - each platform workspace: its kind and status, when it was named, the age
   of its last accepted snapshot, its events pending, parked and coalesced,
   and its parks and failing runs;
+- the entitlements part's lines ([entitlements and usage](#entitlements-and-usage));
 - the pending person invitations of each team here.
 
-No name, no email, no label, no secret.
+No name, no email, no label, no secret, no figure of a report.
 
 **`--check`** adds one `finding:` line per finding and exits 1 when there is
 any (0 otherwise). The findings while the contract is on count each bound
@@ -1178,7 +1301,9 @@ clean until its bounds pass:
   `snapshot_invalid`, `event_parked`, `events_refused`,
   `event_actor_unknown`, and the settings part's `command_invalid`,
   `command_stuck`, `command_reset_loop`, `section_invalid`, `section_parked`,
-  `result_parked`, `person_invalid`;
+  `result_parked`, `person_invalid`, and the entitlements part's
+  `ent_feed_silent`, `ent_reset_loop`, `ent_ack_failing`,
+  `ent_enforce_in_e0`;
 - while the contract is on:
   - `the feed was last read … (the platform alerts after 10 minutes)`, past
     5 minutes;
@@ -1273,7 +1398,11 @@ refused invalid_command", "contract: a command delivered again keeps
 waiting", "contract: a person's document is not sent:
 Wappie would not send it", "contract: a person's notices are left out: the
 wire refuses them" and "contract: a person's document is parked" (the last
-with no class: its `--check` line says it).
+with no class: its `--check` line says it). The entitlements part's:
+"contract: no entitlements feed page for a long time", "contract: a second
+reset from the entitlements feed within a minute waits", "contract:
+entitlements acknowledgements fail" and "contract: entitlements enforce
+document held (E0)" ([entitlements and usage](#entitlements-and-usage)).
 The relink's lines (INFO unless said) name its command's id, its number,
 a code and a `seq`, never a QR, an account or a phone number: "relink
 started", "relink attached", "relink refused" (with its code and stage),
@@ -1363,7 +1492,7 @@ Each value below is the code's, and `TestContractDocsMatchTheCode` and
 | check events | 1 hour | `--check`: a queue with no verdict, or events pending |
 | command long-poll | 25 seconds | the command feed's wait |
 | command backoff | 2 seconds to 20 seconds | after a command feed call that got no page |
-| reset floor | 1 minute | between two resets the command feed starts |
+| reset floor | 1 minute | between two resets the command feed starts, and between two the entitlements feed starts |
 | section debounce | 2 seconds | a numbers section after the first change of a run |
 | connection debounce | 30 seconds | a numbers section after a connection that only flipped between online and offline |
 | section | 55 minutes | the next numbers section after one accepted |
@@ -1389,3 +1518,18 @@ Each value below is the code's, and `TestContractDocsMatchTheCode` and
 | relink session | 175 seconds | a relink's pairing session, past the window, so the last QR's end is told from a failure |
 | QR ahead | 85 seconds | the furthest a QR's `expires_at` is sent ahead of Wappie's clock (the kit's 90 seconds less 5 for the platform's clock) |
 | pairing hold | 3 minutes | after a relink's first QR the platform takes no more of its QRs (`accepted: false`) |
+| entitlements long-poll | 25 seconds | the entitlements feed's wait |
+| entitlements backoff | 2 seconds to 1 minute | after an entitlements feed call that got no page |
+| entitlements silent | 15 minutes | without an entitlements page, before the follower's ERROR |
+| ack every | 1 second | the least time between two acknowledgements that are not urgent |
+| ack at least | 1 minute | the most time between two acknowledgements while the feed runs |
+| ack failing | 10 minutes | the acknowledgements failing, before their ERROR |
+| GET backoff | 5 seconds to 1 hour | after a GET computed now that got no document |
+| GET pace | 10 seconds | between two GETs a bad document whose `workspace_id` cannot be read made due |
+| timeline look | 30 seconds | how often the steps whose time came are logged |
+| cap look | 1 minute | how often each workspace's total is compared with its `cap_bytes` |
+| entitlements idle | 30 seconds | the longest the acknowledgement and the GETs wait without looking |
+| check entitlements feed | 15 minutes | `--check`: the entitlements feed's last page, while observing |
+| check acknowledgement | 10 minutes | `--check`: the last acknowledgement accepted, while observing |
+| check GET | 10 minutes | `--check`: a workspace with no document since its GET was due |
+| check freshness | 24 hours | `--check`: a workspace's document's freshness |

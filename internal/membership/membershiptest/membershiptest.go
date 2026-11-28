@@ -325,6 +325,19 @@ func callOf(r *http.Request) (string, string) {
 		return contracttest.CallCommands, r.URL.Query().Get("after")
 	case rest == "commands/results":
 		return contracttest.CallResults, ""
+	case rest == "entitlements":
+		// Its argument is the cursor it asks after, as the command feed's.
+		return contracttest.CallEntitlements, r.URL.Query().Get("after")
+	case rest == "entitlements/applied":
+		return contracttest.CallEntitlementsApplied, ""
+	case rest == "trim/results":
+		return contracttest.CallTrimResults, ""
+	case strings.HasPrefix(rest, "workspaces/") && strings.HasSuffix(rest, "/entitlements"):
+		return contracttest.CallEntitlementsDoc, strings.TrimSuffix(strings.TrimPrefix(rest, "workspaces/"), "/entitlements")
+	case strings.HasPrefix(rest, "workspaces/") && strings.HasSuffix(rest, "/usage"):
+		return contracttest.CallUsage, strings.TrimSuffix(strings.TrimPrefix(rest, "workspaces/"), "/usage")
+	case strings.HasPrefix(rest, "workspaces/") && strings.HasSuffix(rest, "/link-check"):
+		return contracttest.CallLinkCheck, strings.TrimSuffix(strings.TrimPrefix(rest, "workspaces/"), "/link-check")
 	case strings.HasPrefix(rest, "commands/") && strings.HasSuffix(rest, "/pairing"):
 		// Its argument is the command's id.
 		return contracttest.CallPairing, strings.TrimSuffix(strings.TrimPrefix(rest, "commands/"), "/pairing")

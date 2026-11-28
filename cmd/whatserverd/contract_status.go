@@ -96,8 +96,10 @@ func contractStatus(ctx context.Context, c *store.Contract, cfg config.Contract,
 		return err
 	}
 	// The settings part's state is a finding when it cannot be read, never
-	// the end of the daily job's look at the rest.
+	// the end of the daily job's look at the rest; the entitlements part's
+	// too.
 	sst, serr := c.SettingsStatus(ctx)
+	est, eerr := c.EntStatus(ctx)
 	w := &lines{w: out}
 	s := st.State
 	w.f("mode: %s (since %s)", s.Mode, stamp(s.ModeChangedAt))
@@ -175,6 +177,11 @@ func contractStatus(ctx context.Context, c *store.Contract, cfg config.Contract,
 		w.f("  %s %s %s named %s, snapshot %s, events pending %d parked %d coalesced %d%s",
 			ws.ID, ws.Kind, state, ago(st.Now, &ws.NamedAt), ago(st.Now, ws.SnapshotOKAt), ws.Pending, ws.Parked, ws.Coalesced, extra)
 	}
+	if eerr != nil {
+		w.f("entitlements: unreadable: %v", eerr)
+	} else {
+		entitlementsLines(w, est)
+	}
 	// Person invitations into a recorded team are paused (the plan's DB6):
 	// before the switch, B2b reads here how many of a team's will stop
 	// being redeemable once a document names it.
@@ -198,6 +205,11 @@ func contractStatus(ctx context.Context, c *store.Contract, cfg config.Contract,
 		found = append(found, fmt.Sprintf("the settings part's state could not be read: %v", serr))
 	} else {
 		found = append(found, settingsFindings(sst)...)
+	}
+	if eerr != nil {
+		found = append(found, fmt.Sprintf("the entitlements part's state could not be read: %v", eerr))
+	} else {
+		found = append(found, entitlementsFindings(est)...)
 	}
 	for _, f := range found {
 		w.f("finding: %s", f)

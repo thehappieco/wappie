@@ -153,6 +153,8 @@ func contractCommand(args []string, stdout io.Writer) error {
 		return contractModeCommand(args[1:], stdout)
 	case "settings":
 		return contractSettingsCommand(args[1:], stdout)
+	case "entitlements":
+		return contractEntitlementsCommand(args[1:], stdout)
 	}
 	return usageError{arg: "contract " + strings.Join(args, " ")}
 }
