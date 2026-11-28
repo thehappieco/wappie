@@ -375,6 +375,12 @@ func TestEntitlementsBadDocumentGETOnce(t *testing.T) {
 	run(t, w.entLeader(t, logs, entTimes()))
 	w.applied(t, w.team, 1)
 	w.applied(t, w.home, 1)
+	w.settledDoc(t, w.team)
+	w.settledDoc(t, w.home)
+	eventually(t, soon, "no GET due", func() bool {
+		due, err := w.contract.EntGetsDue(context.Background(), 10)
+		return err == nil && len(due) == 0
+	})
 	mu.Lock()
 	before := gets[w.team.String()]
 	mu.Unlock()
@@ -419,6 +425,8 @@ func TestEntitlementsUnreadableWorkspaceGETsPaced(t *testing.T) {
 	run(t, w.entLeader(t, logs, cfg))
 	w.applied(t, w.team, 1)
 	w.applied(t, w.home, 1)
+	w.settledDoc(t, w.team)
+	w.settledDoc(t, w.home)
 	// Only the GETs the bad document made due: none was due before it.
 	eventually(t, soon, "no GET due", func() bool {
 		due, err := w.contract.EntGetsDue(context.Background(), 10)
@@ -456,7 +464,9 @@ func TestEntitlementsNotFoundFreezes(t *testing.T) {
 	w := newSnapshotWorld(t)
 	logs := &membershiptest.Logs{}
 	run(t, w.entLeader(t, logs, entTimes()))
-	r := w.applied(t, w.team, 1)
+	w.applied(t, w.team, 1)
+	w.settledDoc(t, w.team)
+	r, _ := w.entRow(t, w.team)
 	w.fake.RefuseAlways(contracttest.CallEntitlementsDoc, kc.CodeNotFound)
 	if _, err := w.fake.PublishRawEntitlements(App, w.team.String(), json.RawMessage(`{"v":1,"workspace_id":"`+w.team.String()+`"}`)); err != nil {
 		t.Fatal(err)
@@ -597,4 +607,18 @@ func (b *lockedBuffer) String() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.buf.String()
+}
+
+// settledDoc waits until ws's snapshot is settled and the fake's latest
+// document of it is the one applied: the places the fake counts from
+// Wappie's snapshot publish a workspace's document again, and a test that
+// writes a document's row must not race that next version.
+func (w *snapshotWorld) settledDoc(t *testing.T, ws uuid.UUID) {
+	t.Helper()
+	w.settle(t, ws)
+	eventually(t, soon, "the latest document applied", func() bool {
+		d, ok := w.fake.Entitlements(App, ws.String())
+		r, held := w.entRow(t, ws)
+		return ok && held && r.Version != nil && *r.Version == d.Version
+	})
 }
