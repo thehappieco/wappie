@@ -223,6 +223,39 @@ func (s *Store) Exists(ctx context.Context, key string) (bool, int64, error) {
 	return true, info.Size, nil
 }
 
+// ObjectInfo is one object of a listing: its key and its size in bytes.
+type ObjectInfo struct {
+	Key  string
+	Size int64
+}
+
+// List calls fn with every object whose key starts with prefix and sorts
+// after after ("" lists from the first), in the bucket's key order (S3
+// lists keys in ascending UTF-8 byte order), and stops at fn's first
+// error, which it returns. It streams: the bucket is asked one page at a
+// time while fn runs, so a listing of any size holds one page in memory. A
+// listing a failure cut short resumes with after set to the last key fn
+// saw. It only reads: the data check uses it (whatserverd datacheck),
+// which must never change the bucket.
+func (s *Store) List(ctx context.Context, prefix, after string, fn func(ObjectInfo) error) error {
+	if !s.Configured() {
+		return ErrNotConfigured
+	}
+	// Cancelling stops minio-go's listing goroutine when fn stops early.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	opts := minio.ListObjectsOptions{Prefix: prefix, StartAfter: after, Recursive: true}
+	for obj := range s.client.ListObjects(ctx, s.bucket, opts) {
+		if obj.Err != nil {
+			return fmt.Errorf("blob: list %s: %w", s.bucket, classify(obj.Err))
+		}
+		if err := fn(ObjectInfo{Key: obj.Key, Size: obj.Size}); err != nil {
+			return err
+		}
+	}
+	return ctx.Err()
+}
+
 // Delete removes an object, asking the bucket once: its caller retries.
 func (s *Store) Delete(ctx context.Context, key string) error {
 	if !s.Configured() {

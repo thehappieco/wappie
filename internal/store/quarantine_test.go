@@ -807,6 +807,9 @@ func TestQuarantineScopeHasOneDoor(t *testing.T) {
 		// read, and on a deleted one the permission write, which 0036's
 		// ownership trigger checks against devices.
 		"flagsNumberTx": true, "writeFlagsTx": true,
+		// The data check (whatserverd datacheck), which reads every deleted
+		// number's devices row in its READ ONLY snapshot.
+		"ReadExcludedTx": true,
 	}
 	const guc = "app.device_quarantine"
 	var found []string
