@@ -430,9 +430,11 @@ func TestPairingSucceedsWhenRecordLinkedFails(t *testing.T) {
 		return len(w.logs.Lines("contract: an item.linked could not be written; the catch-up covers the number",
 			"device="+device.String(), "tries=4")) == 1
 	})
-	if st, err := w.contract.State(ctx); err != nil || st.ErrorClass != store.ContractErrorEventRecord {
-		t.Fatalf("the ERROR recorded: %q %v", st.ErrorClass, err)
-	}
+	// The ERROR is logged, then recorded.
+	eventually(t, soon, "the ERROR recorded", func() bool {
+		st, err := w.contract.State(ctx)
+		return err == nil && st.ErrorClass == store.ContractErrorEventRecord
+	})
 	if _, err := w.pool.Exec(ctx, `DROP TRIGGER test_refuse_linked ON item_events`); err != nil {
 		t.Fatal(err)
 	}
