@@ -504,17 +504,75 @@ func TestEntitlementsVectors(t *testing.T) {
 			}
 		}
 	})
-	t.Run("E2 and slice 19", func(t *testing.T) {
-		// Decoded above and counted; what they assert is not this slice's:
-		// links, codes_after, placed_at and places are slice 19's link
-		// check, events and placed_at; trial_stops and link_outcomes need
-		// the undo of a link, an enforcing release or an import (E2).
-		// Carried over: slice 19 runs links (every case in a workspace
-		// that does not enforce), codes_after and placed_at as recorded,
-		// and places as "would refuse" lines, then drops its four names
-		// from this skip. The GET answering enforce is braked in E0
-		// (TestEntitlementsGETEnforceBraked).
-		t.Skip("links, codes_after, placed_at, places: slice 19; trial_stops, link_outcomes: E2")
+	t.Run("links", func(t *testing.T) {
+		// Every case, in E0 (slice 19): TestLinksVectorsObserve runs the
+		// same judge on each, its action and logged flag.
+		for _, raw := range v.Links {
+			var c linkVector
+			if err := json.Unmarshal(raw, &c); err != nil {
+				t.Fatal(err)
+			}
+			asks, j := judgeVector(c)
+			reason := j.wouldRefuse(actLink)
+			if asks != c.Asks || (c.Action == "link" && (reason != "") != c.Logged) || (c.Action == "refuse_link" && reason == "") {
+				t.Errorf("%s: asks %v, would refuse %q", c.Name, asks, reason)
+			}
+		}
+	})
+	t.Run("codes_after", func(t *testing.T) {
+		for _, raw := range v.CodesAfter {
+			var c struct {
+				Name         string   `json:"name"`
+				LastAnswered *kc.Time `json:"last_answered"`
+				CodesAfter   *kc.Time `json:"codes_after"`
+				Action       string   `json:"action"`
+			}
+			if err := json.Unmarshal(raw, &c); err != nil {
+				t.Fatal(err)
+			}
+			var last, after *time.Time
+			if c.LastAnswered != nil {
+				last = &c.LastAnswered.Time
+			}
+			if c.CodesAfter != nil {
+				after = &c.CodesAfter.Time
+			}
+			got := "none"
+			if store.CodesAfterDue(last, after) {
+				got = "send"
+			}
+			if got != c.Action {
+				t.Errorf("%s: %s, want %s", c.Name, got, c.Action)
+			}
+		}
+	})
+	t.Run("placed_at", func(t *testing.T) {
+		// Wappie's writers of placed_at (slice 19): a link, a recovery and
+		// a move in set it, a relink keeps it; internal/store's
+		// TestPlacedAtVectors runs each through its real path. Wappie has
+		// no import (the E0 design's section 0).
+		writers := map[string]string{"link": "set", "recovery": "set", "move_in": "set", "relink": "keep"}
+		for _, raw := range v.PlacedAt {
+			var c struct{ Name, App, Event, Action string }
+			if err := json.Unmarshal(raw, &c); err != nil {
+				t.Fatal(err)
+			}
+			want, ours := writers[c.Event]
+			if c.App != App || !ours {
+				continue
+			}
+			if want != c.Action {
+				t.Errorf("%s: Wappie's writer would %s, want %s", c.Name, want, c.Action)
+			}
+		}
+	})
+	t.Run("E2", func(t *testing.T) {
+		// Decoded above and counted; what they assert is not E0's: places
+		// stops and lifts items by placed_at, trial_stops and link_outcomes
+		// need the undo of a link, an enforcing release or an import. E0
+		// logs a link's or a move's no_place by its own count
+		// (TestLinkJudgeReasons, TestMoveWouldBeRefusedLogged).
+		t.Skip("places, trial_stops, link_outcomes: E2")
 	})
 }
 

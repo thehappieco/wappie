@@ -52,6 +52,10 @@ var eventTypes = map[string]string{
 	"purged":      kc.EventPurged,
 	"moved_out":   kc.EventMovedOut,
 	"stranded":    kc.EventStranded,
+	// Slice 19's (spec 15.12): their codes are made at send time
+	// (eventSender.send).
+	"linked":           kc.EventLinked,
+	"identity_updated": kc.EventIdentityUpdated,
 }
 
 // EventOf is the wire's event (README 9) of a queue's event in workspace:
@@ -342,8 +346,22 @@ func (s *eventSender) send(ctx context.Context, ws uuid.UUID) (more, ok bool) {
 	}
 	events := make([]kc.Event, 0, len(batch.Events))
 	var invalid []store.ContractEventPark
+	var noCode []uuid.UUID
 	for _, e := range batch.Events {
 		ev := EventOf(ws, e)
+		if store.IsCodeEvent(e.Type) {
+			// The codes, made now and never stored (spec 15.10); with none
+			// (no usable K_app, codes suspended, an identity that makes
+			// none) the row settles not_sent (15.12 "An item with no code").
+			codes, why := l.Members.trialCodesNow(e.PN, e.LID)
+			if len(codes) == 0 {
+				l.log().Info("contract: an event goes with no code; not sent", "workspace", ws, "event", e.EventID, "type", e.Type,
+					"reason", why)
+				noCode = append(noCode, e.EventID)
+				continue
+			}
+			ev.Codes = codes
+		}
 		if e.ActorUnknown() {
 			s.actorUnknown(ctx, ws, e)
 		}
@@ -355,6 +373,17 @@ func (s *eventSender) send(ctx context.Context, ws uuid.UUID) (more, ok bool) {
 			continue
 		}
 		events = append(events, ev)
+	}
+	if len(noCode) > 0 {
+		if _, err := c.EventsNotSent(ctx, ws, noCode); err != nil {
+			if ctx.Err() == nil {
+				l.log().Warn("contract: could not settle the events with no code", "workspace", ws, "error", err)
+			}
+			return true, false
+		}
+		if len(events) == 0 && len(invalid) == 0 {
+			return true, true
+		}
 	}
 	n, err := fitEvents(events)
 	if err != nil {
