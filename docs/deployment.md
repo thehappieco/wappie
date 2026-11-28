@@ -507,6 +507,113 @@ The down-step drops the notices and the event rows; the ledger file stays
 as the record. The API keys 0050 revoked (those whose creator was disabled
 or had left) stay revoked.
 
+## The data check
+
+Every change to the owner's data takes a backup first and a check
+afterwards that the data is still there (platform decision 0066; the plan
+for 0063 to 0066, section 2). The check is a manifest taken before and
+after, compared field by field:
+
+```
+whatserverd datacheck [-workspace ID] [-out FILE] [-objects [-sums FILE] [-sizes FILE] [-strict]] [-ledger FILE] [-token-stops FILE]
+whatserverd datacheck compare [-expect equal|migration|seq-offset|key-change|lid-backfill] [-offset N] [-allow PATTERN]... [-workspace-map OLD=NEW]... BEFORE AFTER
+```
+
+`datacheck` only reads. It opens one connection whose transactions are
+read-only by default (`default_transaction_read_only`), reads everything in
+one `READ ONLY REPEATABLE READ` transaction, so every count and digest is of
+one snapshot, and rolls it back. It never migrates: it records the schema
+it finds. With `-objects` it lists the bucket and reads every object back
+through the S3 API; it never writes to the bucket and never creates it. Run
+it with the server's configuration (`WS_POSTGRES_DSN`, `WS_S3_*`,
+`WS_DELETION_LEDGER`), as in "Operator commands" above, either as the
+server's database role or as one that bypasses row-level security (the
+backup identity): every query names its workspace, so both read the same
+rows. Quiesce first (stop `wappie-api` and `wappie-billing`) so the counts
+are exact.
+
+The manifest is JSON, sorted, with ids, enums, counts, times, byte totals
+and SHA-256 digests only: never a label, a phone number, a LID, an e-mail
+address, a workspace name or any content. A WhatsApp identifier or a sealed
+value enters it only inside a digest over a table's rows or as one sealed
+value's hash. `-out` writes it to a new file (it refuses one that exists)
+and the summary to stdout; without `-out` the JSON goes to stdout and the
+summary to stderr. Per workspace and per number (`devices.id`) it holds:
+
+- messages by kind, the first and last `ts`, the count with no `ts`;
+- per table (messages, chats, contacts, group members, receipts, group
+  changes, events, media, `ai_derived`, `device_permissions`,
+  `reader_preferences`): the row count; a row digest over the row key and
+  every clear column; a ciphertext digest over the row key and the SHA-256
+  of each sealed column; a seq digest over the row key and each seq column
+  less the number's lowest seq, so a renumbering by one offset leaves it
+  equal; `max_seq` as stored; and the NULL counts of `messages.sender_pn`,
+  `chats.chat_pn` and `contacts.contact_lid`. The manifest's `digests`
+  section lists each digest's columns and those it leaves out (the
+  database's bookkeeping times and the download worker's retry state);
+- a per-chat order digest (the message uids in `seq` order), keyed by the
+  chat's uid (`store.ChatUID`);
+- media count and `sum(file_length)` by `download_status`;
+- content keys per epoch; every archive key (epoch, suite, fingerprint,
+  `retired_at`); every grant of every epoch, retired keys and deleted
+  numbers included, as the hash of its sealed key and the fingerprint of the
+  archive key at its (number, epoch);
+- the device fields the database re-derives (`updated_at`, the pause and
+  logout causes and times, `current_epoch`, the deletion dates);
+- per workspace: `last_seq` and the storage totals, `storage_inventory` per
+  source, `storage_objects`, each account's public key hash and platform
+  wrap hashes, and the read check's keyless and orphan numbers by id (over
+  every live number, not only those a connection holds).
+
+Besides: `schema_migrations`; `mcp_reader_state` (generation and blob
+hash); the deletion ledger and the token stop record (default
+`/var/lib/wappie/token-stops.jsonl`) by line count and SHA-256, or
+`present: false`; and the tables left out on purpose (`mcp_outbound`,
+`device_notices`, `mcp_send_chats`, `ai_usage_daily`), with the reason.
+
+**Objects.** `-objects` lists every object under the scope's prefix (the
+whole bucket, or `WORKSPACE_ID/` with `-workspace`), reads each one and
+hashes its bytes, in bounded memory: the listing streams a page at a time,
+each object streams through the hash, and the database's keys stream
+through a cursor in the same snapshot, merged in key order. A
+content-addressed key (`WORKSPACE/ab/abcd…`) must hash to its own name;
+`unhashed/` keys are counted as unchecked. The listing is cross-checked both
+ways with `storage_objects` and `media.object_key`: objects no row names,
+keys a row names that the bucket lacks, sizes that differ, media keys with
+no storage row. The manifest gets per-workspace counts, bytes, those
+findings and a listing digest; `-sums FILE` gets `<sha256>  <key>` lines,
+the format of `backup.sh`'s `SHA256SUMS`, and `-sizes FILE` `<size>  <key>`
+lines, both in key order. `-strict` exits 3 when the object check finds a
+problem. The objects are read one at a time: at the pilot's last size
+(about 33 GB) expect the run to take as long as reading that much from
+MinIO.
+
+**Comparing.** `datacheck compare BEFORE AFTER` prints every field that
+differs, `unexpected` or `declared`, and exits 3 if any is unexpected
+(`taken_at` is not compared). `-expect` names what the change declares
+(section 2.5 of the plan):
+
+- `equal` (the default): everything equal. A restore drill, a class a kit.
+- `migration`: new schema versions only; everything else equal unless
+  allowed.
+- `seq-offset`: an export round trip, a move or an import. Each number's
+  `max_seq` (messages, receipts, events) is exactly `-offset` higher, each
+  workspace's `last_seq` at least its numbers' highest, and everything else
+  equal: the seq and per-chat order digests do not depend on the offset.
+- `key-change`: new archive keys and grants, `retired_at` set on old keys,
+  `current_epoch` raised and `updated_at`; every holder of a number's old
+  epoch holds the new one at the new key's fingerprint; nothing removed.
+- `lid-backfill`: the first boot's LID backfill. Only the NULL counts of
+  `messages.sender_pn`, `chats.chat_pn` and `contacts.contact_lid` fall, and
+  those three tables' row digests and accounted storage change. The boot's
+  chat uid backfill also changes the chats row digest, which this allows.
+
+`-allow PATTERN` declares anything else by path (`*` is one segment, `**`
+any number), for example `-allow 'workspaces/*/devices/*/fields/updated_at'`.
+`-workspace-map OLD=NEW` compares a workspace of BEFORE with another id in
+AFTER; the object listing digest names keys, which carry the workspace id,
+so a remapped object check must be allowed too.
+
 ## The contract
 
 The hosted cloud follows The Happie Co's platform through the product

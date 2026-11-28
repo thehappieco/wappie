@@ -78,6 +78,7 @@ const commandList = `usage: whatserverd [serve]
        whatserverd bootstrap | tenants | key | device-key | invite | reset-archive | storage |
                    retention | erase | reproject | mcp-relay-secret | devices | deletions |
                    reader-alert-test ...
+       whatserverd datacheck [-workspace ID] [-out FILE] [-objects ...] | compare [-expect E] BEFORE AFTER
        whatserverd contract check [--other|--only-current|--only-other] | status [--check] |
                    diff [--tenant T] | mode off|observe | settings off|read|on|status
        whatserverd contract-secret seal | promote | unpromote | drop | reset | capabilities ...
@@ -149,6 +150,8 @@ func runCommand(args []string, serve func() error) error {
 		return contractSecret(rest, defaultSecretCommand())
 	case "reader-alert-test":
 		return readerAlertTest(rest, os.Stdout)
+	case "datacheck":
+		return datacheckCommand(rest, os.Stdout, os.Stderr)
 	}
 	return usageError{arg: strings.Join(args, " ")}
 }
