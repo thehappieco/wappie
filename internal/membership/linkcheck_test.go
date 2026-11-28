@@ -227,12 +227,22 @@ func TestLinkCheckAfterPairingLogsOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	device := uuid.MustParse(d.ID)
-	// No document held: the GET goes, and waits until the check came.
+	// No document held: the GET goes, and waits until the check came. The
+	// setup's GET and feed are done first: a GET answer or a feed page
+	// still on its way would store the document again after the DELETE,
+	// and the link would then find it held and fresh, with no GET to ask.
+	w.quietDoc(t, w.team)
 	if _, err := w.pool.Exec(ctx, `DELETE FROM contract_ent_docs WHERE workspace_id = $1`, w.team); err != nil {
 		t.Fatal(err)
 	}
 	checkFirst := make(chan bool, 1)
-	w.fake.Before(contracttest.CallEntitlementsDoc, func(string) {
+	w.fake.Before(contracttest.CallEntitlementsDoc, func(ws string) {
+		if ws != w.team.String() {
+			// Another workspace's GET says nothing of this link's order.
+			return
+		}
+		// Shorter than GetWait: a check sent only once the GET's wait
+		// ended would come too late.
 		deadline := time.Now().Add(3 * time.Second)
 		for w.fake.Count(contracttest.CallLinkCheck) == 0 && time.Now().Before(deadline) {
 			time.Sleep(10 * time.Millisecond)
