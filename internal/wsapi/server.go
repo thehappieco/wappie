@@ -121,6 +121,10 @@ type Config struct {
 	// deletion and a transfer of the number cancel its relink too, which
 	// then ends state_changed. Nil cancels none.
 	Relinks *relink.Running
+	// Maintenance is a maintenance start's socket: people only, its reads
+	// and the declared change's writes (maintenance.go). Nil is a normal
+	// start.
+	Maintenance *Maintenance
 	// MCPReaders tells a connection's reader it ended: a grant.revoke
 	// that took a person's Read tells the readers of their own
 	// connections it ended (DS48). Nil tells none here; the readers'
@@ -572,6 +576,11 @@ func (s *session) handshake(ctx context.Context) (string, error) {
 		return ErrCodeVersion, fmt.Errorf("client speaks version %d, server speaks %d",
 			hello.Version, Version)
 	}
+	// A maintenance start serves people only: a key is refused before it
+	// is looked at, as an assistant's or a service's would otherwise read.
+	if s.srv.cfg.Maintenance != nil && hello.Session == "" {
+		return ErrCodeMaintenance, errors.New("this server is in maintenance: API keys are off; sign in as a person")
+	}
 
 	// Before the credentials are looked at, so a refused attempt costs this
 	// process nothing. The subject is the key's prefix — which is a selector,
@@ -709,6 +718,12 @@ func (s *session) readLoop(ctx context.Context) {
 
 func (s *session) dispatch(ctx context.Context, f Frame) {
 	if s.initCallOwner() == "" {
+		return
+	}
+	// Before anything else is asked: a maintenance start answers its reads
+	// and the declared change's writes, and nothing else reaches a handler.
+	if !s.srv.cfg.Maintenance.Permits(f.Type) {
+		s.replyError(f.ReqID, ErrCodeMaintenance, "this server is in maintenance: it answers reads only")
 		return
 	}
 	if !s.allowStorageOperation(ctx, f) {

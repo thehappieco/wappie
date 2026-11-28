@@ -115,7 +115,7 @@ func TestReaderAlertTestCommand(t *testing.T) {
 // reader-alert-test takes no argument, and a stray one opens nothing.
 func TestReaderAlertTestTakesNoArguments(t *testing.T) {
 	var usage usageError
-	if err := runCommand([]string{"reader-alert-test", "--now"}, func() error { return errors.New("served") }); !errors.As(err, &usage) {
+	if err := runCommand([]string{"reader-alert-test", "--now"}, func(serveOptions) error { return errors.New("served") }); !errors.As(err, &usage) {
 		t.Fatalf("err = %v", err)
 	}
 }

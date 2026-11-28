@@ -50,6 +50,10 @@ var ErrUnreachable = errors.New("blob: object storage is not reachable")
 // A boot-time mistake, and it should read like one.
 var ErrRefused = errors.New("blob: object storage refused the credentials")
 
+// ErrReadOnly reports a write to a store opened read-only (ReadOnly): a
+// maintenance start's, which writes no object.
+var ErrReadOnly = errors.New("blob: object storage is read-only in this process")
+
 // Store is object storage.
 type Store struct {
 	client *minio.Client
@@ -62,6 +66,9 @@ type Store struct {
 	// breaker until then.
 	deletes *minio.Client
 	bucket  string
+	// readOnly refuses Put and Delete, and has EnsureBucket check without
+	// creating.
+	readOnly bool
 }
 
 // deleteAttempts is how many times Delete asks the bucket.
@@ -110,6 +117,18 @@ func New(cfg config.Storage) (*Store, error) {
 // Configured reports whether this store can be used.
 func (s *Store) Configured() bool { return s != nil && s.client != nil }
 
+// ReadOnly is this store refusing every write with ErrReadOnly: Put and
+// Delete never reach the bucket, and EnsureBucket only checks it is there.
+// A store that is not configured stays nil.
+func (s *Store) ReadOnly() *Store {
+	if s == nil {
+		return nil
+	}
+	c := *s
+	c.readOnly = true
+	return &c
+}
+
 // EnsureBucket creates the bucket when it does not exist.
 //
 // Called at boot so a fresh MinIO in docker-compose works without a manual
@@ -125,6 +144,9 @@ func (s *Store) EnsureBucket(ctx context.Context, region string) error {
 	}
 	if exists {
 		return nil
+	}
+	if s.readOnly {
+		return fmt.Errorf("blob: bucket %s does not exist, and a read-only store does not create it", s.bucket)
 	}
 	if err := s.client.MakeBucket(ctx, s.bucket, minio.MakeBucketOptions{Region: region}); err != nil {
 		return fmt.Errorf("blob: create bucket %s: %w", s.bucket, err)
@@ -170,6 +192,9 @@ func classify(err error) error {
 func (s *Store) Put(ctx context.Context, key string, r io.Reader, size int64) error {
 	if !s.Configured() {
 		return ErrNotConfigured
+	}
+	if s.readOnly {
+		return ErrReadOnly
 	}
 	_, err := s.client.PutObject(ctx, s.bucket, key, r, size, minio.PutObjectOptions{
 		ContentType: "application/octet-stream",
@@ -260,6 +285,9 @@ func (s *Store) List(ctx context.Context, prefix, after string, fn func(ObjectIn
 func (s *Store) Delete(ctx context.Context, key string) error {
 	if !s.Configured() {
 		return ErrNotConfigured
+	}
+	if s.readOnly {
+		return ErrReadOnly
 	}
 	client := s.deletes
 	if client == nil {

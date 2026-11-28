@@ -26,6 +26,7 @@ import (
 
 	"github.com/google/uuid"
 	"go.mau.fi/whatsmeow"
+	"go.mau.fi/whatsmeow/store/sqlstore"
 
 	"whatserver2/internal/aiapi"
 	"whatserver2/internal/authapi"
@@ -74,7 +75,7 @@ func main() {
 }
 
 // commandList is what an unknown command line prints.
-const commandList = `usage: whatserverd [serve]
+const commandList = `usage: whatserverd [serve [-maintenance [-allow NAME]...]]
        whatserverd bootstrap | tenants | key | device-key | invite | reset-archive | storage |
                    retention | erase | reproject | mcp-relay-secret | devices | deletions |
                    reader-alert-test ...
@@ -107,17 +108,24 @@ func (e exitError) Error() string {
 func (e exitError) Unwrap() error { return e.err }
 
 // runCommand runs the command args name. It serves only with no arguments,
-// or with serve alone: anything else it does not know is a usage error, and
-// opens nothing. Serving migrates the database, resumes every number and
-// starts the janitor, whose first pass purges what is due, so a mistyped
-// command (deletion for deletions, a stray -h) must never fall through to
-// it, least of all while a restore has wappie-api stopped.
-func runCommand(args []string, serve func() error) error {
-	if len(args) == 0 || len(args) == 1 && args[0] == "serve" {
-		return serve()
+// or with serve and the flags it knows (parseServe): anything else it does
+// not know is a usage error, and opens nothing. Serving migrates the
+// database, resumes every number and starts the janitor, whose first pass
+// purges what is due, so a mistyped command (deletion for deletions, a
+// stray -h, -maint for -maintenance) must never fall through to it, least
+// of all while a restore has wappie-api stopped.
+func runCommand(args []string, serve func(serveOptions) error) error {
+	if len(args) == 0 {
+		return serve(serveOptions{})
 	}
 	rest := args[1:]
 	switch args[0] {
+	case "serve":
+		opts, err := parseServe(rest)
+		if err != nil {
+			return err
+		}
+		return serve(opts)
 	case "bootstrap":
 		return bootstrap(rest)
 	case "tenants":
@@ -241,14 +249,29 @@ type app struct {
 	members *membership.Members
 	// leader follows the contract's feed and runs its round and sweep, in
 	// the one process of the database that holds the contract's lock; nil
-	// unless a transport is configured.
+	// unless a transport is configured, and in a maintenance start.
 	leader *membership.Leader
+	// maintenance is a maintenance start's limits (serve -maintenance),
+	// nil on a normal start and in every other command.
+	maintenance *maintenance
+	// started names what serve started beside its listener (begin), in
+	// order: nothing in a maintenance start.
+	started []string
 }
 
 // setup opens every dependency and runs migrations. The returned close
 // function tears them down in reverse.
 func setup(ctx context.Context, withWA bool) (*app, func(), error) {
 	return setupWith(ctx, withWA, true)
+}
+
+// setupMaintenance opens what a maintenance start serves with, and changes
+// nothing on the way: it refuses a database whose schema is not exactly
+// this binary's rather than migrating it, opens whatsmeow's session store
+// without upgrading it, checks the bucket without creating it and writes
+// no object, and builds no call service.
+func setupMaintenance(ctx context.Context, m *maintenance) (*app, func(), error) {
+	return setupOpts(ctx, true, false, m)
 }
 
 // setupCurrent opens what a command needs without migrating, and refuses a
@@ -260,6 +283,10 @@ func setupCurrent(ctx context.Context) (*app, func(), error) {
 }
 
 func setupWith(ctx context.Context, withWA, migrations bool) (*app, func(), error) {
+	return setupOpts(ctx, withWA, migrations, nil)
+}
+
+func setupOpts(ctx context.Context, withWA, migrations bool, maint *maintenance) (*app, func(), error) {
 	// Convenience for local development. Real environment variables always
 	// take precedence, and a missing file is not an error.
 	if err := config.LoadDotEnv(".env"); err != nil {
@@ -317,6 +344,7 @@ func setupWith(ctx context.Context, withWA, migrations bool) (*app, func(), erro
 		limits:            ratelimit.DefaultAuth(cfg.TrustedProxies),
 		setups:            ratelimit.DefaultSetups(cfg.TrustedProxies),
 		workspaceSessions: ratelimit.DefaultWorkspaceSessions(cfg.TrustedProxies),
+		maintenance:       maint,
 	}
 	// The contract's part in signing in and its freshness hook, in every
 	// configuration: the socket's acts ask it from the first frame
@@ -377,7 +405,12 @@ func setupWith(ctx context.Context, withWA, migrations bool) (*app, func(), erro
 	// whatsmeow owns the schema of its own tables and runs its own migrations,
 	// so it gets its own connection rather than sharing one of ours. Two
 	// systems responsible for one database's shape is a bad trade.
-	container, err := wa.OpenContainer(ctx, cfg.Postgres.DSN, lg)
+	var container *sqlstore.Container
+	if maint != nil {
+		container, err = wa.OpenContainerAsIs(cfg.Postgres.DSN, lg)
+	} else {
+		container, err = wa.OpenContainer(ctx, cfg.Postgres.DSN, lg)
+	}
 	if err != nil {
 		closeAll()
 		return nil, nil, err
@@ -405,6 +438,11 @@ func setupWith(ctx context.Context, withWA, migrations bool) (*app, func(), erro
 	if err != nil {
 		closeAll()
 		return nil, nil, err
+	}
+	if maint != nil {
+		// Every holder of a.blob gets this one, so nothing in a
+		// maintenance start writes an object, whatever asks.
+		a.blob = a.blob.ReadOnly()
 	}
 	if a.blob.Configured() {
 		if err := a.blob.EnsureBucket(ctx, cfg.Storage.Region); err != nil {
@@ -498,7 +536,7 @@ func setupWith(ctx context.Context, withWA, migrations bool) (*app, func(), erro
 	}
 
 	var attachCalls func(string, string, *whatsmeow.Client) func()
-	if cfg.CallsEnabled {
+	if cfg.CallsEnabled && maint == nil {
 		a.calls = calling.New()
 		a.calls.BrowserOrigins = cfg.BrowserOrigins
 		attachCalls = a.calls.Attach
@@ -591,6 +629,9 @@ func setupWith(ctx context.Context, withWA, migrations bool) (*app, func(), erro
 		// service the console's item.relink runs on.
 		Relink:  a.relink,
 		Relinks: a.relinks,
+		// A maintenance start's socket: people only, reads and the
+		// declared change's writes; nil on a normal start.
+		Maintenance: maint.socket(),
 	})
 
 	a.registry, a.unlinker, a.router, a.ws = registry, registry, router, ws
@@ -608,7 +649,7 @@ func takeHangup() (<-chan os.Signal, func()) {
 	return hup, func() { signal.Stop(hup) }
 }
 
-func serve() error {
+func serve(opts serveOptions) error {
 	// SIGHUP reloads the contract's secret and never stops the process. It
 	// is taken before anything else, so a SIGHUP that came before this line
 	// would not end capture.
@@ -617,8 +658,24 @@ func serve() error {
 	// SIGINT and SIGTERM cancel the root context, unwinding everything below.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	return runServe(ctx, hup, opts, nil)
+}
 
-	a, closeAll, err := setup(ctx, true)
+// runServe serves until ctx ends, as opts says: a normal start, or a
+// maintenance start (docs/deployment.md, "Maintenance start"). listening,
+// when not nil, is given the app and the bound address once the listener
+// is up; the tests use it.
+func runServe(ctx context.Context, hup <-chan os.Signal, opts serveOptions, listening func(*app, net.Addr)) error {
+	var (
+		a        *app
+		closeAll func()
+		err      error
+	)
+	if opts.maintenance {
+		a, closeAll, err = setupMaintenance(ctx, newMaintenance(opts.allow))
+	} else {
+		a, closeAll, err = setup(ctx, true)
+	}
 	if err != nil {
 		return err
 	}
@@ -630,6 +687,7 @@ func serve() error {
 	checkDeletionLedger(a.cfg, a.ledger, a.log)
 	a.startContract(ctx, hup)
 	a.log.Info("starting", "config", a.cfg.String())
+	a.logMaintenance()
 	if !a.cfg.Storage.Configured {
 		a.log.Warn("object storage is not configured; media features will be unavailable " +
 			"(set WS_S3_BUCKET, WS_S3_ACCESS_KEY and WS_S3_SECRET_KEY when you need them)")
@@ -644,7 +702,7 @@ func serve() error {
 		web.ExternalServers = a.cfg.Web.ExternalServers
 		// The console reads an AI key's model list from the provider, from
 		// the person's browser: only while discovery advertises AI.
-		web.AIModelLists = advertisedMCP(a.cfg.MCP).AI
+		web.AIModelLists = a.advertisedMCP().AI
 		// The console connects to the identity provider for its sign-in,
 		// and its documents keep the callback's code out of any Referer.
 		web.PlatformIssuer = a.cfg.Platform.Issuer
@@ -659,59 +717,7 @@ func serve() error {
 		return err
 	}
 
-	// Before serving: a device that is reachable but unsupervised is worse
-	// than one that is plainly down, because everything reports healthy while
-	// messages quietly stop arriving.
-	if err := a.resumeDevices(ctx); err != nil {
-		return err
-	}
-
-	// And keep trying. One attempt at boot is one too few: a restart overlaps
-	// with the process it replaces, the new one loses the race for the device
-	// lock, and without this it never asks again — leaving a device that
-	// reports online while nothing holds its connection.
-	go a.superviseDevices(ctx)
-	// A deletion in any process tells this one at its commit, so it lets go
-	// of the number before the next tick.
-	go a.listenExcluded(ctx)
-	// So do a reset and a new archive key, so ingest seals to the number's
-	// key as it is now, with no restart (DS49).
-	go a.listenArchiveKeys(ctx)
-
-	// The attachment queue lives in the database, so this starts whether or
-	// not anything is waiting and picks up whatever a previous process left.
-	go a.worker.Run(ctx)
-
-	// History sync chunks are ingested off the device's event goroutine.
-	// whatsmeow dispatches synchronously, so doing it inline would stop a
-	// device receiving anything at all for the length of a bootstrap.
-	go a.router.RunHistory(ctx)
-
-	// Names whatsmeow already has, moved somewhere sealed. Runs before the
-	// avatar worker so the pictures land on rows that mean something.
-	a.importContacts(ctx)
-	a.syncGroups(ctx)
-	a.seedGroupIdentities(ctx)
-
-	// Profile pictures. Paced on purpose: each question is a query over the
-	// same socket that carries messages.
-	go a.avatars.Run(ctx)
-
-	// Retention windows and housekeeping, once an hour. Nothing here runs
-	// for a tenant that has not asked for it.
-	go a.maintain(ctx)
-
-	// Chats that predate the identity column get one now. Doing it here rather
-	// than in SQL keeps a single implementation of the derivation: a mismatch
-	// between a Go version and a SQL version would be silent, and would only
-	// surface as names that refuse to open.
-	// Names before pictures: a group sender addressed by LID matches no contact
-	// until this runs, and everything downstream shows them as a stranger.
-	if err := a.linkPhoneNumbers(ctx); err != nil {
-		return err
-	}
-
-	if err := a.backfillChatIdentities(ctx); err != nil {
+	if err := a.begin(ctx); err != nil {
 		return err
 	}
 
@@ -753,9 +759,7 @@ func serve() error {
 
 	var probesSrv *http.Server
 	if a.cfg.MetricsAddr != "" {
-		mux := http.NewServeMux()
-		a.probes(mux)
-		probesSrv = &http.Server{Addr: a.cfg.MetricsAddr, Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+		probesSrv = &http.Server{Addr: a.cfg.MetricsAddr, Handler: a.probesHandler(), ReadHeaderTimeout: 10 * time.Second}
 		pln, err := listenPatiently(ctx, a.cfg.MetricsAddr, a.log)
 		if err != nil {
 			return err
@@ -777,7 +781,14 @@ func serve() error {
 	// The read check at every start (DS48), once the listener is bound:
 	// the process this one replaces has let go of the port by then, and
 	// its sockets are ending. In serve only, and it never fails the start.
-	go a.checkReadAtStart(ctx, &a.readers)
+	// Not in a maintenance start: it ends connections, a write.
+	if a.maintenance == nil {
+		a.started = append(a.started, "read check")
+		go a.checkReadAtStart(ctx, &a.readers)
+	}
+	if listening != nil {
+		listening(a, ln.Addr())
+	}
 
 	select {
 	case err := <-errc:
@@ -827,6 +838,84 @@ func serve() error {
 	}
 	a.log.Info("stopped")
 	return nil
+}
+
+// begin starts what serve runs beside its listener, and names each in
+// a.started. A maintenance start starts none of it: no number is resumed
+// or supervised, so no WhatsApp session is claimed and no device row
+// changes; no attachment is fetched, no picture asked and no history
+// ingested, so no object is written; no janitor pass runs and no row is
+// backfilled.
+func (a *app) begin(ctx context.Context) error {
+	if a.maintenance != nil {
+		return nil
+	}
+	// Before serving: a device that is reachable but unsupervised is worse
+	// than one that is plainly down, because everything reports healthy while
+	// messages quietly stop arriving.
+	a.started = append(a.started, "resume")
+	if err := a.resumeDevices(ctx); err != nil {
+		return err
+	}
+
+	// And keep trying. One attempt at boot is one too few: a restart overlaps
+	// with the process it replaces, the new one loses the race for the device
+	// lock, and without this it never asks again — leaving a device that
+	// reports online while nothing holds its connection.
+	a.spawn(ctx, "supervisor", a.superviseDevices)
+	// A deletion in any process tells this one at its commit, so it lets go
+	// of the number before the next tick.
+	a.spawn(ctx, "excluded listener", a.listenExcluded)
+	// So do a reset and a new archive key, so ingest seals to the number's
+	// key as it is now, with no restart (DS49).
+	a.spawn(ctx, "archive key listener", a.listenArchiveKeys)
+
+	// The attachment queue lives in the database, so this starts whether or
+	// not anything is waiting and picks up whatever a previous process left.
+	a.spawn(ctx, "attachment worker", a.worker.Run)
+
+	// History sync chunks are ingested off the device's event goroutine.
+	// whatsmeow dispatches synchronously, so doing it inline would stop a
+	// device receiving anything at all for the length of a bootstrap.
+	a.spawn(ctx, "history worker", a.router.RunHistory)
+
+	// Names whatsmeow already has, moved somewhere sealed. Runs before the
+	// avatar worker so the pictures land on rows that mean something.
+	a.started = append(a.started, "contact import", "group sync", "group identities")
+	a.importContacts(ctx)
+	a.syncGroups(ctx)
+	a.seedGroupIdentities(ctx)
+
+	// Profile pictures. Paced on purpose: each question is a query over the
+	// same socket that carries messages.
+	a.spawn(ctx, "avatar worker", a.avatars.Run)
+
+	// Retention windows and housekeeping, once an hour. Nothing here runs
+	// for a tenant that has not asked for it.
+	a.spawn(ctx, "janitor", a.maintain)
+
+	// Chats that predate the identity column get one now. Doing it here rather
+	// than in SQL keeps a single implementation of the derivation: a mismatch
+	// between a Go version and a SQL version would be silent, and would only
+	// surface as names that refuse to open.
+	// Names before pictures: a group sender addressed by LID matches no contact
+	// until this runs, and everything downstream shows them as a stranger.
+	a.started = append(a.started, "phone number backfill", "chat identity backfill")
+	if err := a.linkPhoneNumbers(ctx); err != nil {
+		return err
+	}
+
+	if err := a.backfillChatIdentities(ctx); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// spawn runs run in a goroutine of its own, named in a.started.
+func (a *app) spawn(ctx context.Context, name string, run func(context.Context)) {
+	a.started = append(a.started, name)
+	go run(ctx)
 }
 
 // listenPatiently binds the port, waiting out a process that is still letting
@@ -897,6 +986,33 @@ func (a *app) probes(mux *http.ServeMux) {
 	mux.Handle("GET /metrics", a.metrics.Handler())
 }
 
+// probesHandler is the probes' and metrics' own listener (WS_METRICS_ADDR),
+// whose every answer carries the maintenance header in a maintenance start:
+// the gate does not see this listener.
+func (a *app) probesHandler() http.Handler {
+	mux := http.NewServeMux()
+	a.probes(mux)
+	return a.maintenance.marked(mux)
+}
+
+// advertisedMCP is what discovery says of the connector: nothing in a
+// maintenance start, which mounts none of it.
+func (a *app) advertisedMCP() mcpEndpoints {
+	if a.maintenance != nil {
+		return mcpEndpoints{}
+	}
+	return advertisedMCP(a.cfg.MCP)
+}
+
+// routeKeys is the API keys the HTTP routes accept: none in a maintenance
+// start, whose REST and attachment routes take a person's session only.
+func (a *app) routeKeys() *store.APIKeys {
+	if a.maintenance != nil {
+		return nil
+	}
+	return a.apiKeys
+}
+
 // authHandler is the sign-up and sign-in routes' handler, with the
 // contract's part in every serving process (a.members, startContract).
 func (a *app) authHandler() *authapi.Handler {
@@ -938,10 +1054,10 @@ func (r *mcpReaders) TellRevoked(ctx context.Context, reader, id string) {
 
 func (a *app) routes() http.Handler {
 	mux := http.NewServeMux()
-	mcpServers := advertisedMCP(a.cfg.MCP)
+	mcpServers := a.advertisedMCP()
 	platform := a.platform.Discovery(a.cfg.Platform.LocalLogin)
-	mux.HandleFunc("GET /v1/discovery", discoveryWith(mcpServers, platform))
-	mux.HandleFunc("GET /.well-known/wappie", discoveryWith(mcpServers, platform))
+	mux.HandleFunc("GET /v1/discovery", discoveryIn(mcpServers, platform, a.maintenance != nil))
+	mux.HandleFunc("GET /.well-known/wappie", discoveryIn(mcpServers, platform, a.maintenance != nil))
 	if a.cfg.MetricsAddr == "" {
 		a.probes(mux)
 	}
@@ -950,7 +1066,7 @@ func (a *app) routes() http.Handler {
 	// credentials before it opens, and this is where credentials come from.
 	a.authHandler().Mount(mux)
 	(&restapi.Handler{
-		APIKeys: a.apiKeys, Users: a.users, Keys: a.keys, Devices: a.devices,
+		APIKeys: a.routeKeys(), Users: a.users, Keys: a.keys, Devices: a.devices,
 		Messages: a.messages, Contacts: a.contacts, Receipts: a.receipts, Log: a.log,
 		Running: func(deviceID string) bool {
 			device, ok := a.registry.Get(deviceID)
@@ -966,7 +1082,8 @@ func (a *app) routes() http.Handler {
 	// server, whatever sign-in through the platform is; the log says once
 	// whether it is on.
 	clockAlerts := readerClockAlerts(a.cfg, a.log)
-	if a.cfg.MCP.Enabled {
+	// Never in a maintenance start, whatever WS_MCP_ENABLED says.
+	if a.cfg.MCP.Enabled && a.maintenance == nil {
 		a.mcp = &mcpauth.Handler{
 			Connections: store.NewMCPConnections(a.pools.API), APIKeys: a.apiKeys, Users: a.users,
 			Limits: a.limits, SetupLimits: a.setups,
@@ -1069,11 +1186,11 @@ func (a *app) routes() http.Handler {
 	// from a time it was stay refused.
 	mediaGate := mcpauth.MediaGate(store.NewMCPConnections(a.pools.API), a.switches.Media, a.switches.AI)
 	mux.Handle("GET /v1/media/{uid}", &media.Handler{
-		Keys: a.apiKeys, Sessions: store.NewUsers(a.pools.API),
+		Keys: a.routeKeys(), Sessions: store.NewUsers(a.pools.API),
 		Media: a.media, Blob: a.blob, Gate: mediaGate, Log: a.log,
 	})
 	mux.Handle("HEAD /v1/media/{uid}", &media.Handler{
-		Keys: a.apiKeys, Sessions: store.NewUsers(a.pools.API),
+		Keys: a.routeKeys(), Sessions: store.NewUsers(a.pools.API),
 		Media: a.media, Blob: a.blob, Gate: mediaGate, Log: a.log,
 	})
 
@@ -1083,7 +1200,7 @@ func (a *app) routes() http.Handler {
 	// everything behind it and sitting in memory on both ends.
 	mux.Handle("POST /v1/upload", &media.UploadHandler{
 		Storage:  a.storage,
-		Keys:     a.apiKeys,
+		Keys:     a.routeKeys(),
 		Sessions: store.NewUsers(a.pools.API),
 		Devices:  a.devices,
 		Resolve: func(_ context.Context, _ uuid.UUID, deviceID string) (media.Uploader, error) {
@@ -1099,8 +1216,10 @@ func (a *app) routes() http.Handler {
 
 	// The web client, and the JSON 404 of the API's prefixes, take only what
 	// no route above claims (unrouted), so the client cannot shadow an
-	// endpoint nor a removed one answer with the console document.
-	return a.cfg.BrowserOrigins.Wrap(unrouted(mux, a.web))
+	// endpoint nor a removed one answer with the console document. A
+	// maintenance start refuses the writes it does not let through before
+	// either (maintenance.gate).
+	return a.cfg.BrowserOrigins.Wrap(a.maintenance.gate(mux, unrouted(mux, a.web)))
 }
 
 // listTenants prints the tenants in this database.

@@ -342,10 +342,11 @@ sudo systemd-run --uid=wappie --gid=wappie --pipe --wait \
 ```
 
 `whatserverd`
-serves only with no arguments or with `serve`: any other command, or a
-`devices` or `deletions` subcommand, that it does not know prints the
-command list and exits 2, so a mistyped command never starts a server whose
-first janitor pass would purge.
+serves only with no arguments or with `serve` and the flags it knows
+(`-maintenance`, `-allow`; see "Maintenance start" below): any other
+command, a flag of `serve` it does not know, or a `devices` or `deletions`
+subcommand that it does not know prints the command list and exits 2, so a
+mistyped command never starts a server whose first janitor pass would purge.
 
 - `devices list-deleted` lists each deleted number of every workspace (or
   one) by id: when it was deleted, when it is purged, its state
@@ -387,6 +388,106 @@ line, whose `purge_after` is the backdated one (a replay accepts that). If
 the running server's hourly pass purged the number first, its "number
 purged" line is in that server's log instead.
 
+### Maintenance start
+
+```
+whatserverd serve -maintenance [-allow NAME]...
+```
+
+A start for the window of a data change (the owner's-data procedure's
+step 8, after the snapshot and before the second one), when something
+must be served while nothing is captured: a person signs in, reads the
+numbers, the chats and the messages, and runs the key page's checks,
+which open the keys and grants they hold in their own browser. It replaces
+the interim of pausing every number. Next to a normal start it:
+
+- **migrates nothing.** Like the commands above, it refuses a database
+  whose schema is not exactly this binary's; a change that migrates
+  migrates first, with `whatserverd tenants`. whatsmeow's session store is
+  opened without upgrading its tables.
+- **captures nothing.** No number is resumed and no supervisor runs, so no
+  WhatsApp session is claimed and no device row changes; no call service.
+- **starts no worker.** No attachment, picture or history worker, no
+  deletion or archive-key listener, no janitor (so nothing is purged,
+  whatever `WS_DELETED_NUMBER_PURGE` says), no contact, group or LID
+  backfill, no start's read check, and no contract leader (no feed, round
+  or sweep; sign-in still asks the contract through its transport).
+- **writes no object.** The object store is opened read-only: the bucket
+  is checked, never created, and every put or delete is refused in the
+  process.
+- **turns MCP and API keys off.** The connector and the AI routes are not
+  mounted whatever `WS_MCP_ENABLED` says, and discovery advertises none of
+  them; the socket refuses a hello with an API key (`maintenance`), and
+  over HTTP a request whose bearer is an API key is answered `503`
+  `{"code":"maintenance",…}` before any handler, a read included: never
+  the `401` of a revoked key, so a client keeps its key for after the
+  window. The REST and attachment routes take a person's session only.
+- **refuses writes.** Over HTTP, a GET, HEAD or OPTIONS goes through, and
+  of the other methods only the sign-in routes: `/v1/auth/challenge`,
+  `login`, `logout`, `passkeys/login/options` and `/finish`,
+  `platform/session`, `workspaces/session`, and the step-ups
+  (`step-up/passkey/options`, `step-up/passkey`, `step-up/password`,
+  `platform/step-up/start` and `/finish`). They write the person's session
+  and, through the platform, the account's pinned key and e-mail (and, with
+  the contract on, its last error class); nothing of a number. Every other
+  write (sign-up, invitations, workspaces, settings, permissions, storage
+  actions, uploads) answers `503` `{"code":"maintenance",…}` before any
+  handler runs. On the socket only
+  the reads answer (`ping`, `devices.list`, `users.list`, `subscribe`,
+  `contacts.list`, `chats.list`, `chat.page`, `message.history`,
+  `message.get`, `keys.get`, `devices.stats`, `device.info`,
+  `apikeys.list`, `grants.list`); every other frame, `contacts.resolve`
+  and `contacts.avatar` included (both write contact rows), is answered
+  error `maintenance`.
+
+**The declared change.** `-allow NAME` lets one declared write through, for
+a person's session only, by its name in the binary's own list
+(`maintenanceWrites` in `cmd/whatserverd/maintenance.go`), which names the
+frames and routes it needs. The list is empty: a slice whose change needs
+a person to write in the window adds its write there, under the name its
+kit's manifest declares, with a test that it is refused without `-allow`.
+`-allow` without `-maintenance`, or a name the list does not have, stops
+the start with exit status 2, as a mistyped flag does.
+
+**How it shows.** The log says at the start, at WARN, `MAINTENANCE START:
+…` with `maintenance=true` and `allowed=[…]`. Every HTTP answer, `/healthz`,
+`/readyz` and `/metrics` included (on their own listener too), carries the
+header `Wappie-Maintenance: on`, and `/v1/discovery` and `/.well-known/wappie`
+carry `"maintenance": true` (absent on a normal start). `/readyz` answers
+`200` as usual, so a kit that waits for it waits the same way.
+
+Run it with the server's configuration, as the server's user, with
+`wappie-api` stopped: never beside a normal start, though it claims no
+session. It runs the contract's client and holds its secret, so it takes
+what `wappie-api` has from its unit and its drop-ins: the
+`platform-contract` group (the socket is `root:platform-contract` 0660;
+without it every contract call fails and sign-in falls back to what it
+holds), no core dump, the ledger's directory and the same protections. On
+the cloud host, for example:
+
+```
+sudo systemctl stop wappie-api
+sudo systemd-run --unit=wappie-maintenance --collect --uid=wappie --gid=wappie \
+  -p SupplementaryGroups=platform-contract -p LimitCORE=0 \
+  -p StateDirectory=wappie -p StateDirectoryMode=0700 \
+  -p NoNewPrivileges=true -p PrivateTmp=true -p ProtectSystem=strict \
+  -p ProtectHome=true -p ProtectKernelTunables=true -p ProtectKernelModules=true \
+  -p ProtectControlGroups=true -p RestrictSUIDSGID=true -p UMask=0077 \
+  -p EnvironmentFile=/opt/wappie/runtime.env -p WorkingDirectory=/opt/wappie/release \
+  /opt/wappie/release/bin/whatserverd serve -maintenance
+# ... the check; then
+sudo systemctl stop wappie-maintenance
+```
+
+Compare the properties with `systemctl cat wappie-api` first: the unit
+file is the reference, and a host whose unit has no `platform-contract`
+drop-in (no such group yet) leaves out `SupplementaryGroups`, which would
+fail the start (216/GROUP). `--collect` lets a failed run go, so the name
+can be used again without `systemctl reset-failed`. A transient unit ends
+with the window: nothing in `runtime.env` or the unit file changes, so the
+next `systemctl start wappie-api` is a normal start. Start it normally only at the procedure's step 12, after the second
+snapshot.
+
 ### Restoring a backup
 
 A snapshot is older than the ledger. Restore it like this, with the server
@@ -399,8 +500,9 @@ stopped:
    the database and adds nothing. Put it back owned by the server's user,
    mode 0600.
 3. **Migrations.** If the snapshot's schema is older than the binary's,
-   migrate first, on its own: any command other than the four above
-   migrates as it starts, and `whatserverd tenants` changes nothing else.
+   migrate first, on its own: any command other than the four above and
+   `serve -maintenance` migrates as it starts, and `whatserverd tenants`
+   changes nothing else.
    The replay never migrates.
 4. **The replay**, before the server starts, as the server's user:
    `whatserverd deletions replay -ledger FILE -snapshot-time STAMP`, where

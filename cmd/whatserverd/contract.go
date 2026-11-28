@@ -107,7 +107,10 @@ func (a *app) startContract(ctx context.Context, hup <-chan os.Signal) {
 	a.secrets = &membership.Secrets{Config: a.cfg.Contract, Client: a.contract, OpenWrapper: openKMS, Class: kmsErrorClass, Log: a.log}
 	go a.secrets.Watch(ctx, hup)
 	go a.secrets.Run(ctx)
-	if a.members != nil {
+	// A maintenance start follows no feed and runs no round or sweep: the
+	// leader's work writes. Sign-in still asks the contract through the
+	// transport.
+	if a.members != nil && a.maintenance == nil {
 		a.leader = &membership.Leader{Members: a.members, Pool: a.pools.API, Log: a.log, Settings: a.settingsConfig()}
 		go a.leader.Run(ctx)
 	}

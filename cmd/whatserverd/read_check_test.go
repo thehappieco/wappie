@@ -154,13 +154,13 @@ func TestCheckReadAtStart(t *testing.T) {
 // which the command line's commands run too.
 func TestServeRunsReadCheck(t *testing.T) {
 	src := rawCode(t, ".")
-	serve := funcBody(t, src, "serve")
+	serve := funcBody(t, src, "runServe")
 	call := "go a.checkReadAtStart(ctx, &a.readers)"
 	bound := strings.Index(serve, "listenPatiently(ctx, a.cfg.HTTPAddr")
 	if at := strings.Index(serve, call); at < 0 || bound < 0 || at < bound {
 		t.Fatalf("serve does not start the read check after the listener is bound")
 	}
-	if strings.Contains(funcBody(t, src, "setupWith"), "checkReadAtStart") {
+	if strings.Contains(funcBody(t, src, "setupOpts"), "checkReadAtStart") {
 		t.Fatal("setupWith runs the read check")
 	}
 	if n := strings.Count(src, "checkReadAtStart("); n != 2 {

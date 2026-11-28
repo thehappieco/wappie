@@ -13,6 +13,13 @@ API version, capabilities and relative HTTP/WebSocket/media paths. Clients must
 reject incompatible versions before authenticating. The first version requires
 `product: wappie`, `api_version: 1` and `external-client.v1`.
 
+An installation in a maintenance start (`whatserverd serve -maintenance`,
+[deployment](deployment.md#maintenance-start)) adds `"maintenance": true`:
+it answers a person's sign-in and reads only. It answers an API key, and
+any other write, `503` with code `maintenance` over HTTP and error
+`maintenance` on the WebSocket: a key is not revoked by it, so keep it and
+retry after the window. The field is absent otherwise.
+
 ### Remote MCP connector
 
 An installation that serves the hosted MCP connector advertises `mcp.remote.v1`
