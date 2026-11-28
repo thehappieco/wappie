@@ -19,7 +19,7 @@ import (
 // opens nothing and never serves.
 func TestDatacheckCommandLines(t *testing.T) {
 	served := 0
-	serve := func() error { served++; return nil }
+	serve := func(serveOptions) error { served++; return nil }
 	for _, args := range [][]string{{"datacheck", "now"}, {"datacheck", "compare"}, {"datacheck", "compare", "a.json"},
 		{"datacheck", "compare", "a", "b", "c"}} {
 		var usage usageError
